@@ -1,0 +1,4 @@
+.build/
+RayDesk.app/
+.swiftpm/
+.worktrees/
