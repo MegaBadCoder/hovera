@@ -1,6 +1,7 @@
 import Foundation
 import IOKit.hid
 import simd
+import RayDeskCore
 
 final class GlassesIMU {
     private let filter: OrientationFilter

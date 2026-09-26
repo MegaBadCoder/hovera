@@ -1,6 +1,7 @@
 import MetalKit
 import CoreVideo
 import simd
+import RayDeskCore
 
 final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice

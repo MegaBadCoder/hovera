@@ -1,5 +1,6 @@
 import Foundation
 import simd
+import RayDeskCore
 
 final class ScreenPlacement {
     private let defaults = UserDefaults.standard

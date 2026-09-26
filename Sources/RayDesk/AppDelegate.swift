@@ -2,6 +2,7 @@ import AppKit
 import MetalKit
 import Carbon.HIToolbox
 import simd
+import RayDeskCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let placement = ScreenPlacement()

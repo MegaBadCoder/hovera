@@ -1,7 +1,13 @@
 import Foundation
 import simd
 
-final class OrientationFilter {
+/// Комплементарный фильтр ориентации головы по данным гироскопа и
+/// акселерометра очков (алгоритм Madgwick/Mahony с обучаемым смещением
+/// гироскопа).
+///
+/// Мировая и связанная система координат: X вправо, Y вверх, Z назад
+/// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
+public final class OrientationFilter {
     private let lock = NSLock()
     private var q = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private var omega = SIMD3<Double>(repeating: 0)
@@ -13,16 +19,22 @@ final class OrientationFilter {
     private var calibrationCount = 0
     private(set) var sampleCount = 0
 
-    var isReady: Bool {
+    /// `true`, если фильтр инициализирован (выровнен по гравитации) и
+    /// накопил достаточно отсчётов для доверенной оценки ориентации.
+    public var isReady: Bool {
         lock.lock()
         defer { lock.unlock() }
         return initialized && sampleCount > 200
     }
 
-    var kp = 0.5
-    var ki = 0.002
+    public var kp = 0.5
+    public var ki = 0.002
 
-    func reset() {
+    public init() {}
+
+    /// Сбрасывает фильтр к неинициализированному состоянию, обнуляет
+    /// накопленную калибровку смещения гироскопа.
+    public func reset() {
         lock.lock()
         initialized = false
         integral = .zero
@@ -31,7 +43,19 @@ final class OrientationFilter {
         lock.unlock()
     }
 
-    func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, dt: Double) {
+    /// Добавляет один отсчёт IMU в фильтр.
+    ///
+    /// Первый вызов с валидным (не нулевым) ускорением только
+    /// инициализирует ориентацию по направлению гравитации (yaw = 0) и не
+    /// меняет `omega`. Последующие вызовы интегрируют угловую скорость и
+    /// корректируют её по измеренному "верху" акселерометра.
+    ///
+    /// - Parameters:
+    ///   - gyro: угловая скорость по осям тела, рад/с.
+    ///   - accel: ускорение по осям тела, единицы g.
+    ///   - dt: время с предыдущего отсчёта, секунды; вызовы с `dt <= 0` или
+    ///     `dt >= 0.1` игнорируются.
+    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, dt: Double) {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -77,7 +101,12 @@ final class OrientationFilter {
         }
     }
 
-    func orientation(predictAhead seconds: Double) -> simd_quatd {
+    /// Экстраполирует текущую ориентацию вперёд на заданное время по
+    /// последней угловой скорости.
+    ///
+    /// - Parameter seconds: горизонт прогноза, секунды.
+    /// - Returns: предсказанная ориентация.
+    public func orientation(predictAhead seconds: Double) -> simd_quatd {
         lock.lock()
         defer { lock.unlock() }
         let angle = length(omega) * seconds
@@ -85,7 +114,8 @@ final class OrientationFilter {
         return simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega)))
     }
 
-    func alignYawToZero() {
+    /// Обнуляет текущий yaw, сохраняя pitch и roll.
+    public func alignYawToZero() {
         lock.lock()
         let yp = q.yawPitch
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
