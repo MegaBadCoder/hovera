@@ -243,6 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw += yaw * .pi / 180
         renderer.calibration.pitch += pitch * .pi / 180
         renderer.calibration.roll += roll * .pi / 180
+        saveCalibration()
         let c = renderer.calibration
         log(String(format: "calibration yaw %.1f° pitch %.1f° roll %.1f°", c.yaw * 180 / .pi, c.pitch * 180 / .pi, c.roll * 180 / .pi))
     }
