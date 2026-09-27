@@ -13,7 +13,6 @@ public final class OrientationFilter {
     private var omega = SIMD3<Double>(repeating: 0)
     private var accumulatedTravel = RotationTravel(total: 0, yaw: 0)
     private var bias = SIMD3<Double>(repeating: 0)
-    private var integral = SIMD3<Double>(repeating: 0)
     private var initialized = false
     private var stillTime = 0.0
     private var smoothedGyro = SIMD3<Double>(repeating: 0)
@@ -28,7 +27,6 @@ public final class OrientationFilter {
     }
 
     public var kp = 0.5
-    public var ki = 0.002
 
     public init() {}
 
@@ -37,7 +35,6 @@ public final class OrientationFilter {
     public func reset() {
         lock.lock()
         initialized = false
-        integral = .zero
         stillTime = 0
         smoothedGyro = bias
         lock.unlock()
@@ -77,12 +74,11 @@ public final class OrientationFilter {
         omega = w
         accumulatedTravel.total += length(w) * dt
         accumulatedTravel.yaw += q.act(w).y * dt
-        if accelNorm > 0.7, accelNorm < 1.3 {
+        if abs(accelNorm - 1) < TiltCorrection.maxAccelDeviation, length(w) < TiltCorrection.maxTurnRate {
             let measuredUp = accel / accelNorm
             let estimatedUp = q.inverse.act(SIMD3(0, 1, 0))
             let error = cross(measuredUp, estimatedUp)
-            integral += ki * error * dt
-            w += kp * error + integral
+            w += kp * error
         }
         let angle = length(w) * dt
         if angle > 1e-9 {
@@ -147,4 +143,9 @@ public struct RotationTravel: Equatable {
     public var total: Double
     /// Поворот вокруг мировой вертикали со знаком: плюс — влево.
     public var yaw: Double
+}
+
+private enum TiltCorrection {
+    static let maxAccelDeviation = 0.05
+    static let maxTurnRate = 30 * Double.pi / 180
 }
