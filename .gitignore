@@ -2,3 +2,4 @@
 RayDesk.app/
 .swiftpm/
 .worktrees/
+tmp/

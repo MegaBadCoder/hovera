@@ -15,8 +15,7 @@ public final class OrientationFilter {
     private var integral = SIMD3<Double>(repeating: 0)
     private var initialized = false
     private var stillTime = 0.0
-    private var calibrationSum = SIMD3<Double>(repeating: 0)
-    private var calibrationCount = 0
+    private var smoothedGyro = SIMD3<Double>(repeating: 0)
     private(set) var sampleCount = 0
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
@@ -38,8 +37,8 @@ public final class OrientationFilter {
         lock.lock()
         initialized = false
         integral = .zero
-        calibrationSum = .zero
-        calibrationCount = 0
+        stillTime = 0
+        smoothedGyro = bias
         lock.unlock()
     }
 
@@ -89,16 +88,11 @@ public final class OrientationFilter {
     }
 
     private func trackBias(gyro: SIMD3<Double>, accel: SIMD3<Double>, accelNorm: Double, dt: Double) {
-        let still = length(gyro - bias) < 0.03 && abs(accelNorm - 1) < 0.05
+        smoothedGyro += (gyro - smoothedGyro) * min(1, dt / BiasTracking.smoothingSeconds)
+        let still = length(smoothedGyro - bias) < BiasTracking.stillRate && abs(accelNorm - 1) < 0.02
         stillTime = still ? stillTime + dt : 0
-        guard stillTime > 0.4 else { return }
-        if calibrationCount < 400 {
-            calibrationSum += gyro
-            calibrationCount += 1
-            bias = calibrationSum / Double(calibrationCount)
-        } else {
-            bias += (gyro - bias) * min(1, dt * 0.5)
-        }
+        guard stillTime > BiasTracking.stillSeconds else { return }
+        bias += (smoothedGyro - bias) * min(1, dt / BiasTracking.learningSeconds)
     }
 
     /// Экстраполирует текущую ориентацию вперёд на заданное время по
@@ -121,4 +115,11 @@ public final class OrientationFilter {
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
         lock.unlock()
     }
+}
+
+private enum BiasTracking {
+    static let smoothingSeconds = 1.0
+    static let stillRate = 0.2 * Double.pi / 180
+    static let stillSeconds = 1.5
+    static let learningSeconds = 10.0
 }
