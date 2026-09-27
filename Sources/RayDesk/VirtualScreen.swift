@@ -8,19 +8,19 @@ final class VirtualScreen {
 
     var displayID: CGDirectDisplayID { display.displayID }
 
-    init(pointWidth: Int, pointHeight: Int, refreshRate: Double = 60) {
+    init(index: Int, pointWidth: Int, pointHeight: Int, refreshRate: Double = 60) {
         pixelWidth = pointWidth * 2
         pixelHeight = pointHeight * 2
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.queue = .main
-        descriptor.name = "RayDesk"
+        descriptor.name = "RayDesk \(index + 1)"
         descriptor.maxPixelsWide = UInt32(pixelWidth)
         descriptor.maxPixelsHigh = UInt32(pixelHeight)
         descriptor.sizeInMillimeters = CGSize(width: 600, height: 600 * Double(pointHeight) / Double(pointWidth))
         descriptor.vendorID = 0x5244
         descriptor.productID = 0x0001
-        descriptor.serialNum = 0x0001
+        descriptor.serialNum = UInt32(index + 1)
         display = CGVirtualDisplay(descriptor: descriptor)
 
         let settings = CGVirtualDisplaySettings()

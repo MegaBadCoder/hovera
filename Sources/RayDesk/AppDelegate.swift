@@ -4,32 +4,32 @@ import Carbon.HIToolbox
 import simd
 import RayDeskCore
 
+private let sceneDefaultsKey = "screens.v2"
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let placement = ScreenPlacement()
+    private var scene = SpatialScene(screens: SpatialScene.decode(UserDefaults.standard.data(forKey: sceneDefaultsKey), default: 2, aspect: 16.0 / 9.0))
     private let filter = OrientationFilter()
-    private let capture = DisplayCapture()
     private let hotkeys = Hotkeys()
     private var imu: GlassesIMU?
-    private var virtualScreen: VirtualScreen?
+    private var slots: [ScreenSlot] = []
     private var window: NSWindow?
     private var renderer: Renderer?
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
-    private var followItem: NSMenuItem?
     private var statusTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
         setupHotkeys()
 
-        guard let glassesID = glassesScreen()?.displayID else {
+        guard glassesScreen()?.displayID != nil else {
             fail("Очки не найдены среди дисплеев. Подключите RayNeo и перезапустите.")
             return
         }
 
-        let virtualScreen = VirtualScreen(pointWidth: 1920, pointHeight: 1080)
-        self.virtualScreen = virtualScreen
-        arrangeDisplays(virtualID: virtualScreen.displayID, glassesID: glassesID)
+        slots = scene.screens.indices.map { ScreenSlot(index: $0) }
+        saveScene()
+        arrangeDisplays()
 
         imu = GlassesIMU(filter: filter)
         imu?.start()
@@ -40,13 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
             do {
-                try openGlassesWindow(aspect: Double(virtualScreen.pixelWidth) / Double(virtualScreen.pixelHeight))
+                try openGlassesWindow()
             } catch {
                 fail("Metal: \(error)")
                 return
             }
-            startCapture(virtualScreen)
-            placeWhenTrackingReady()
+            startCaptures()
         }
 
         statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshStatus() }
@@ -56,49 +55,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSScreen.screens.first { $0.localizedName.localizedCaseInsensitiveContains("SmartGlasses") || $0.localizedName.localizedCaseInsensitiveContains("RayNeo") }
     }
 
-    private func arrangeDisplays(virtualID: CGDirectDisplayID, glassesID: CGDirectDisplayID) {
+    private func arrangeDisplays() {
+        guard let glassesID = glassesScreen()?.displayID else { return }
         let mainBounds = CGDisplayBounds(CGMainDisplayID())
         let glassesBounds = CGDisplayBounds(glassesID)
+        let sizes = slots.map(\.displayBounds.size)
+        let result = RayDeskCore.arrangeDisplays(screenYaws: scene.screens.map(\.yaw), screenSizes: sizes, main: mainBounds, glasses: glassesBounds.size)
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
-        CGConfigureDisplayOrigin(config, virtualID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
-        CGConfigureDisplayOrigin(config, glassesID, Int32(mainBounds.minX - glassesBounds.width), Int32(mainBounds.minY))
-        let result = CGCompleteDisplayConfiguration(config, .forAppOnly)
-        log("arrange displays: \(result.rawValue)")
+        for (slot, origin) in zip(slots, result.screens) {
+            CGConfigureDisplayOrigin(config, slot.virtualScreen.displayID, Int32(origin.x), Int32(origin.y))
+        }
+        CGConfigureDisplayOrigin(config, glassesID, Int32(result.glasses.x), Int32(result.glasses.y))
+        let status = CGCompleteDisplayConfiguration(config, .forAppOnly)
+        log("arrange displays: \(status.rawValue)")
     }
 
-    private func startCapture(_ virtualScreen: VirtualScreen) {
+    private func startCaptures() {
         if !CGPreflightScreenCaptureAccess() {
             log("screen capture: not granted, requesting")
             CGRequestScreenCaptureAccess()
             fail("Нужно разрешение на запись экрана.\n\nСистемные настройки → Конфиденциальность и безопасность → Запись экрана и системного звука → включите RayDesk, затем перезапустите RayDesk.\n\nПока в очках будет серый прямоугольник вместо экрана.")
             return
         }
+        for slot in slots { startCapture(slot) }
+    }
+
+    private func startCapture(_ slot: ScreenSlot) {
         Task { @MainActor in
             do {
-                try await capture.start(displayID: virtualScreen.displayID, width: virtualScreen.pixelWidth, height: virtualScreen.pixelHeight)
-                log("capture started")
+                try await slot.start()
+                log("capture started: screen \(slot.index + 1)")
             } catch {
-                fail("Захват экрана не запустился: \(error)")
+                fail("Захват экрана \(slot.index + 1) не запустился: \(error)")
             }
         }
     }
 
-    private func placeWhenTrackingReady(attempt: Int = 0) {
-        if filter.isReady {
-            placeHere()
-            log("placed at gaze")
-        } else if attempt < 50 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.placeWhenTrackingReady(attempt: attempt + 1) }
-        }
-    }
-
     func applicationWillTerminate(_ notification: Notification) {
-        capture.stop()
+        saveScene()
+        for slot in slots { slot.stop() }
         imu?.stop()
     }
 
-    private func openGlassesWindow(aspect: Double) throws {
+    private func openGlassesWindow() throws {
         guard let screen = glassesScreen() else { throw GlassesError.screenMissing }
         let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
         window.setFrame(screen.frame, display: true)
@@ -110,7 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
-        let renderer = try Renderer(view: view, capture: capture, filter: filter, placement: placement, screenAspect: aspect)
+        let renderer = try Renderer(view: view, scene: scene, filter: filter)
+        renderer.slots = slots
         view.delegate = renderer
         window.contentView = view
         window.orderFrontRegardless()
@@ -127,25 +128,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var head: simd_quatd { renderer?.currentHead ?? simd_quatd(ix: 0, iy: 0, iz: 0, r: 1) }
 
-    @objc private func placeHere() { placement.place(atGaze: head) }
-    @objc private func toggleGrab() { placement.toggleGrab(head: head) }
-    @objc private func closer() { placement.adjustDistance(by: 1 / 1.1) }
-    @objc private func farther() { placement.adjustDistance(by: 1.1) }
-    @objc private func bigger() { placement.adjustWidth(by: 1.1) }
-    @objc private func smaller() { placement.adjustWidth(by: 1 / 1.1) }
+    private func targetScreen() -> Int {
+        gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
+    }
+
+    private func saveScene() {
+        UserDefaults.standard.set(scene.encoded(), forKey: sceneDefaultsKey)
+    }
+
+    @objc private func placeHere() {
+        scene.place(targetScreen(), head: head)
+        saveScene()
+    }
+
+    @objc private func toggleGrab() {
+        if let grabbed = scene.grabbed {
+            scene.toggleGrab(grabbed, head: head)
+            saveScene()
+            arrangeDisplays()
+        } else {
+            scene.toggleGrab(targetScreen(), head: head)
+        }
+    }
+
+    @objc private func closer() {
+        scene.adjustDistance(targetScreen(), by: 1 / 1.1)
+        saveScene()
+    }
+
+    @objc private func farther() {
+        scene.adjustDistance(targetScreen(), by: 1.1)
+        saveScene()
+    }
+
+    @objc private func bigger() {
+        scene.adjustWidth(targetScreen(), by: 1.1)
+        saveScene()
+    }
+
+    @objc private func smaller() {
+        scene.adjustWidth(targetScreen(), by: 1 / 1.1)
+        saveScene()
+    }
+
     @objc private func recalibrate() {
         filter.reset()
-        placement.yaw = 0
-        placement.pitch = 0
     }
-    @objc private func toggleFollow() {
-        placement.follow.toggle()
-        followItem?.state = placement.follow ? .on : .off
+
+    @objc private func addScreen() {
+        guard scene.addScreen(head: head) else {
+            log("add screen: already at maximum")
+            return
+        }
+        let slot = ScreenSlot(index: slots.count)
+        slots.append(slot)
+        startCapture(slot)
+        renderer?.slots = slots
+        saveScene()
+        arrangeDisplays()
     }
+
+    @objc private func removeScreen() {
+        guard scene.removeLastScreen() else {
+            log("remove screen: already at minimum")
+            return
+        }
+        let slot = slots.removeLast()
+        slot.stop()
+        renderer?.slots = slots
+        saveScene()
+        arrangeDisplays()
+    }
+
     @objc private func toggleWindow() {
         guard let window else { return }
         window.isVisible ? window.orderOut(nil) : window.orderFrontRegardless()
     }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     private func setupHotkeys() {
@@ -155,7 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_DownArrow) { [weak self] in self?.farther() }
         hotkeys.register(keyCode: kVK_ANSI_Equal) { [weak self] in self?.bigger() }
         hotkeys.register(keyCode: kVK_ANSI_Minus) { [weak self] in self?.smaller() }
-        hotkeys.register(keyCode: kVK_ANSI_F) { [weak self] in self?.toggleFollow() }
         hotkeys.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleWindow() }
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
     }
@@ -168,14 +226,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("Поставить экран туда, куда смотрю   ⌃⌥Space", #selector(placeHere)))
         menu.addItem(menuItem("Взять / отпустить экран   ⌃⌥G", #selector(toggleGrab)))
-        let follow = menuItem("Экран следует за головой   ⌃⌥F", #selector(toggleFollow))
-        followItem = follow
-        menu.addItem(follow)
         menu.addItem(.separator())
         menu.addItem(menuItem("Ближе   ⌃⌥↑", #selector(closer)))
         menu.addItem(menuItem("Дальше   ⌃⌥↓", #selector(farther)))
         menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
         menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
+        menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
@@ -194,9 +252,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · %.1f м",
+        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
-                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, placement.distance)
+                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count)
         log(statusLine.title)
     }
 
