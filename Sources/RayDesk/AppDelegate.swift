@@ -382,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let point = globalPoint(uv: hit.uv, in: bounds(of: hit.target))
         CGWarpMouseCursorPosition(point)
         CGAssociateMouseAndMouseCursorPosition(1)
+        mouseTap?.noteCursorMoved(to: point)
         log("cursor to gaze -> \(hit.target)")
     }
 
@@ -626,6 +627,12 @@ extension AppDelegate: MouseTapDelegate {
         return RayDeskCore.remappedCursor(previous: previous, proposed: proposed, delta: delta,
                                           panels: slots.map(\.displayBounds), main: CGDisplayBounds(CGMainDisplayID()),
                                           glasses: CGDisplayBounds(glassesID), preferredPanel: preferred)
+    }
+
+    func fencedCursor(previous: CGPoint, proposed: CGPoint) -> CGPoint? {
+        guard let glassesID = glassesScreen()?.displayID else { return nil }
+        return RayDeskCore.fencedCursor(previous: previous, proposed: proposed,
+                                        main: CGDisplayBounds(CGMainDisplayID()), glasses: CGDisplayBounds(glassesID))
     }
 
     func bounds(of screen: Int) -> CGRect { slots[screen].displayBounds }

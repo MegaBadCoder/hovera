@@ -8,6 +8,7 @@ protocol MouseTapDelegate: AnyObject {
     func cursorTarget(at point: CGPoint) -> CursorTarget?
     func warpTarget(cursor: CursorTarget?) -> CursorTarget?
     func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint?
+    func fencedCursor(previous: CGPoint, proposed: CGPoint) -> CGPoint?
     func bounds(of screen: Int) -> CGRect
     func bounds(of target: CursorTarget) -> CGRect
     func pose(of screen: Int) -> ScreenPose
@@ -97,12 +98,11 @@ final class MouseTap {
                 return nil
             }
         case .leftMouseDragged:
-            updateCursorScreen(event: event, delegate: delegate)
-            lastLocation = event.location
             if let target = draggingScreen {
                 applyDrag(target: target, event: event, delegate: delegate)
                 return nil
             }
+            keepOutOfGlasses(event: event, delegate: delegate)
         case .leftMouseUp:
             if draggingScreen != nil {
                 CGAssociateMouseAndMouseCursorPosition(1)
@@ -111,7 +111,7 @@ final class MouseTap {
                 return nil
             }
         case .rightMouseDragged, .otherMouseDragged:
-            updateCursorScreen(event: event, delegate: delegate)
+            keepOutOfGlasses(event: event, delegate: delegate)
         case .scrollWheel:
             if hotkey, let target = dragTarget(event: event, delegate: delegate) {
                 let delta = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
@@ -158,6 +158,18 @@ final class MouseTap {
         else { return }
         move(event, to: globalPoint(uv: hit.uv, in: delegate.bounds(of: target)))
         log("mouse warp -> \(target)")
+    }
+
+    func noteCursorMoved(to point: CGPoint) {
+        lastLocation = point
+    }
+
+    private func keepOutOfGlasses(event: CGEvent, delegate: MouseTapDelegate) {
+        if let fenced = delegate.fencedCursor(previous: lastLocation ?? event.location, proposed: event.location) {
+            move(event, to: fenced)
+        }
+        updateCursorScreen(event: event, delegate: delegate)
+        lastLocation = event.location
     }
 
     private func move(_ event: CGEvent, to point: CGPoint) {

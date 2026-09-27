@@ -44,6 +44,15 @@ public func arrangeDisplays(screenYaws: [Double], screenSizes: [CGSize], main: C
     return (origins, glassesOrigin)
 }
 
+/// Не пускает курсор на дисплей очков: он в пространстве не виден.
+///
+/// - Returns: прежняя точка, если курсор пытается зайти на дисплей очков; центр `main`,
+///   если курсор уже оказался внутри него; `nil`, если вмешиваться не нужно.
+public func fencedCursor(previous: CGPoint, proposed: CGPoint, main: CGRect, glasses: CGRect) -> CGPoint? {
+    guard glasses.contains(proposed) else { return nil }
+    return glasses.contains(previous) ? CGPoint(x: main.midX, y: main.midY) : previous
+}
+
 /// Куда на самом деле поставить курсор после движения мыши.
 ///
 /// Раскладка дисплеев macOS не совпадает с тем, что пользователь видит в пространстве,
@@ -62,8 +71,8 @@ public func arrangeDisplays(screenYaws: [Double], screenSizes: [CGSize], main: C
 /// - Returns: новая точка курсора, либо `nil`, если вмешиваться не нужно.
 public func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector,
                            panels: [CGRect], main: CGRect, glasses: CGRect, preferredPanel: Int?) -> CGPoint? {
-    if glasses.contains(proposed) {
-        return previous
+    if let fenced = fencedCursor(previous: previous, proposed: proposed, main: main, glasses: glasses) {
+        return fenced
     }
     if let panel = panels.first(where: { $0.contains(previous) }) {
         let atBottom = previous.y >= panel.maxY - 1 && delta.dy > 0 && panel.contains(proposed)

@@ -43,3 +43,12 @@ private func remap(_ previous: CGPoint, _ proposed: CGPoint, dy: Double, preferr
     #expect(remap(CGPoint(x: 0, y: -500), CGPoint(x: 5, y: -495), dy: 5) == nil)
     #expect(remap(CGPoint(x: 700, y: 500), CGPoint(x: 705, y: 505), dy: 5) == nil)
 }
+
+@Test func cursorAlreadyInsideGlassesIsTakenToMacCenter() {
+    #expect(remap(CGPoint(x: -2000, y: -500), CGPoint(x: -1990, y: -500), dy: 0) == CGPoint(x: main.midX, y: main.midY))
+}
+
+@Test func fenceAloneKeepsCursorOutOfGlassesDuringDrags() {
+    #expect(fencedCursor(previous: CGPoint(x: -1160, y: -500), proposed: CGPoint(x: -1170, y: -500), main: main, glasses: glasses) == CGPoint(x: -1160, y: -500))
+    #expect(fencedCursor(previous: CGPoint(x: 0, y: -500), proposed: CGPoint(x: 5, y: -500), main: main, glasses: glasses) == nil)
+}
