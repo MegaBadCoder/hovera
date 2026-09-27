@@ -43,3 +43,41 @@ public func arrangeDisplays(screenYaws: [Double], screenSizes: [CGSize], main: C
     let glassesOrigin = CGPoint(x: (leftmost.x - glasses.width).rounded(), y: leftmost.y)
     return (origins, glassesOrigin)
 }
+
+/// Куда на самом деле поставить курсор после движения мыши.
+///
+/// Раскладка дисплеев macOS не совпадает с тем, что пользователь видит в пространстве,
+/// поэтому переходы между панелями и экраном Mac делаются пропорционально ширине, а
+/// на дисплей очков курсор не пускается. Боковые переходы панель↔панель и обычные
+/// движения не трогаются.
+///
+/// - Parameters:
+///   - previous: где курсор был до события, глобальные точки.
+///   - proposed: куда его поставила macOS.
+///   - delta: сырое смещение мыши в событии (по `y` вниз положительно).
+///   - panels: границы виртуальных панелей по индексу.
+///   - main: границы встроенного экрана Mac.
+///   - glasses: границы дисплея очков.
+///   - preferredPanel: панель под взглядом, куда вести курсор с экрана Mac.
+/// - Returns: новая точка курсора, либо `nil`, если вмешиваться не нужно.
+public func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector,
+                           panels: [CGRect], main: CGRect, glasses: CGRect, preferredPanel: Int?) -> CGPoint? {
+    if glasses.contains(proposed) {
+        return previous
+    }
+    if let panel = panels.first(where: { $0.contains(previous) }) {
+        let atBottom = previous.y >= panel.maxY - 1 && delta.dy > 0 && panel.contains(proposed)
+        guard main.contains(proposed) || atBottom else { return nil }
+        let u = (previous.x - panel.minX) / panel.width
+        return CGPoint(x: main.minX + u * main.width, y: main.minY + 1)
+    }
+    if main.contains(previous) {
+        let enteredPanel = panels.firstIndex(where: { $0.contains(proposed) })
+        let atTop = previous.y <= main.minY + 1 && delta.dy < 0 && main.contains(proposed)
+        guard enteredPanel != nil || atTop, let index = preferredPanel ?? enteredPanel, panels.indices.contains(index) else { return nil }
+        let panel = panels[index]
+        let u = (previous.x - main.minX) / main.width
+        return CGPoint(x: panel.minX + u * panel.width, y: panel.maxY - 1)
+    }
+    return nil
+}
