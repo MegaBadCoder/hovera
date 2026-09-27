@@ -1,6 +1,6 @@
 # Стабилизация картинки (One Euro)
 
-**Status:** executing
+**Status:** done
 **Branch:** render-stabilizer (поверх cursor-to-mac)
 **Worktree:** none
 **Mode:** interactive (размер Small: без отдельного Design)
@@ -17,3 +17,10 @@ TDD: yes
 - `Sources/RayDeskCore/OrientationStabilizer.swift` (create): `enum StabilizationLevel`, `struct OrientationStabilizer { mutating func filter(_:dt:) }`.
 - Тесты: пульс 0,1° / 1,2 Гц гасится > 80 % на «средней»; поворот 90 °/с отстаёт < 2,5°; шаг 0,5° устанавливается за 3 с; «выкл» — без изменений; рывок 30° — сразу.
 - `Renderer`: стабилизатор после калибровки сетки; `AppDelegate`: подменю «Стабилизация», ключ `stabilization`.
+
+## Conclusion
+
+Outcome: стабилизатор One Euro для отрисовки (выкл/слабая/средняя/сильная), пульсоподобное покачивание гасится > 80 %; пользователь: «стало лучше, но ещё есть» — остаток, вероятно, качание оправы на носу или FOV 36°.
+
+Invariants:
+- «Выкл» — без изменений (тест); прыжок курсора использует тот же сглаженный head, что и картинка.

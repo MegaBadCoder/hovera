@@ -1,6 +1,6 @@
 # Курсор между виртуальными мониторами и экраном Mac
 
-**Status:** executing
+**Status:** done
 **Branch:** cursor-to-mac (поверх magnetometer-yaw-correction)
 **Worktree:** none
 **Mode:** interactive (дизайн и план — по отчёту агента, автоапрув пользователя)
@@ -44,3 +44,18 @@ TDD: yes (цели взгляда, правило прыжка, переходы
 - `MouseTap`: в `mouseMoved` — `remappedCursor`, затем прыжок к взгляду.
 - `Renderer`: контур якоря MacBook при включённой сетке.
 - README: хоткеи.
+
+## Conclusion
+
+Outcome: курсор переходит к панели или MacBook по взгляду (якорь ⌃⌥B, ⌃⌥J), переходы панель↔MacBook пропорциональные, дисплей очков закрыт забором.
+
+Invariants:
+- Курсор не остаётся на дисплее очков — `fencedCursor` на `mouseMoved` и на всех перетаскиваниях; тесты `CursorRemapTests`.
+- Один прыжок за переход взгляда, не при зажатой кнопке — `CursorWarpPolicyTests`.
+- Ключи настроек не менялись; якорь в отдельном `macAnchor.v1`.
+
+Review findings:
+- Critical: забор работал только на `mouseMoved` — перетаскивание уводило курсор в дисплей очков; теперь и на `left/right/otherMouseDragged`, а курсор, уже попавший в очки, выводится в центр MacBook.
+- Important: `lastLocation` не обновлялся на правом/среднем перетаскивании и после ⌃⌥J — обновляется везде.
+
+Verified by: пользователь в очках проверил запуск и якорь; переходы краями после фикса ревью в очках не перепроверены.
