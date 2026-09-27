@@ -1,0 +1,46 @@
+# Курсор между виртуальными мониторами и экраном Mac
+
+**Status:** executing
+**Branch:** cursor-to-mac (поверх magnetometer-yaw-correction)
+**Worktree:** none
+**Mode:** interactive (дизайн и план — по отчёту агента, автоапрув пользователя)
+
+## Design
+
+**Проблема.** В раскладке macOS панели стоят рядом над MacBook, а в пространстве — где угодно; переход курсора на MacBook случаен (через тот кусок нижнего края панели, что в раскладке касается MacBook), курсор проваливается в невидимый дисплей очков, прыжок к взгляду знает только панели.
+
+**Решение (A + B + C + D из отчёта агента).**
+- A. MacBook — «якорь» в пространстве: пользователь смотрит на ноутбук и жмёт ⌃⌥B, поза сохраняется (`macAnchor.v1`). Взгляд на MacBook участвует в прыжке курсора наравне с панелями (одна цель, один прыжок за переход взгляда).
+- B. Без якоря: взгляд ниже −30° и мимо панелей считается взглядом на MacBook.
+- C. ⌃⌥J — курсор принудительно в точку взгляда (панель или MacBook).
+- D. «Забор» и честные переходы в event tap: курсор не заходит на дисплей очков; упор в нижний край панели с движением вниз → MacBook в пропорциональной точке верхнего края; уход с верхнего края MacBook → панель под взглядом (или та, куда macOS его привела) в пропорциональной точке нижнего края. Боковые переходы панель↔панель — штатные.
+
+**Отвергнуто.** Постоянная отвязка курсора (`CGAssociateMouseAndMouseCursorPosition(0)`) с собственной геометрией — всплески дельт и конфликт с системными жестами.
+
+TDD: yes (цели взгляда, правило прыжка, переходы и забор — чистые функции Core).
+
+### Invariants
+- Курсор никогда не остаётся на дисплее очков после движения мыши.
+- Прыжок к взгляду — не чаще одного раза за переход взгляда, никогда при зажатой кнопке и во время перетаскивания экрана.
+- Ключи `screens.v2`, `viewCalibration`, `magCalibration.v1` не меняются.
+- Core — только Foundation, simd, CoreGraphics.
+
+### Principles
+- Решения о переходах — чистые функции Core; event tap только применяет результат.
+
+## Plan
+
+### Phase 1 — Цели курсора (Core)
+- `Sources/RayDeskCore/CursorTarget.swift` (create): `enum CursorTarget { virtual(Int), mac }`, `struct CursorHit { target, uv }`, `struct MacAnchor { pose; static captured(head:aspect:) }` (0,5 м, ширина 0,3 м), `func cursorHit(head:screens:mac:lookDownPitch:) -> CursorHit?`.
+- `CursorWarpPolicy` → `CursorTarget` вместо `Int`.
+- Тесты: попадание в якорь, ближняя панель побеждает, fallback по наклону без якоря, мимо всего → nil, Codable; перенос тестов правила прыжка + сценарий панель→Mac→панель.
+
+### Phase 2 — Переходы и забор (Core)
+- `DisplayGeometry.swift`: `func remappedCursor(previous:proposed:delta:panels:main:glasses:preferredPanel:) -> CGPoint?`.
+- Тесты: забор очков; упор вниз в панели → Mac пропорционально; macOS увёл вниз на Mac → пропорционально; с Mac вверх → панель под взглядом; боковой переход панель↔панель → nil.
+
+### Phase 3 — Приложение
+- `AppDelegate`: якорь (⌃⌥B, меню, `macAnchor.v1`), ⌃⌥J, `onFrame` через `cursorHit`, делегат `MouseTap` на `CursorTarget`.
+- `MouseTap`: в `mouseMoved` — `remappedCursor`, затем прыжок к взгляду.
+- `Renderer`: контур якоря MacBook при включённой сетке.
+- README: хоткеи.
