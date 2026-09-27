@@ -1,6 +1,8 @@
 import AppKit
 import MetalKit
 import Carbon.HIToolbox
+import ApplicationServices
+import QuartzCore
 import simd
 import RayDeskCore
 
@@ -17,10 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
     private var statusTimer: Timer?
+    private var mouseTapLine = NSMenuItem(title: "Перетаскивание мышью: проверка разрешений…", action: nil, keyEquivalent: "")
+    private var mouseTap: MouseTap?
+    private var accessibilityTimer: Timer?
+    private var warpPolicy = CursorWarpPolicy()
+    private var lastGazeHit: GazeHit?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
         setupHotkeys()
+        setupMouseTap()
 
         guard glassesScreen()?.displayID != nil else {
             fail("Очки не найдены среди дисплеев. Подключите RayNeo и перезапустите.")
@@ -96,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
         for slot in slots { slot.stop() }
         imu?.stop()
+        accessibilityTimer?.invalidate()
+        mouseTap?.stop()
     }
 
     private func openGlassesWindow() throws {
@@ -112,6 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.slots = slots
+        renderer.onFrame = { [weak self] head in
+            guard let self else { return }
+            let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
+            lastGazeHit = hit
+            warpPolicy.observeGaze(screen: hit?.screen, at: CACurrentMediaTime())
+        }
         view.delegate = renderer
         window.contentView = view
         window.orderFrontRegardless()
@@ -129,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var head: simd_quatd { renderer?.currentHead ?? simd_quatd(ix: 0, iy: 0, iz: 0, r: 1) }
 
     private func targetScreen() -> Int {
-        gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
+        RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
     }
 
     private func saveScene() {
@@ -238,6 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
         menu.addItem(.separator())
+        menu.addItem(mouseTapLine)
+        menu.addItem(.separator())
         menu.addItem(menuItem("Выйти   ⌃⌥Q", #selector(quit)))
         item.menu = menu
         statusItem = item
@@ -258,6 +276,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(statusLine.title)
     }
 
+    private func setupMouseTap() {
+        let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+        if trusted {
+            startMouseTap()
+        } else {
+            mouseTapLine.title = "Перетаскивание мышью: нужно разрешение Accessibility"
+            log("accessibility: not trusted, waiting for permission")
+            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                guard let self, AXIsProcessTrusted() else { return }
+                accessibilityTimer?.invalidate()
+                accessibilityTimer = nil
+                startMouseTap()
+            }
+        }
+    }
+
+    private func startMouseTap() {
+        guard let tap = MouseTap(delegate: self) else {
+            fail("Не удалось создать перехватчик событий мыши (CGEvent.tapCreate вернул nil).")
+            return
+        }
+        mouseTap = tap
+        mouseTapLine.title = "⌃⌥ + тащить — двигать экран, ⌃⌥ + скролл — ближе/дальше"
+        log("mouse tap: started")
+    }
+
     private func fail(_ message: String) {
         log("ERROR \(message)")
         statusLine.title = "Ошибка — см. окно"
@@ -266,6 +310,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+}
+
+extension AppDelegate: MouseTapDelegate {
+    func screenIndex(at point: CGPoint) -> Int? {
+        slots.firstIndex { $0.displayBounds.contains(point) }
+    }
+
+    func gazeHit() -> GazeHit? { lastGazeHit }
+
+    func warpTarget(cursorScreen: Int?) -> Int? {
+        warpPolicy.warpTarget(cursorScreen: cursorScreen, buttonsDown: false, at: CACurrentMediaTime())
+    }
+
+    func bounds(of screen: Int) -> CGRect { slots[screen].displayBounds }
+
+    func pose(of screen: Int) -> ScreenPose { scene.screens[screen] }
+
+    func setPose(_ screen: Int, _ pose: ScreenPose) { scene.setPose(screen, pose) }
+
+    func dragBegan(_ screen: Int) {
+        renderer?.draggingScreen = screen
+        log("drag began: screen \(screen + 1)")
+    }
+
+    func dragEnded() {
+        renderer?.draggingScreen = nil
+        saveScene()
+        arrangeDisplays()
+    }
+
+    func scrollApplied(to screen: Int) {
+        saveScene()
+    }
+
+    func cursorScreenChanged(_ screen: Int?) {
+        renderer?.cursorScreen = screen
     }
 }
 
