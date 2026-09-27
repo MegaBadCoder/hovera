@@ -21,6 +21,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var verticalFOV = 23.6
     var showsGrid = false
     var calibration = ViewCalibration()
+    var macAnchor: MacAnchor?
     let predictionMs = 18.0
 
     var slots: [ScreenSlot] = []
@@ -149,6 +150,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gridVertexCount)
+            if let macAnchor {
+                let model = macAnchor.pose.modelMatrix
+                let corners = [SIMD4<Float>(-1, -1, 0, 1), SIMD4(1, -1, 0, 1), SIMD4(1, 1, 0, 1), SIMD4(-1, 1, 0, 1)].map { model * $0 }
+                var outline = (0..<4).flatMap { [corners[$0], corners[($0 + 1) % 4]] }
+                var anchorUniforms = Uniforms(mvp: projection * viewMatrix, border: SIMD4(0.9, 0.7, 0.2, 1))
+                encoder.setVertexBytes(&outline, length: MemoryLayout<SIMD4<Float>>.stride * outline.count, index: 1)
+                encoder.setVertexBytes(&anchorUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+                encoder.setFragmentBytes(&anchorUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: outline.count)
+            }
         }
         encoder.endEncoding()
 

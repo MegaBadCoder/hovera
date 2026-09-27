@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mouseTap: MouseTap?
     private var accessibilityTimer: Timer?
     private var warpPolicy = CursorWarpPolicy()
+    private var lastCursorHit: CursorHit?
+    private var macAnchor: MacAnchor?
     private var lastGazeHit: GazeHit?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
 
         loadCompassCalibration()
+        loadMacAnchor()
         imu = GlassesIMU(filter: filter)
         imu?.start()
 
@@ -155,11 +158,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renderer.verticalFOV = savedFOV
         }
         renderer.slots = slots
+        renderer.macAnchor = macAnchor
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
-            let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
-            lastGazeHit = hit
-            warpPolicy.observeGaze(target: hit.map { .virtual($0.screen) }, at: CACurrentMediaTime())
+            lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
+            lastCursorHit = RayDeskCore.cursorHit(head: head, screens: scene.screens, mac: macAnchor)
+            warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
         }
         view.delegate = renderer
         view.isPaused = true
@@ -336,6 +340,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("compass: disabled")
     }
 
+    private func loadMacAnchor() {
+        guard let data = UserDefaults.standard.data(forKey: "macAnchor.v1") else { return }
+        macAnchor = try! JSONDecoder().decode(MacAnchor.self, from: data)
+    }
+
+    @objc private func captureMacAnchor() {
+        guard let renderer else { return }
+        let main = CGDisplayBounds(CGMainDisplayID())
+        let anchor = MacAnchor.captured(head: renderer.currentHead, aspect: main.width / main.height)
+        macAnchor = anchor
+        renderer.macAnchor = anchor
+        UserDefaults.standard.set(try! JSONEncoder().encode(anchor), forKey: "macAnchor.v1")
+        log(String(format: "mac anchor: yaw %.1f° pitch %.1f°", anchor.pose.yaw * 180 / .pi, anchor.pose.pitch * 180 / .pi))
+        say("Экран Mac запомнен.")
+    }
+
+    @objc private func warpCursorToGaze() {
+        guard let hit = lastCursorHit else { return }
+        let point = globalPoint(uv: hit.uv, in: bounds(of: hit.target))
+        CGWarpMouseCursorPosition(point)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        log("cursor to gaze -> \(hit.target)")
+    }
+
     @objc private func toggleRecording() {
         Task { @MainActor in
             do {
@@ -432,6 +460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
         hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
         hotkeys.register(keyCode: kVK_ANSI_K) { [weak self] in self?.calibrateCompass() }
+        hotkeys.register(keyCode: kVK_ANSI_B) { [weak self] in self?.captureMacAnchor() }
+        hotkeys.register(keyCode: kVK_ANSI_J) { [weak self] in self?.warpCursorToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -454,6 +484,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
+        menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
+        menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
         menu.addItem(menuItem("Выключить компас", #selector(disableCompass)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
@@ -533,12 +565,34 @@ extension AppDelegate: MouseTapDelegate {
 
     func gazeHit() -> GazeHit? { lastGazeHit }
 
-    func warpTarget(cursorScreen: Int?) -> Int? {
-        guard case .virtual(let screen) = warpPolicy.warpTarget(cursor: cursorScreen.map { .virtual($0) }, buttonsDown: false, at: CACurrentMediaTime()) else { return nil }
-        return screen
+    func cursorHit() -> CursorHit? { lastCursorHit }
+
+    func cursorTarget(at point: CGPoint) -> CursorTarget? {
+        if let index = screenIndex(at: point) { return .virtual(index) }
+        return CGDisplayBounds(CGMainDisplayID()).contains(point) ? .mac : nil
+    }
+
+    func warpTarget(cursor: CursorTarget?) -> CursorTarget? {
+        warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
+    }
+
+    func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint? {
+        guard let glassesID = glassesScreen()?.displayID else { return nil }
+        var preferred: Int?
+        if case .virtual(let index) = lastCursorHit?.target { preferred = index }
+        return RayDeskCore.remappedCursor(previous: previous, proposed: proposed, delta: delta,
+                                          panels: slots.map(\.displayBounds), main: CGDisplayBounds(CGMainDisplayID()),
+                                          glasses: CGDisplayBounds(glassesID), preferredPanel: preferred)
     }
 
     func bounds(of screen: Int) -> CGRect { slots[screen].displayBounds }
+
+    func bounds(of target: CursorTarget) -> CGRect {
+        switch target {
+        case .virtual(let index): slots[index].displayBounds
+        case .mac: CGDisplayBounds(CGMainDisplayID())
+        }
+    }
 
     func pose(of screen: Int) -> ScreenPose { scene.screens[screen] }
 

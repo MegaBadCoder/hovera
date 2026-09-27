@@ -4,8 +4,12 @@ import RayDeskCore
 protocol MouseTapDelegate: AnyObject {
     func screenIndex(at point: CGPoint) -> Int?
     func gazeHit() -> GazeHit?
-    func warpTarget(cursorScreen: Int?) -> Int?
+    func cursorHit() -> CursorHit?
+    func cursorTarget(at point: CGPoint) -> CursorTarget?
+    func warpTarget(cursor: CursorTarget?) -> CursorTarget?
+    func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint?
     func bounds(of screen: Int) -> CGRect
+    func bounds(of target: CursorTarget) -> CGRect
     func pose(of screen: Int) -> ScreenPose
     func setPose(_ screen: Int, _ pose: ScreenPose)
     func dragBegan(_ screen: Int)
@@ -19,6 +23,7 @@ final class MouseTap {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var draggingScreen: Int?
+    private var lastLocation: CGPoint?
 
     init?(delegate: MouseTapDelegate) {
         self.delegate = delegate
@@ -93,6 +98,7 @@ final class MouseTap {
             }
         case .leftMouseDragged:
             updateCursorScreen(event: event, delegate: delegate)
+            lastLocation = event.location
             if let target = draggingScreen {
                 applyDrag(target: target, event: event, delegate: delegate)
                 return nil
@@ -114,10 +120,16 @@ final class MouseTap {
                 return nil
             }
         case .mouseMoved:
-            let cursorScreen = delegate.screenIndex(at: event.location)
-            delegate.cursorScreenChanged(cursorScreen)
             guard draggingScreen == nil else { break }
-            return warp(event: event, cursorScreen: cursorScreen, delegate: delegate)
+            let previous = lastLocation ?? event.location
+            let delta = CGVector(dx: event.getDoubleValueField(.mouseEventDeltaX), dy: event.getDoubleValueField(.mouseEventDeltaY))
+            if let remapped = delegate.remappedCursor(previous: previous, proposed: event.location, delta: delta) {
+                move(event, to: remapped)
+            }
+            warp(event: event, delegate: delegate)
+            delegate.cursorScreenChanged(delegate.screenIndex(at: event.location))
+            lastLocation = event.location
+            return Unmanaged.passUnretained(event)
         default:
             break
         }
@@ -140,18 +152,18 @@ final class MouseTap {
         delegate.cursorScreenChanged(delegate.screenIndex(at: event.location))
     }
 
-    private func warp(event: CGEvent, cursorScreen: Int?, delegate: MouseTapDelegate) -> Unmanaged<CGEvent>? {
-        guard let target = delegate.warpTarget(cursorScreen: cursorScreen),
-              let hit = delegate.gazeHit(), hit.screen == target
-        else {
-            return Unmanaged.passUnretained(event)
-        }
-        let point = globalPoint(uv: hit.uv, in: delegate.bounds(of: target))
+    private func warp(event: CGEvent, delegate: MouseTapDelegate) {
+        guard let target = delegate.warpTarget(cursor: delegate.cursorTarget(at: event.location)),
+              let hit = delegate.cursorHit(), hit.target == target
+        else { return }
+        move(event, to: globalPoint(uv: hit.uv, in: delegate.bounds(of: target)))
+        log("mouse warp -> \(target)")
+    }
+
+    private func move(_ event: CGEvent, to point: CGPoint) {
         event.location = point
         CGWarpMouseCursorPosition(point)
         // без этого macOS ещё ~0,25 с после варпа игнорирует движение мыши
         CGAssociateMouseAndMouseCursorPosition(1)
-        log("mouse warp -> screen \(target + 1)")
-        return Unmanaged.passUnretained(event)
     }
 }
