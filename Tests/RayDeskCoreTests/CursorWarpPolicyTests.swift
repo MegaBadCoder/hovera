@@ -52,3 +52,34 @@ import Testing
     let target2 = policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.36)
     #expect(target2 == 2)
 }
+
+@Test func warpFiresOnlyOncePerGazeArrival() {
+    var policy = CursorWarpPolicy()
+    policy.observeGaze(screen: 1, at: 0)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.25) == 1)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.3) == nil)
+    #expect(policy.warpTarget(cursorScreen: nil, buttonsDown: false, at: 5) == nil)
+}
+
+@Test func warpFiresAgainAfterGazeLeavesAndReturns() {
+    var policy = CursorWarpPolicy()
+    policy.observeGaze(screen: 1, at: 0)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.25) == 1)
+    policy.observeGaze(screen: 0, at: 1)
+    policy.observeGaze(screen: 1, at: 2)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 2.25) == 1)
+}
+
+@Test func cursorAlreadyOnGazedScreenUsesUpTheWarp() {
+    var policy = CursorWarpPolicy()
+    policy.observeGaze(screen: 1, at: 0)
+    #expect(policy.warpTarget(cursorScreen: 1, buttonsDown: false, at: 0.25) == nil)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.5) == nil)
+}
+
+@Test func warpIsNotUsedUpWhileButtonsAreDown() {
+    var policy = CursorWarpPolicy()
+    policy.observeGaze(screen: 1, at: 0)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: true, at: 0.25) == nil)
+    #expect(policy.warpTarget(cursorScreen: 0, buttonsDown: false, at: 0.3) == 1)
+}
