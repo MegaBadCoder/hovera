@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "RayDesk",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     targets: [
         .target(name: "CGVirtualDisplayPrivate", path: "Sources/CGVirtualDisplayPrivate"),
         .target(name: "RayDeskCore", path: "Sources/RayDeskCore"),

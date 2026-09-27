@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCalibrating = false
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private var driftLearner = DriftLearner(coefficient: 0)
+    private let recorder = GlassesRecorder()
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
     private var statusTimer: Timer?
@@ -105,6 +106,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if recorder.isRecording {
+            let done = DispatchSemaphore(value: 0)
+            Task.detached { [recorder] in
+                do {
+                    try await recorder.stop()
+                } catch {
+                    log("glasses recording stop on quit failed: \(error)")
+                }
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 2)
+        }
         saveScene()
         for slot in slots { slot.stop() }
         imu?.stop()
@@ -270,6 +283,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(String(format: "DRIFT learned %.4f", driftLearner.coefficient))
     }
 
+    @objc private func toggleRecording() {
+        Task { @MainActor in
+            do {
+                if recorder.isRecording {
+                    try await recorder.stop()
+                    log("glasses recording saved: \(recorder.fileURL?.path ?? "")")
+                } else {
+                    guard let glassesID = glassesScreen()?.displayID else { return }
+                    let url = try await recorder.start(displayID: glassesID)
+                    log("glasses recording started: \(url.path)")
+                }
+            } catch {
+                fail("Запись видео очков: \(error)")
+            }
+        }
+    }
+
     @objc private func resetDriftLearning() {
         driftLearner = DriftLearner(coefficient: 0)
         filter.yawDriftPerRadian = 0
@@ -353,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
         hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
+        hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -374,6 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Сбросить обучение дрейфа", #selector(resetDriftLearning)))
+        menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
