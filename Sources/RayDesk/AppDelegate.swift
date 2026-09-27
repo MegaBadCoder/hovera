@@ -270,12 +270,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(try! JSONEncoder().encode(mount), forKey: "viewCalibration")
     }
 
-    @objc private func gatherScreens() {
+    @objc private func recenterWorld() {
         guard let renderer else { return }
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
-        scene.gatherInFront(head: renderer.calibration.apply(to: filter.orientation(predictAhead: 0)))
+    }
+
+    @objc private func gatherScreens() {
+        guard let renderer else { return }
+        scene.gatherInFront(head: renderer.currentHead)
         saveScene()
         arrangeDisplays()
     }
@@ -322,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
         hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
-        hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.gatherScreens() }
+        hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -341,7 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
         menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Всё перед собой: «вперёд» = куда смотрю   ⌃⌥R", #selector(gatherScreens)))
+        menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
+        menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
