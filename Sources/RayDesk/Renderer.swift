@@ -20,11 +20,17 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     var verticalFOV = 23.6
     var showsGrid = false
-    var calibration = ViewCalibration()
-    var stabilizer = OrientationStabilizer(level: .off)
+    let headPipeline: HeadPipeline
+    var calibration: ViewCalibration {
+        get { headPipeline.calibration }
+        set { headPipeline.calibration = newValue }
+    }
+    var stabilizer: OrientationStabilizer {
+        get { headPipeline.stabilizer }
+        set { headPipeline.stabilizer = newValue }
+    }
     private var lastFrameTime = CACurrentMediaTime()
     var macAnchor: MacAnchor?
-    let predictionMs = 18.0
 
     var slots: [ScreenSlot] = []
     var cursorScreen: Int?
@@ -46,6 +52,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.queue = queue
         self.scene = scene
         self.filter = filter
+        headPipeline = HeadPipeline(filter: filter)
 
         view.device = device
         view.colorPixelFormat = .bgra8Unorm_srgb
@@ -103,7 +110,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
-        let head = stabilizer.filter(calibration.apply(to: filter.orientation(predictAhead: predictionMs / 1000)), dt: now - lastFrameTime)
+        let head = headPipeline.renderedOrientation(frameInterval: now - lastFrameTime)
         lastFrameTime = now
         currentHead = head
         scene.tick(head: head)

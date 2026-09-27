@@ -160,6 +160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.slots = slots
         renderer.macAnchor = macAnchor
         renderer.stabilizer.level = savedStabilization()
+        if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
+            renderer.headPipeline.predictionSeconds = savedPrediction / 1000
+        }
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
             lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
@@ -454,6 +457,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(renderer.showsGrid, forKey: "showsGrid")
         log("grid \(renderer.showsGrid ? "on" : "off")")
     }
+    @objc private func morePrediction() { changePrediction(by: 5) }
+    @objc private func lessPrediction() { changePrediction(by: -5) }
+    private func changePrediction(by milliseconds: Double) {
+        guard let renderer else { return }
+        let value = min(80, max(0, renderer.headPipeline.predictionSeconds * 1000 + milliseconds))
+        renderer.headPipeline.predictionSeconds = value / 1000
+        UserDefaults.standard.set(value, forKey: "predictionMs")
+        log(String(format: "prediction %.0f ms", value))
+    }
     @objc private func widerFOV() { changeFOV(by: 0.5) }
     @objc private func narrowerFOV() { changeFOV(by: -0.5) }
     private func changeFOV(by delta: Double) {
@@ -490,6 +502,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleWindow() }
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
         hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
+        hotkeys.register(keyCode: kVK_ANSI_9) { [weak self] in self?.lessPrediction() }
+        hotkeys.register(keyCode: kVK_ANSI_0) { [weak self] in self?.morePrediction() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
         hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
         hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
@@ -539,6 +553,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
         menu.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
         menu.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
+        menu.addItem(menuItem("Предсказание больше   ⌃⌥0", #selector(morePrediction)))
+        menu.addItem(menuItem("Предсказание меньше   ⌃⌥9", #selector(lessPrediction)))
         menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
         menu.addItem(.separator())
         menu.addItem(mouseTapLine)
@@ -562,7 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
                                   filter.magnetometerCalibration == nil ? "✗" : "✓")
         let compass = filter.magnetometerCalibration == nil ? "компас ✗" : String(format: "компас ✓ %.3f °/с", filter.verticalBias * 180 / .pi)
-        log(statusLine.title + String(format: " · %@ · %.1f °C", compass, imu?.temperature ?? 0))
+        log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс", compass, imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000))
     }
 
     private func setupMouseTap() {
