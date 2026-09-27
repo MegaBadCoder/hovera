@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         renderer.slots = slots
         renderer.macAnchor = macAnchor
+        renderer.stabilizer.level = savedStabilization()
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
             lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
@@ -434,6 +435,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
         arrangeDisplays()
     }
+    private func savedStabilization() -> StabilizationLevel {
+        UserDefaults.standard.string(forKey: "stabilization").flatMap(StabilizationLevel.init(rawValue:)) ?? .medium
+    }
+
+    @objc private func chooseStabilization(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let level = StabilizationLevel(rawValue: raw) else { return }
+        UserDefaults.standard.set(level.rawValue, forKey: "stabilization")
+        renderer?.stabilizer.level = level
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == raw ? .on : .off }
+        log("stabilization \(raw)")
+    }
+
     @objc private func toggleGrid() {
         guard let renderer else { return }
         renderer.showsGrid.toggle()
@@ -512,6 +525,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
+        let stabilization = NSMenuItem(title: "Стабилизация картинки", action: nil, keyEquivalent: "")
+        let levels = NSMenu()
+        for (level, title) in [(StabilizationLevel.off, "Выключена"), (.weak, "Слабая"), (.medium, "Средняя"), (.strong, "Сильная")] {
+            let item = menuItem(title, #selector(chooseStabilization(_:)))
+            item.representedObject = level.rawValue
+            item.state = level == savedStabilization() ? .on : .off
+            levels.addItem(item)
+        }
+        stabilization.submenu = levels
+        menu.addItem(stabilization)
         menu.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
         menu.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
         menu.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
