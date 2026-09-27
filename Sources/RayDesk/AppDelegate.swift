@@ -437,7 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
     }
     private func savedStabilization() -> StabilizationLevel {
-        UserDefaults.standard.string(forKey: "stabilization").flatMap(StabilizationLevel.init(rawValue:)) ?? .medium
+        UserDefaults.standard.string(forKey: "stabilization").flatMap(StabilizationLevel.init(rawValue:)) ?? .off
     }
 
     @objc private func chooseStabilization(_ sender: NSMenuItem) {

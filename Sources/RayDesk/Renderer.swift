@@ -21,7 +21,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var verticalFOV = 23.6
     var showsGrid = false
     var calibration = ViewCalibration()
-    var stabilizer = OrientationStabilizer(level: .medium)
+    var stabilizer = OrientationStabilizer(level: .off)
     private var lastFrameTime = CACurrentMediaTime()
     var macAnchor: MacAnchor?
     let predictionMs = 18.0
