@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var imu: GlassesIMU?
     private var slots: [ScreenSlot] = []
     private var window: NSWindow?
+    private var glassesView: MTKView?
+    private var frameLink: CADisplayLink?
     private var renderer: Renderer?
     private var isCalibrating = false
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
@@ -103,7 +105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func renderFrame() {
+        glassesView?.draw()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        frameLink?.invalidate()
         if recorder.isRecording {
             let done = DispatchSemaphore(value: 0)
             Task.detached { [recorder] in
@@ -151,7 +158,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             warpPolicy.observeGaze(screen: hit?.screen, at: CACurrentMediaTime())
         }
         view.delegate = renderer
+        view.isPaused = true
+        view.enableSetNeedsDisplay = false
         window.contentView = view
+        glassesView = view
+        let link = screen.displayLink(target: self, selector: #selector(renderFrame))
+        link.add(to: .main, forMode: .common)
+        frameLink = link
         window.orderFrontRegardless()
         self.window = window
         self.renderer = renderer

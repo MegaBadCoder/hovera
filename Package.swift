@@ -16,7 +16,8 @@ let package = Package(
         .testTarget(
             name: "RayDeskCoreTests",
             dependencies: ["RayDeskCore"],
-            path: "Tests/RayDeskCoreTests"
+            path: "Tests/RayDeskCoreTests",
+            exclude: ["Fixtures"]
         ),
     ]
 )

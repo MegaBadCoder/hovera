@@ -98,6 +98,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        dispatchPrecondition(condition: .onQueue(.main))
         let head = calibration.apply(to: filter.orientation(predictAhead: predictionMs / 1000))
         currentHead = head
         scene.tick(head: head)
