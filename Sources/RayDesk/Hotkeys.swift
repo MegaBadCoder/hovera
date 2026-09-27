@@ -22,8 +22,11 @@ final class Hotkeys {
         let id = UInt32(handlers.count + 1)
         handlers[id] = action
         var ref: EventHotKeyRef?
-        RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), EventHotKeyID(signature: OSType(0x5244534B), id: id),
-                            GetApplicationEventTarget(), 0, &ref)
+        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), EventHotKeyID(signature: OSType(0x5244534B), id: id),
+                                         GetApplicationEventTarget(), 0, &ref)
+        if status != noErr {
+            log("hotkey keyCode \(keyCode) not registered: \(status)")
+        }
         refs.append(ref)
     }
 }

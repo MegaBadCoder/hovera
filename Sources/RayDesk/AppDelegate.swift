@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
+        renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
         if let savedFOV = UserDefaults.standard.object(forKey: "verticalFOV") as? Double {
             renderer.verticalFOV = savedFOV
         }
@@ -224,12 +225,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(String(format: "MARK взгляд %.1f° / %.1f°", yp.yaw * 180 / .pi, yp.pitch * 180 / .pi))
     }
     @objc private func gatherScreens() {
-        scene.gatherInFront(head: head)
+        filter.alignYawToZero()
+        scene.gatherInFront(head: filter.orientation(predictAhead: 0))
         saveScene()
         arrangeDisplays()
     }
     @objc private func toggleGrid() {
-        renderer?.showsGrid.toggle()
+        guard let renderer else { return }
+        renderer.showsGrid.toggle()
+        UserDefaults.standard.set(renderer.showsGrid, forKey: "showsGrid")
+        log("grid \(renderer.showsGrid ? "on" : "off")")
     }
     @objc private func widerFOV() { changeFOV(by: 0.5) }
     @objc private func narrowerFOV() { changeFOV(by: -0.5) }
@@ -257,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
         hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
+        hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.gatherScreens() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -275,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
         menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
+        menu.addItem(menuItem("Всё перед собой: «вперёд» = куда смотрю   ⌃⌥R", #selector(gatherScreens)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
