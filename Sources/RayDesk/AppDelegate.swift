@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var renderer: Renderer?
     private var isCalibrating = false
+    private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
     private var statusTimer: Timer?
@@ -238,8 +239,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("calibration mode \(isCalibrating ? "on" : "off")")
     }
 
+    private func logCorrection(kind: String, yawDegrees: Double) {
+        let now = CACurrentMediaTime()
+        let travel = filter.travel
+        let previous = lastCorrection ?? (now, travel)
+        log(String(format: "CORRECTION %@ yaw %.1f° since %.0f s travel %.0f° yawTravel %.0f° temp %.1f °C",
+                   kind, yawDegrees, now - previous.time,
+                   (travel.total - previous.travel.total) * 180 / .pi,
+                   (travel.yaw - previous.travel.yaw) * 180 / .pi,
+                   imu?.temperature ?? 0))
+        lastCorrection = (now, travel)
+    }
+
     private func adjustCalibration(yaw: Double = 0, pitch: Double = 0, roll: Double = 0) {
         guard isCalibrating, let renderer else { return }
+        if yaw != 0 {
+            logCorrection(kind: "arrow", yawDegrees: yaw)
+        }
         renderer.calibration.yaw += yaw * .pi / 180
         renderer.calibration.pitch += pitch * .pi / 180
         renderer.calibration.roll += roll * .pi / 180
@@ -256,6 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func gatherScreens() {
         guard let renderer else { return }
+        logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
         scene.gatherInFront(head: renderer.calibration.apply(to: filter.orientation(predictAhead: 0)))

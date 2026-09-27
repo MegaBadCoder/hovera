@@ -120,3 +120,16 @@ func slowHeadRotationIsTrackedNotAbsorbedAsBias(degreesPerSecond: Double) {
     let end = yawAtEnd.reduce(0, +) / Double(yawAtEnd.count)
     #expect(abs(end - start) < 3)
 }
+
+@Test func rotationTravelAccumulatesAbsoluteAndSignedYaw() {
+    let filter = OrientationFilter()
+    let dt = 0.002
+    for _ in 0..<500 { filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt) }
+    let start = filter.travel
+    for _ in 0..<500 { filter.update(gyro: SIMD3(0, 90 * degree, 0), accel: SIMD3(0, 1, 0), dt: dt) }
+    for _ in 0..<250 { filter.update(gyro: SIMD3(0, -90 * degree, 0), accel: SIMD3(0, 1, 0), dt: dt) }
+    let end = filter.travel
+
+    #expect(abs((end.total - start.total) / degree - 135) < 0.5)
+    #expect(abs((end.yaw - start.yaw) / degree - 45) < 0.5)
+}

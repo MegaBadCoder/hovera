@@ -11,6 +11,7 @@ public final class OrientationFilter {
     private let lock = NSLock()
     private var q = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private var omega = SIMD3<Double>(repeating: 0)
+    private var accumulatedTravel = RotationTravel(total: 0, yaw: 0)
     private var bias = SIMD3<Double>(repeating: 0)
     private var integral = SIMD3<Double>(repeating: 0)
     private var initialized = false
@@ -74,6 +75,8 @@ public final class OrientationFilter {
 
         var w = gyro - bias
         omega = w
+        accumulatedTravel.total += length(w) * dt
+        accumulatedTravel.yaw += q.act(w).y * dt
         if accelNorm > 0.7, accelNorm < 1.3 {
             let measuredUp = accel / accelNorm
             let estimatedUp = q.inverse.act(SIMD3(0, 1, 0))
@@ -93,6 +96,13 @@ public final class OrientationFilter {
         stillTime = still ? stillTime + dt : 0
         guard stillTime > BiasTracking.stillSeconds else { return }
         bias += (smoothedGyro - bias) * min(1, dt / BiasTracking.learningSeconds)
+    }
+
+    /// Сколько голова повернулась с момента создания фильтра, по гироскопу за вычетом смещения нуля.
+    public var travel: RotationTravel {
+        lock.lock()
+        defer { lock.unlock() }
+        return accumulatedTravel
     }
 
     /// Текущая оценка смещения нуля гироскопа, рад/с, в осях датчика.
@@ -129,4 +139,12 @@ private enum BiasTracking {
     static let stillRate = 0.2 * Double.pi / 180
     static let stillSeconds = 1.5
     static let learningSeconds = 10.0
+}
+
+/// Накопленный поворот головы, радианы.
+public struct RotationTravel: Equatable {
+    /// Сумма модулей поворота по всем осям.
+    public var total: Double
+    /// Поворот вокруг мировой вертикали со знаком: плюс — влево.
+    public var yaw: Double
 }
