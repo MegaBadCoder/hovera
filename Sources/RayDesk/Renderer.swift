@@ -20,6 +20,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     var verticalFOV = 23.6
     var showsGrid = false
+    var calibration = ViewCalibration()
     let predictionMs = 18.0
 
     var slots: [ScreenSlot] = []
@@ -97,7 +98,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        let head = filter.orientation(predictAhead: predictionMs / 1000)
+        let head = calibration.apply(to: filter.orientation(predictAhead: predictionMs / 1000))
         currentHead = head
         scene.tick(head: head)
         onFrame?(head)

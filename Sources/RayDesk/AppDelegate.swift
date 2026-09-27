@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var slots: [ScreenSlot] = []
     private var window: NSWindow?
     private var renderer: Renderer?
+    private var isCalibrating = false
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
     private var statusTimer: Timer?
@@ -122,6 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
+        if let data = UserDefaults.standard.data(forKey: "viewCalibration") {
+            renderer.calibration = try JSONDecoder().decode(ViewCalibration.self, from: data)
+        }
         if let savedFOV = UserDefaults.standard.object(forKey: "verticalFOV") as? Double {
             renderer.verticalFOV = savedFOV
         }
@@ -224,9 +228,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let yp = head.yawPitch
         log(String(format: "MARK взгляд %.1f° / %.1f°", yp.yaw * 180 / .pi, yp.pitch * 180 / .pi))
     }
+    @objc private func toggleCalibration() {
+        guard let renderer else { return }
+        isCalibrating.toggle()
+        renderer.showsGrid = isCalibrating || UserDefaults.standard.bool(forKey: "showsGrid")
+        if !isCalibrating {
+            saveCalibration()
+        }
+        log("calibration mode \(isCalibrating ? "on" : "off")")
+    }
+
+    private func adjustCalibration(yaw: Double = 0, pitch: Double = 0, roll: Double = 0) {
+        guard isCalibrating, let renderer else { return }
+        renderer.calibration.yaw += yaw * .pi / 180
+        renderer.calibration.pitch += pitch * .pi / 180
+        renderer.calibration.roll += roll * .pi / 180
+        let c = renderer.calibration
+        log(String(format: "calibration yaw %.1f° pitch %.1f° roll %.1f°", c.yaw * 180 / .pi, c.pitch * 180 / .pi, c.roll * 180 / .pi))
+    }
+
+    private func saveCalibration() {
+        guard let renderer else { return }
+        let mount = ViewCalibration(yaw: 0, pitch: renderer.calibration.pitch, roll: renderer.calibration.roll)
+        UserDefaults.standard.set(try! JSONEncoder().encode(mount), forKey: "viewCalibration")
+    }
+
     @objc private func gatherScreens() {
+        guard let renderer else { return }
         filter.alignYawToZero()
-        scene.gatherInFront(head: filter.orientation(predictAhead: 0))
+        renderer.calibration.yaw = 0
+        scene.gatherInFront(head: renderer.calibration.apply(to: filter.orientation(predictAhead: 0)))
         saveScene()
         arrangeDisplays()
     }
@@ -254,8 +285,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupHotkeys() {
         hotkeys.register(keyCode: kVK_Space) { [weak self] in self?.placeHere() }
         hotkeys.register(keyCode: kVK_ANSI_G) { [weak self] in self?.toggleGrab() }
-        hotkeys.register(keyCode: kVK_UpArrow) { [weak self] in self?.closer() }
-        hotkeys.register(keyCode: kVK_DownArrow) { [weak self] in self?.farther() }
+        hotkeys.register(keyCode: kVK_UpArrow) { [weak self] in
+            guard let self else { return }
+            isCalibrating ? adjustCalibration(pitch: 0.5) : closer()
+        }
+        hotkeys.register(keyCode: kVK_DownArrow) { [weak self] in
+            guard let self else { return }
+            isCalibrating ? adjustCalibration(pitch: -0.5) : farther()
+        }
+        hotkeys.register(keyCode: kVK_LeftArrow) { [weak self] in self?.adjustCalibration(yaw: 1) }
+        hotkeys.register(keyCode: kVK_RightArrow) { [weak self] in self?.adjustCalibration(yaw: -1) }
+        hotkeys.register(keyCode: kVK_ANSI_Comma) { [weak self] in self?.adjustCalibration(roll: 0.5) }
+        hotkeys.register(keyCode: kVK_ANSI_Period) { [weak self] in self?.adjustCalibration(roll: -0.5) }
+        hotkeys.register(keyCode: kVK_ANSI_C) { [weak self] in self?.toggleCalibration() }
         hotkeys.register(keyCode: kVK_ANSI_Equal) { [weak self] in self?.bigger() }
         hotkeys.register(keyCode: kVK_ANSI_Minus) { [weak self] in self?.smaller() }
         hotkeys.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleWindow() }
@@ -287,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
+        menu.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
         menu.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
         menu.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
         menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
