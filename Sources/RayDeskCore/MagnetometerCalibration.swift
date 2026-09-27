@@ -4,7 +4,7 @@ import simd
 /// Калибровка магнитометра очков: собственное поле очков (hard-iron) и параметры поля Земли.
 ///
 /// Поле в сырых единицах датчика по осям тела; углы в радианах.
-public struct MagnetometerCalibration: Codable, Equatable {
+public struct MagnetometerCalibration: Codable, Equatable, Sendable {
     /// Центр сферы показаний — постоянное поле самих очков.
     public var center: SIMD3<Double>
     /// Модуль поля Земли после вычитания `center`.

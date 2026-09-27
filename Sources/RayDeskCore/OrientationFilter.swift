@@ -17,6 +17,9 @@ public final class OrientationFilter {
     private var stillTime = 0.0
     private var smoothedGyro = SIMD3<Double>(repeating: 0)
     private(set) var sampleCount = 0
+    private var compass: MagnetometerCalibration?
+    private var magneticReference: Double?
+    private var verticalBiasEstimate = 0.0
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
     /// накопил достаточно отсчётов для доверенной оценки ориентации.
@@ -30,6 +33,31 @@ public final class OrientationFilter {
 
     public init() {}
 
+    /// Калибровка магнитометра. Пока она задана, компас медленно оценивает смещение нуля
+    /// гироскопа вокруг мировой вертикали и вычитает его; `nil` выключает компас.
+    /// Любая установка сбрасывает опорное направление поля и оценку смещения.
+    public var magnetometerCalibration: MagnetometerCalibration? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return compass
+        }
+        set {
+            lock.lock()
+            compass = newValue
+            magneticReference = nil
+            verticalBiasEstimate = 0
+            lock.unlock()
+        }
+    }
+
+    /// Оценка смещения нуля гироскопа вокруг мировой вертикали по компасу, рад/с.
+    public var verticalBias: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return verticalBiasEstimate
+    }
+
     /// Сбрасывает фильтр к неинициализированному состоянию, обнуляет
     /// накопленную калибровку смещения гироскопа.
     public func reset() {
@@ -37,6 +65,8 @@ public final class OrientationFilter {
         initialized = false
         stillTime = 0
         smoothedGyro = bias
+        magneticReference = nil
+        verticalBiasEstimate = 0
         lock.unlock()
     }
 
@@ -53,6 +83,12 @@ public final class OrientationFilter {
     ///   - dt: время с предыдущего отсчёта, секунды; вызовы с `dt <= 0` или
     ///     `dt >= 0.1` игнорируются.
     public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, dt: Double) {
+        update(gyro: gyro, accel: accel, magnetometer: nil, dt: dt)
+    }
+
+    /// То же, что `update(gyro:accel:dt:)`, плюс показание магнитометра по осям тела
+    /// (сырые единицы) для компаса; `nil` — в этом отсчёте поля нет.
+    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, magnetometer: SIMD3<Double>?, dt: Double) {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -84,6 +120,31 @@ public final class OrientationFilter {
         if angle > 1e-9 {
             q = simd_normalize(q * simd_quatd(angle: angle, axis: normalize(w)))
         }
+        if let compass {
+            q = simd_normalize(simd_quatd(angle: -verticalBiasEstimate * dt, axis: SIMD3(0, 1, 0)) * q)
+            if let magnetometer {
+                observeCompass(magnetometer, calibration: compass, dt: dt)
+            }
+        }
+    }
+
+    private func observeCompass(_ magnetometer: SIMD3<Double>, calibration: MagnetometerCalibration, dt: Double) {
+        let field = magnetometer - calibration.center
+        let magnitude = length(field)
+        guard abs(magnitude / calibration.radius - 1) < Compass.maxFieldDeviation else { return }
+        let dip = acos(max(-1, min(1, dot(field / magnitude, q.inverse.act(SIMD3(0, 1, 0))))))
+        guard abs(dip - calibration.dip) < Compass.maxDipDeviation else { return }
+        let world = q.act(field)
+        guard length(SIMD2(world.x, world.z)) > Compass.minHorizontalShare * calibration.radius else { return }
+
+        let heading = atan2(world.x, world.z)
+        guard let reference = magneticReference else {
+            magneticReference = heading
+            return
+        }
+        let error = atan2(sin(heading - reference), cos(heading - reference))
+        verticalBiasEstimate += Compass.integralGain * error * dt
+        q = simd_normalize(simd_quatd(angle: -Compass.proportionalGain * error * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
     private func trackBias(gyro: SIMD3<Double>, accel: SIMD3<Double>, accelNorm: Double, dt: Double) {
@@ -126,6 +187,9 @@ public final class OrientationFilter {
         lock.lock()
         let yp = q.yawPitch
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
+        if let reference = magneticReference {
+            magneticReference = atan2(sin(reference - yp.yaw), cos(reference - yp.yaw))
+        }
         lock.unlock()
     }
 }
@@ -148,4 +212,12 @@ public struct RotationTravel: Equatable {
 private enum TiltCorrection {
     static let maxAccelDeviation = 0.05
     static let maxTurnRate = 30 * Double.pi / 180
+}
+
+private enum Compass {
+    static let maxFieldDeviation = 0.03
+    static let maxDipDeviation = 5 * Double.pi / 180
+    static let minHorizontalShare = 0.2
+    static let proportionalGain = 1.0 / 8
+    static let integralGain = proportionalGain * proportionalGain / 4
 }
