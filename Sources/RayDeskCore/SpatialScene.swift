@@ -89,6 +89,20 @@ public final class SpatialScene {
         screens[grabbed].pitch = min(maxPitch, max(-maxPitch, gaze.pitch + grabOffset.pitch))
     }
 
+    /// Выстраивает все экраны в ряд по центру взгляда, как в `defaultLayout`, сохраняя
+    /// их количество, дистанцию, ширину и соотношение сторон. Отпускает захваченный экран.
+    public func gatherInFront(head: simd_quatd) {
+        let gaze = head.yawPitch
+        let layout = SpatialScene.defaultLayout(count: screens.count, aspect: screens[0].aspect)
+        for index in screens.indices {
+            screens[index].yaw = gaze.yaw + layout[index].yaw
+            screens[index].pitch = gaze.pitch
+            screens[index].distance = layout[index].distance
+            screens[index].width = layout[index].width
+        }
+        grabbed = nil
+    }
+
     /// Изменяет дистанцию экрана `index`, умножая на `factor`, в пределах 0.4…6 м.
     public func adjustDistance(_ index: Int, by factor: Double) {
         screens[index].distance = min(maxDistance, max(minDistance, screens[index].distance * factor))

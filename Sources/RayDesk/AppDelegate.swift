@@ -219,6 +219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
     }
 
+    @objc private func markReference() {
+        let yp = head.yawPitch
+        log(String(format: "MARK взгляд %.1f° / %.1f°", yp.yaw * 180 / .pi, yp.pitch * 180 / .pi))
+    }
+    @objc private func gatherScreens() {
+        scene.gatherInFront(head: head)
+        saveScene()
+        arrangeDisplays()
+    }
     @objc private func toggleGrid() {
         renderer?.showsGrid.toggle()
     }
@@ -247,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleWindow() }
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
         hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
+        hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -265,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
         menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
         menu.addItem(.separator())
+        menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
@@ -293,7 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0)
-        log(statusLine.title)
+        let bias = filter.gyroBias * 180 / .pi
+        log(statusLine.title + String(format: " · bias %.3f %.3f %.3f °/с · %.1f °C", bias.x, bias.y, bias.z, imu?.temperature ?? 0))
     }
 
     private func setupMouseTap() {

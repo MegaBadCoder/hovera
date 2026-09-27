@@ -19,7 +19,8 @@ public func uv(of point: CGPoint, in bounds: CGRect) -> SIMD2<Double>? {
 ///
 /// Виртуальные экраны выстраиваются в ряд над `main` слева направо по убыванию
 /// `screenYaws`, вплотную друг к другу, по центру над `main`. Дисплей очков
-/// ставится вплотную под `main`, выровненный по левому краю.
+/// ставится слева от самого левого экрана, по его верхнему краю: нижний край `main`
+/// остаётся свободным, и Dock не уезжает на дисплей очков.
 ///
 /// - Parameters:
 ///   - screenYaws: yaw каждого экрана (радианы), в исходном порядке.
@@ -38,6 +39,7 @@ public func arrangeDisplays(screenYaws: [Double], screenSizes: [CGSize], main: C
         origins[index] = CGPoint(x: (x).rounded(), y: y.rounded())
         x += size.width
     }
-    let glassesOrigin = CGPoint(x: main.minX.rounded(), y: main.maxY.rounded())
+    let leftmost = origins[order[0]]
+    let glassesOrigin = CGPoint(x: (leftmost.x - glasses.width).rounded(), y: leftmost.y)
     return (origins, glassesOrigin)
 }

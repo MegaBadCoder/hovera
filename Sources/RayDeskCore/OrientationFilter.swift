@@ -95,6 +95,13 @@ public final class OrientationFilter {
         bias += (smoothedGyro - bias) * min(1, dt / BiasTracking.learningSeconds)
     }
 
+    /// Текущая оценка смещения нуля гироскопа, рад/с, в осях датчика.
+    public var gyroBias: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return bias
+    }
+
     /// Экстраполирует текущую ориентацию вперёд на заданное время по
     /// последней угловой скорости.
     ///

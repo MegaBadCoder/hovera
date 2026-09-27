@@ -15,6 +15,7 @@ final class GlassesIMU {
     private var samplesSinceLastRead = 0
     private var lastReadTime = Date()
     private(set) var isConnected = false
+    private(set) var temperature = 0.0
 
     init(filter: OrientationFilter) {
         self.filter = filter
@@ -87,6 +88,7 @@ final class GlassesIMU {
 
     private func handle(report: UnsafeMutablePointer<UInt8>, length: CFIndex) {
         guard let sample = decoder.decode(UnsafeBufferPointer(start: report, count: length)) else { return }
+        temperature = Double(UnsafeRawPointer(report + 28).loadUnaligned(as: Float32.self))
         filter.update(gyro: sample.gyro, accel: sample.accel, dt: sample.dt)
         counterLock.lock()
         samplesSinceLastRead += 1

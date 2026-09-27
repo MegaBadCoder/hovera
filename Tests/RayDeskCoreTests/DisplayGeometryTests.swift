@@ -61,10 +61,18 @@ private func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
     }
 }
 
-@Test func arrangeDisplaysGlassesBelowMainLeftAligned() {
-    let main = CGRect(x: 0, y: 500, width: 1440, height: 900)
-    let result = arrangeDisplays(screenYaws: [0], screenSizes: [CGSize(width: 400, height: 300)], main: main, glasses: CGSize(width: 300, height: 200))
-    #expect(result.glasses == CGPoint(x: main.minX, y: main.maxY))
+@Test func arrangeDisplaysGlassesLeftOfRowTopAlignedKeepsMainBottomEdgeFree() {
+    let main = CGRect(x: 0, y: 0, width: 1512, height: 982)
+    let sizes = [CGSize(width: 1920, height: 1080), CGSize(width: 1920, height: 1080)]
+    let glasses = CGSize(width: 1600, height: 900)
+    let result = arrangeDisplays(screenYaws: [0.4, -0.4], screenSizes: sizes, main: main, glasses: glasses)
+
+    let rowLeft = result.screens.map(\.x).min()!
+    let rowTop = result.screens.map(\.y).min()!
+    #expect(result.glasses == CGPoint(x: rowLeft - glasses.width, y: rowTop))
+    let glassesRect = CGRect(origin: result.glasses, size: glasses)
+    #expect(glassesRect.maxY <= main.minY || glassesRect.minX >= main.maxX || glassesRect.maxX <= main.minX)
+    #expect(glassesRect.minY < main.maxY)
 }
 
 @Test func arrangeDisplaysNoPairwiseOverlapForVaryingScreenCounts() {

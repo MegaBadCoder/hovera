@@ -148,3 +148,19 @@ private let degree = Double.pi / 180
     #expect(decoded.count == 4)
     #expect(decoded == Array(five.prefix(4)))
 }
+
+@Test func gatherInFrontCentersScreensOnGazeAndKeepsCount() {
+    let scene = SpatialScene(screens: [
+        ScreenPose(yaw: 70 * .pi / 180, pitch: 0.3, distance: 2, width: 1.2, aspect: 16.0 / 9.0),
+        ScreenPose(yaw: -0.3, pitch: 0.28, distance: 1.5, width: 0.9, aspect: 16.0 / 9.0),
+    ])
+    let head = yawPitchQuat(yaw: 30 * .pi / 180, pitch: -10 * .pi / 180)
+    scene.gatherInFront(head: head)
+
+    #expect(scene.screens.count == 2)
+    let meanYaw = scene.screens.map(\.yaw).reduce(0, +) / 2
+    #expect(abs(meanYaw - 30 * .pi / 180) < 1e-9)
+    #expect(scene.screens.allSatisfy { abs($0.pitch - (-10 * .pi / 180)) < 1e-9 })
+    #expect(scene.screens[0].yaw > scene.screens[1].yaw)
+    #expect(scene.grabbed == nil)
+}
