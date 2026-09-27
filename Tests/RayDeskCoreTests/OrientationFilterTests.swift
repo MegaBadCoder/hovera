@@ -134,20 +134,3 @@ func slowHeadRotationIsTrackedNotAbsorbedAsBias(degreesPerSecond: Double) {
     #expect(abs((end.yaw - start.yaw) / degree - 45) < 0.5)
 }
 
-@Test func yawDriftCompensationTurnsWorldAgainstMotionWithoutTilting() {
-    let filter = OrientationFilter()
-    filter.yawDriftPerRadian = 0.01
-    let dt = 0.002
-    for _ in 0..<500 { filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt) }
-    let before = filter.orientation(predictAhead: 0).yawPitch
-    let travelBefore = filter.travel.total
-    for cycle in 0..<10 {
-        let rate = (cycle % 2 == 0 ? 60.0 : -60.0) * degree
-        for _ in 0..<500 { filter.update(gyro: SIMD3(0, rate, 0), accel: SIMD3(0, 1, 0), dt: dt) }
-    }
-    let after = filter.orientation(predictAhead: 0).yawPitch
-    let travel = filter.travel.total - travelBefore
-
-    #expect(abs((after.yaw - before.yaw) - (-0.01 * travel)) < 0.2 * degree)
-    #expect(abs(after.pitch - before.pitch) < 0.1 * degree)
-}

@@ -18,7 +18,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var renderer: Renderer?
     private var isCalibrating = false
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
-    private var driftLearner = DriftLearner(coefficient: 0)
     private let recorder = GlassesRecorder()
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
@@ -43,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
         arrangeDisplays()
 
-        setupDriftCompensation()
         imu = GlassesIMU(filter: filter)
         imu?.start()
 
@@ -264,23 +262,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    (travel.yaw - previous.travel.yaw) * 180 / .pi,
                    imu?.temperature ?? 0))
         lastCorrection = (now, travel)
-        if kind == "recenter" {
-            driftLearner.recordCorrection(yaw: yawDegrees * .pi / 180, at: now, travel: travel.total)
-        }
-    }
-
-    private func setupDriftCompensation() {
-        let saved = UserDefaults.standard.object(forKey: "yawDriftPerRadian") as? Double
-        driftLearner = DriftLearner(coefficient: saved ?? 0.0033)
-        filter.yawDriftPerRadian = driftLearner.coefficient
-        log(String(format: "drift compensation %.4f", driftLearner.coefficient))
-    }
-
-    private func settleDriftLearning() {
-        guard driftLearner.settle(at: CACurrentMediaTime()) else { return }
-        filter.yawDriftPerRadian = driftLearner.coefficient
-        UserDefaults.standard.set(driftLearner.coefficient, forKey: "yawDriftPerRadian")
-        log(String(format: "DRIFT learned %.4f", driftLearner.coefficient))
     }
 
     @objc private func toggleRecording() {
@@ -300,12 +281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func resetDriftLearning() {
-        driftLearner = DriftLearner(coefficient: 0)
-        filter.yawDriftPerRadian = 0
-        UserDefaults.standard.set(0.0, forKey: "yawDriftPerRadian")
-        log("drift compensation reset")
-    }
 
     private func adjustCalibration(yaw: Double = 0, pitch: Double = 0, roll: Double = 0) {
         guard isCalibrating, let renderer else { return }
@@ -404,7 +379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
-        menu.addItem(menuItem("Сбросить обучение дрейфа", #selector(resetDriftLearning)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
@@ -430,14 +404,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
-        settleDriftLearning()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0)
         let bias = filter.gyroBias * 180 / .pi
-        log(statusLine.title + String(format: " · bias %.3f %.3f %.3f °/с · %.1f °C · drift %.4f", bias.x, bias.y, bias.z, imu?.temperature ?? 0, filter.yawDriftPerRadian))
+        log(statusLine.title + String(format: " · bias %.3f %.3f %.3f °/с · %.1f °C", bias.x, bias.y, bias.z, imu?.temperature ?? 0))
     }
 
     private func setupMouseTap() {
