@@ -16,6 +16,7 @@ final class GlassesIMU {
     private var lastReadTime = Date()
     private(set) var isConnected = false
     private(set) var temperature = 0.0
+    private var compassFitter: HardIronFitter?
 
     init(filter: OrientationFilter) {
         self.filter = filter
@@ -31,6 +32,20 @@ final class GlassesIMU {
 
     func stop() {
         if let runLoop { CFRunLoopStop(runLoop) }
+    }
+
+    func startCompassCalibration() {
+        counterLock.lock()
+        compassFitter = HardIronFitter()
+        counterLock.unlock()
+    }
+
+    func finishCompassCalibration() -> HardIronFitter? {
+        counterLock.lock()
+        defer { counterLock.unlock() }
+        let fitter = compassFitter
+        compassFitter = nil
+        return fitter
     }
 
     func takeSampleRate() -> Int {
@@ -88,10 +103,13 @@ final class GlassesIMU {
 
     private func handle(report: UnsafeMutablePointer<UInt8>, length: CFIndex) {
         guard let sample = decoder.decode(UnsafeBufferPointer(start: report, count: length)) else { return }
-        temperature = Double(UnsafeRawPointer(report + 28).loadUnaligned(as: Float32.self))
-        filter.update(gyro: sample.gyro, accel: sample.accel, dt: sample.dt)
+        temperature = sample.temperature
+        filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer, dt: sample.dt)
         counterLock.lock()
         samplesSinceLastRead += 1
+        if let magnetometer = sample.magnetometer, compassFitter != nil {
+            compassFitter?.add(magnetometer: magnetometer, up: simd_normalize(sample.accel))
+        }
         counterLock.unlock()
     }
 }

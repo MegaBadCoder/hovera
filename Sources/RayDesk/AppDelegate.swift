@@ -3,6 +3,7 @@ import MetalKit
 import Carbon.HIToolbox
 import ApplicationServices
 import QuartzCore
+import AVFoundation
 import simd
 import RayDeskCore
 
@@ -21,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCalibrating = false
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private let recorder = GlassesRecorder()
+    private let speech = AVSpeechSynthesizer()
+    private var isCalibratingCompass = false
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
     private var statusTimer: Timer?
@@ -44,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
         arrangeDisplays()
 
+        loadCompassCalibration()
         imu = GlassesIMU(filter: filter)
         imu?.start()
 
@@ -277,6 +281,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastCorrection = (now, travel)
     }
 
+    private func say(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "ru-RU")
+        speech.speak(utterance)
+        log("say: \(text)")
+    }
+
+    private func loadCompassCalibration() {
+        guard let data = UserDefaults.standard.data(forKey: "magCalibration.v1") else {
+            log("compass: not calibrated")
+            return
+        }
+        filter.magnetometerCalibration = try! JSONDecoder().decode(MagnetometerCalibration.self, from: data)
+        log("compass: calibration loaded")
+    }
+
+    @objc private func calibrateCompass() {
+        guard !isCalibratingCompass, let imu else { return }
+        isCalibratingCompass = true
+        imu.startCompassCalibration()
+        say("Калибровка компаса. Двадцать пять секунд медленно поворачивайте голову во все стороны: влево, вправо, вверх, вниз и к плечам.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.finishCompassCalibration() }
+    }
+
+    private func finishCompassCalibration() {
+        isCalibratingCompass = false
+        guard let fitter = imu?.finishCompassCalibration() else { return }
+        do {
+            let calibration = try fitter.result()
+            UserDefaults.standard.set(try! JSONEncoder().encode(calibration), forKey: "magCalibration.v1")
+            filter.magnetometerCalibration = calibration
+            log(String(format: "compass calibrated: center %.1f %.1f %.1f radius %.2f dip %.1f° samples %d",
+                       calibration.center.x, calibration.center.y, calibration.center.z,
+                       calibration.radius, calibration.dip * 180 / .pi, fitter.sampleCount))
+            say("Компас откалиброван.")
+        } catch MagnetometerCalibrationError.tooFewSamples(let count) {
+            log("compass calibration failed: too few samples \(count)")
+            say("Не получилось: от очков пришло мало данных компаса. Попробуйте ещё раз.")
+        } catch MagnetometerCalibrationError.insufficientCoverage(let spread) {
+            log(String(format: "compass calibration failed: coverage %.4f", spread))
+            say("Не получилось: мало поворотов. Повторите и крутите головой шире, особенно наклоны к плечам.")
+        } catch MagnetometerCalibrationError.noisyField(let spread) {
+            log(String(format: "compass calibration failed: field spread %.3f", spread))
+            say("Не получилось: поле сильно искажено. Отодвиньтесь от магнитов и колонок и повторите.")
+        } catch {
+            fail("Калибровка компаса: \(error)")
+        }
+    }
+
+    @objc private func disableCompass() {
+        UserDefaults.standard.removeObject(forKey: "magCalibration.v1")
+        filter.magnetometerCalibration = nil
+        log("compass: disabled")
+    }
+
     @objc private func toggleRecording() {
         Task { @MainActor in
             do {
@@ -372,6 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
         hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
         hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
+        hotkeys.register(keyCode: kVK_ANSI_K) { [weak self] in self?.calibrateCompass() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
@@ -393,6 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
+        menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
+        menu.addItem(menuItem("Выключить компас", #selector(disableCompass)))
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
@@ -419,9 +481,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°",
+        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
-                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0)
+                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
+                                  filter.magnetometerCalibration == nil ? "✗" : "✓")
         let compass = filter.magnetometerCalibration == nil ? "компас ✗" : String(format: "компас ✓ %.3f °/с", filter.verticalBias * 180 / .pi)
         log(statusLine.title + String(format: " · %@ · %.1f °C", compass, imu?.temperature ?? 0))
     }
