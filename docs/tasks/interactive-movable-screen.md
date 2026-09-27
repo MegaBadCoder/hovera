@@ -1,6 +1,6 @@
 # Интерактивные перемещаемые экраны в RayDesk
 
-**Status:** executing
+**Status:** verifying
 **Branch:** interactive-movable-screen
 **Worktree:** none
 **Mode:** interactive
@@ -120,6 +120,7 @@ Approach: сначала вынести существующую чистую л
 - 2.3: очки ставятся под MacBook `(main.minX, main.maxY)`, а не слева — слева они перекрывают ряд виртуальных экранов, если выше MacBook.
 - 2.6: добавлен `SpatialScene.setPose(_:_:)` — нужен приложению, чтобы записать результат перетаскивания мышью.
 - Инвариант «Core — только Foundation и simd»: Core импортирует и `CoreGraphics` ради `CGRect`/`CGPoint`/`CGVector` из сигнатур плана; Foundation без него не даёт `CGRect.minX`. Системных вызовов CoreGraphics в Core нет.
+- 4.1: `MouseTapDelegate` получил `scrollApplied(to:)` — чтобы сохранять сцену после ⌃⌥-скролла; вызовы глобального `gazeHit` в `AppDelegate` квалифицированы `RayDeskCore.` из-за совпадения имени с методом делегата.
 
 
 ### Hands-off decisions
