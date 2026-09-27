@@ -90,3 +90,27 @@ private func decode(_ decoder: inout RayNeoProtocol.Decoder, _ frame: [UInt8]) -
     #expect(abs(s.accel.y - 1.00294) < 0.001)
     #expect(abs(s.gyro.y - (-0.003413)) < 0.0005)
 }
+
+@Test func magnetometerIsReturnedInBodyAxes() throws {
+    var decoder = RayNeoProtocol.Decoder()
+    _ = decode(&decoder, frameA)
+    let sample = try #require(decode(&decoder, frameB))
+    let magnetometer = try #require(sample.magnetometer)
+    #expect(abs(magnetometer.x - -3.125) < 1e-6)
+    #expect(abs(magnetometer.y - 100) < 1e-6)
+    #expect(abs(magnetometer.z - -22.9492) < 1e-3)
+    #expect(abs(sample.temperature - 38.24) < 0.01)
+}
+
+@Test func placeholderMagnetometerIsDropped() throws {
+    var decoder = RayNeoProtocol.Decoder()
+    _ = decode(&decoder, frameA)
+    let sample = try #require(decode(&decoder, withTick(frameA, 0x00E082EC &+ 84)))
+    #expect(sample.magnetometer == nil)
+}
+
+@Test func carouselFixtureLoads() throws {
+    let rows = try Fixture.rows("carousel.csv.lzfse")
+    #expect(rows.count == 164_996)
+    #expect(rows.allSatisfy { $0.count == 11 })
+}

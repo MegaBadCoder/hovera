@@ -10,6 +10,10 @@ public struct IMUSample {
     public var accel: SIMD3<Double>
     /// Время с предыдущего отсчёта, секунды.
     public var dt: Double
+    /// Магнитное поле по осям тела в сырых единицах датчика, либо `nil`, если кадр несёт заглушку.
+    public var magnetometer: SIMD3<Double>?
+    /// Температура датчика, °C.
+    public var temperature: Double
 }
 
 /// Протокол USB HID очков RayNeo: идентификаторы устройства, команды
@@ -24,6 +28,7 @@ public enum RayNeoProtocol {
     private static let imuFrameType: UInt8 = 0x65
     private static let ticksPerSecond = 10_000.0
     private static let standardGravity = 9.80665
+    private static let magnetometerPlaceholder = 3200.0
 
     /// Декодер потока HID-отчётов IMU в `IMUSample`.
     ///
@@ -37,7 +42,8 @@ public enum RayNeoProtocol {
         /// Разбирает один HID-отчёт.
         ///
         /// - Parameter report: сырые байты отчёта (минимум 44 байта, заголовок
-        ///   `0x99 0x65`, ускорение и гироскоп float32 LE, тик u32 LE на смещении 40).
+        ///   `0x99 0x65`, ускорение и гироскоп float32 LE, тик u32 LE на смещении 40;
+        ///   магнитометр float32 LE на смещениях 32, 36, 52 — при отчёте короче 56 байт он `nil`).
         /// - Returns: `IMUSample` с ускорением в g и гироскопом в рад/с, либо
         ///   `nil`, если отчёт не распознан, это первый кадр или тик повторился.
         public mutating func decode(_ report: UnsafeBufferPointer<UInt8>) -> IMUSample? {
@@ -50,7 +56,15 @@ public enum RayNeoProtocol {
 
             let accel = SIMD3(float(4), float(8), float(12)) / standardGravity
             let gyro = SIMD3(float(16), float(20), float(24)) * (.pi / 180)
-            return IMUSample(gyro: gyro, accel: accel, dt: Double(tick &- lastTick) / ticksPerSecond)
+            var magnetometer: SIMD3<Double>?
+            if report.count >= 56 {
+                let raw = SIMD3(float(32), float(36), float(52))
+                if abs(raw.x) != magnetometerPlaceholder, abs(raw.y) != magnetometerPlaceholder {
+                    magnetometer = SIMD3(raw.y, -raw.x, raw.z)
+                }
+            }
+            return IMUSample(gyro: gyro, accel: accel, dt: Double(tick &- lastTick) / ticksPerSecond,
+                             magnetometer: magnetometer, temperature: float(28))
         }
     }
 }
