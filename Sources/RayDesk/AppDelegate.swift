@@ -148,8 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
-        if let data = UserDefaults.standard.data(forKey: "viewCalibration") {
-            renderer.calibration = try JSONDecoder().decode(ViewCalibration.self, from: data)
+        if let calibration = loadSetting(ViewCalibration.self, key: "viewCalibration", name: "Настройка сетки") {
+            renderer.calibration = calibration
         }
         if let savedFOV = UserDefaults.standard.object(forKey: "verticalFOV") as? Double {
             renderer.verticalFOV = savedFOV
@@ -288,12 +288,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("say: \(text)")
     }
 
+    private func loadSetting<Value: Decodable>(_ type: Value.Type, key: String, name: String) -> Value? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: key)
+            log("\(key): stored value unreadable, reset: \(error)")
+            say("\(name) сброшена, настройте заново.")
+            return nil
+        }
+    }
+
+    private func saveSetting<Value: Encodable>(_ value: Value, key: String) {
+        do {
+            UserDefaults.standard.set(try JSONEncoder().encode(value), forKey: key)
+        } catch {
+            log("\(key): not saved: \(error)")
+            say("Не удалось сохранить настройку.")
+        }
+    }
+
     private func loadCompassCalibration() {
-        guard let data = UserDefaults.standard.data(forKey: "magCalibration.v1") else {
+        guard let calibration = loadSetting(MagnetometerCalibration.self, key: "magCalibration.v1", name: "Калибровка компаса") else {
             log("compass: not calibrated")
             return
         }
-        filter.magnetometerCalibration = try! JSONDecoder().decode(MagnetometerCalibration.self, from: data)
+        filter.magnetometerCalibration = calibration
         log("compass: calibration loaded")
     }
 
@@ -310,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let fitter = imu?.finishCompassCalibration() else { return }
         do {
             let calibration = try fitter.result()
-            UserDefaults.standard.set(try! JSONEncoder().encode(calibration), forKey: "magCalibration.v1")
+            saveSetting(calibration, key: "magCalibration.v1")
             filter.magnetometerCalibration = calibration
             log(String(format: "compass calibrated: center %.1f %.1f %.1f radius %.2f dip %.1f° samples %d",
                        calibration.center.x, calibration.center.y, calibration.center.z,
@@ -370,7 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func saveCalibration() {
         guard let renderer else { return }
         let mount = ViewCalibration(yaw: 0, pitch: renderer.calibration.pitch, roll: renderer.calibration.roll)
-        UserDefaults.standard.set(try! JSONEncoder().encode(mount), forKey: "viewCalibration")
+        saveSetting(mount, key: "viewCalibration")
     }
 
     @objc private func recenterWorld() {
