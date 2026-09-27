@@ -362,8 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadMacAnchor() {
-        guard let data = UserDefaults.standard.data(forKey: "macAnchor.v1") else { return }
-        macAnchor = try! JSONDecoder().decode(MacAnchor.self, from: data)
+        macAnchor = loadSetting(MacAnchor.self, key: "macAnchor.v1", name: "Позиция экрана Mac")
     }
 
     @objc private func captureMacAnchor() {
@@ -372,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let anchor = MacAnchor.captured(head: renderer.currentHead, aspect: main.width / main.height)
         macAnchor = anchor
         renderer.macAnchor = anchor
-        UserDefaults.standard.set(try! JSONEncoder().encode(anchor), forKey: "macAnchor.v1")
+        saveSetting(anchor, key: "macAnchor.v1")
         log(String(format: "mac anchor: yaw %.1f° pitch %.1f°", anchor.pose.yaw * 180 / .pi, anchor.pose.pitch * 180 / .pi))
         say("Экран Mac запомнен.")
     }
