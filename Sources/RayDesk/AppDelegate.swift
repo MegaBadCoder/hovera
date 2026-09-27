@@ -159,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
             lastGazeHit = hit
-            warpPolicy.observeGaze(screen: hit?.screen, at: CACurrentMediaTime())
+            warpPolicy.observeGaze(target: hit.map { .virtual($0.screen) }, at: CACurrentMediaTime())
         }
         view.delegate = renderer
         view.isPaused = true
@@ -534,7 +534,8 @@ extension AppDelegate: MouseTapDelegate {
     func gazeHit() -> GazeHit? { lastGazeHit }
 
     func warpTarget(cursorScreen: Int?) -> Int? {
-        warpPolicy.warpTarget(cursorScreen: cursorScreen, buttonsDown: false, at: CACurrentMediaTime())
+        guard case .virtual(let screen) = warpPolicy.warpTarget(cursor: cursorScreen.map { .virtual($0) }, buttonsDown: false, at: CACurrentMediaTime()) else { return nil }
+        return screen
     }
 
     func bounds(of screen: Int) -> CGRect { slots[screen].displayBounds }

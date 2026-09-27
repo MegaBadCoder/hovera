@@ -6,7 +6,7 @@ import simd
 /// (радианы, yaw положителен влево, pitch положителен вверх), `distance` —
 /// расстояние до экрана (метры), `width` — физическая ширина экрана (метры),
 /// `aspect` — отношение ширины к высоте.
-public struct ScreenPose: Codable, Equatable {
+public struct ScreenPose: Codable, Equatable, Sendable {
     public var yaw: Double
     public var pitch: Double
     public var distance: Double
