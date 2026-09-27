@@ -121,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
+        if let savedFOV = UserDefaults.standard.object(forKey: "verticalFOV") as? Double {
+            renderer.verticalFOV = savedFOV
+        }
         renderer.slots = slots
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
@@ -216,6 +219,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
     }
 
+    @objc private func toggleGrid() {
+        renderer?.showsGrid.toggle()
+    }
+    @objc private func widerFOV() { changeFOV(by: 0.5) }
+    @objc private func narrowerFOV() { changeFOV(by: -0.5) }
+    private func changeFOV(by delta: Double) {
+        guard let renderer else { return }
+        renderer.verticalFOV = min(60, max(10, renderer.verticalFOV + delta))
+        UserDefaults.standard.set(renderer.verticalFOV, forKey: "verticalFOV")
+        log(String(format: "vertical FOV %.1f°", renderer.verticalFOV))
+    }
     @objc private func toggleWindow() {
         guard let window else { return }
         window.isVisible ? window.orderOut(nil) : window.orderFrontRegardless()
@@ -232,6 +246,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_Minus) { [weak self] in self?.smaller() }
         hotkeys.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleWindow() }
         hotkeys.register(keyCode: kVK_ANSI_Q) { [weak self] in self?.quit() }
+        hotkeys.register(keyCode: kVK_ANSI_D) { [weak self] in self?.toggleGrid() }
+        hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
+        hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
     }
 
     private func setupMenu() {
@@ -252,6 +269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
+        menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
+        menu.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
+        menu.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
         menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
         menu.addItem(.separator())
         menu.addItem(mouseTapLine)
@@ -270,9 +290,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d",
+        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
-                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count)
+                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0)
         log(statusLine.title)
     }
 

@@ -7,6 +7,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let gridPipeline: MTLRenderPipelineState
+    private let gridVertices: MTLBuffer
+    private let gridVertexCount: Int
     private let depthState: MTLDepthStencilState
     private let sampler: MTLSamplerState
     private let placeholder: MTLTexture
@@ -15,7 +18,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let scene: SpatialScene
     private let filter: OrientationFilter
 
-    let verticalFOV = 23.6
+    var verticalFOV = 23.6
+    var showsGrid = false
     let predictionMs = 18.0
 
     var slots: [ScreenSlot] = []
@@ -54,6 +58,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         descriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
         descriptor.rasterSampleCount = view.sampleCount
         pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+
+        let gridDescriptor = MTLRenderPipelineDescriptor()
+        gridDescriptor.vertexFunction = library.makeFunction(name: "gridVertex")
+        gridDescriptor.fragmentFunction = library.makeFunction(name: "gridFragment")
+        gridDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        gridDescriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
+        gridDescriptor.rasterSampleCount = view.sampleCount
+        gridPipeline = try device.makeRenderPipelineState(descriptor: gridDescriptor)
+
+        let lines = Renderer.worldGridLines()
+        gridVertexCount = lines.count
+        gridVertices = device.makeBuffer(bytes: lines, length: MemoryLayout<SIMD4<Float>>.stride * lines.count)!
 
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .less
@@ -124,6 +140,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
+        if showsGrid {
+            var gridUniforms = Uniforms(mvp: projection * viewMatrix, border: SIMD4(0.15, 0.75, 0.3, 1))
+            encoder.setRenderPipelineState(gridPipeline)
+            encoder.setVertexBuffer(gridVertices, offset: 0, index: 1)
+            encoder.setVertexBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gridVertexCount)
+        }
         encoder.endEncoding()
 
         commandBuffer.present(drawable)
@@ -154,6 +178,27 @@ final class Renderer: NSObject, MTKViewDelegate {
         return cvTexture
     }
 
+    private static func worldGridLines() -> [SIMD4<Float>] {
+        let radius = 3.0
+        func point(yawDegrees: Double, pitchDegrees: Double) -> SIMD4<Float> {
+            let p = yawPitchQuat(yaw: yawDegrees * .pi / 180, pitch: pitchDegrees * .pi / 180).act(SIMD3(0, 0, -radius))
+            return SIMD4(Float(p.x), Float(p.y), Float(p.z), 1)
+        }
+        var lines: [SIMD4<Float>] = []
+        for pitch in [-30.0, -15.0, 0.0, 15.0, 30.0] {
+            for yaw in stride(from: 0.0, to: 360.0, by: 2.0) {
+                lines.append(point(yawDegrees: yaw, pitchDegrees: pitch))
+                lines.append(point(yawDegrees: yaw + 2, pitchDegrees: pitch))
+            }
+        }
+        for yaw in stride(from: 0.0, to: 360.0, by: 15.0) {
+            let halfHeight = yaw == 0 ? 30.0 : 3.0
+            lines.append(point(yawDegrees: yaw, pitchDegrees: -halfHeight))
+            lines.append(point(yawDegrees: yaw, pitchDegrees: halfHeight))
+        }
+        return lines
+    }
+
     enum RendererError: Error { case noMetal }
 
     private static let shaderSource = """
@@ -170,6 +215,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         out.position = u.mvp * float4(c, 0, 1);
         out.uv = float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
         return out;
+    }
+
+    vertex float4 gridVertex(uint vid [[vertex_id]], constant Uniforms &u [[buffer(0)]], const device float4 *points [[buffer(1)]]) {
+        return u.mvp * points[vid];
+    }
+
+    fragment float4 gridFragment(constant Uniforms &u [[buffer(0)]]) {
+        return float4(u.border.rgb, 1);
     }
 
     fragment float4 screenFragment(VertexOut in [[stage_in]],
