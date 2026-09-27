@@ -1,9 +1,8 @@
 import Foundation
 import simd
 
-/// Комплементарный фильтр ориентации головы по данным гироскопа и
-/// акселерометра очков (алгоритм Madgwick/Mahony с обучаемым смещением
-/// гироскопа).
+/// Комплементарный фильтр ориентации головы: гироскоп интегрируется, наклон
+/// поправляется по акселерометру, курс — по компасу, если задана его калибровка.
 ///
 /// Мировая и связанная система координат: X вправо, Y вверх, Z назад
 /// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
@@ -12,10 +11,7 @@ public final class OrientationFilter {
     private var q = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private var omega = SIMD3<Double>(repeating: 0)
     private var accumulatedTravel = RotationTravel(total: 0, yaw: 0)
-    private var bias = SIMD3<Double>(repeating: 0)
     private var initialized = false
-    private var stillTime = 0.0
-    private var smoothedGyro = SIMD3<Double>(repeating: 0)
     private(set) var sampleCount = 0
     private var compass: MagnetometerCalibration?
     private var magneticReference: Double?
@@ -58,13 +54,10 @@ public final class OrientationFilter {
         return verticalBiasEstimate
     }
 
-    /// Сбрасывает фильтр к неинициализированному состоянию, обнуляет
-    /// накопленную калибровку смещения гироскопа.
+    /// Сбрасывает фильтр к неинициализированному состоянию и обнуляет оценку компаса.
     public func reset() {
         lock.lock()
         initialized = false
-        stillTime = 0
-        smoothedGyro = bias
         magneticReference = nil
         verticalBiasEstimate = 0
         lock.unlock()
@@ -104,9 +97,7 @@ public final class OrientationFilter {
             return
         }
 
-        trackBias(gyro: gyro, accel: accel, accelNorm: accelNorm, dt: dt)
-
-        var w = gyro - bias
+        var w = gyro
         omega = w
         accumulatedTravel.total += length(w) * dt
         accumulatedTravel.yaw += q.act(w).y * dt
@@ -147,26 +138,11 @@ public final class OrientationFilter {
         q = simd_normalize(simd_quatd(angle: -Compass.proportionalGain * error * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
-    private func trackBias(gyro: SIMD3<Double>, accel: SIMD3<Double>, accelNorm: Double, dt: Double) {
-        smoothedGyro += (gyro - smoothedGyro) * min(1, dt / BiasTracking.smoothingSeconds)
-        let still = length(smoothedGyro - bias) < BiasTracking.stillRate && abs(accelNorm - 1) < 0.02
-        stillTime = still ? stillTime + dt : 0
-        guard stillTime > BiasTracking.stillSeconds else { return }
-        bias += (smoothedGyro - bias) * min(1, dt / BiasTracking.learningSeconds)
-    }
-
     /// Сколько голова повернулась с момента создания фильтра, по гироскопу за вычетом смещения нуля.
     public var travel: RotationTravel {
         lock.lock()
         defer { lock.unlock() }
         return accumulatedTravel
-    }
-
-    /// Текущая оценка смещения нуля гироскопа, рад/с, в осях датчика.
-    public var gyroBias: SIMD3<Double> {
-        lock.lock()
-        defer { lock.unlock() }
-        return bias
     }
 
     /// Экстраполирует текущую ориентацию вперёд на заданное время по
@@ -194,12 +170,6 @@ public final class OrientationFilter {
     }
 }
 
-private enum BiasTracking {
-    static let smoothingSeconds = 1.0
-    static let stillRate = 0.2 * Double.pi / 180
-    static let stillSeconds = 1.5
-    static let learningSeconds = 10.0
-}
 
 /// Накопленный поворот головы, радианы.
 public struct RotationTravel: Equatable {

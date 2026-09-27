@@ -422,8 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0)
-        let bias = filter.gyroBias * 180 / .pi
-        log(statusLine.title + String(format: " · bias %.3f %.3f %.3f °/с · %.1f °C", bias.x, bias.y, bias.z, imu?.temperature ?? 0))
+        let compass = filter.magnetometerCalibration == nil ? "компас ✗" : String(format: "компас ✓ %.3f °/с", filter.verticalBias * 180 / .pi)
+        log(statusLine.title + String(format: " · %@ · %.1f °C", compass, imu?.temperature ?? 0))
     }
 
     private func setupMouseTap() {

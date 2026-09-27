@@ -38,28 +38,6 @@ private let degree = Double.pi / 180
     #expect(abs(yp.yaw - .pi / 2) < 2 * degree)
 }
 
-@Test func gyroscopeBiasIsLearnedWhileStill() {
-    let filter = OrientationFilter()
-    let dt = 0.002
-    let offset = SIMD3(0.0, 0.1 * .pi / 180, 0.0)
-    filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt)
-
-    for _ in 0..<Int(60.0 / dt) {
-        filter.update(gyro: offset, accel: SIMD3(0, 1, 0), dt: dt)
-    }
-    let yawBeforeDrift = filter.orientation(predictAhead: 0).yawPitch.yaw
-
-    let driftSeconds = 20.0
-    for _ in 0..<Int(driftSeconds / dt) {
-        filter.update(gyro: offset, accel: SIMD3(0, 1, 0), dt: dt)
-    }
-    let yawAfterDrift = filter.orientation(predictAhead: 0).yawPitch.yaw
-
-    let observedDrift = abs(yawAfterDrift - yawBeforeDrift)
-    let uncorrectedDrift = length(offset) * driftSeconds
-    #expect(observedDrift < uncorrectedDrift / 5)
-}
-
 @Test(arguments: [0.5, 1.0, 1.5])
 func slowHeadRotationIsTrackedNotAbsorbedAsBias(degreesPerSecond: Double) {
     let filter = OrientationFilter()
