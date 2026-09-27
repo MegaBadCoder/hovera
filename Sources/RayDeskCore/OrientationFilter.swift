@@ -27,6 +27,21 @@ public final class OrientationFilter {
         return initialized && sampleCount > 200
     }
 
+    /// Компенсация дрейфа «вперёд»: на сколько радиан мир поворачивается вокруг вертикали
+    /// против дрейфа на каждый радиан поворота головы. Наклон не затрагивает.
+    public var yawDriftPerRadian: Double {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return driftCompensation
+        }
+        set {
+            lock.lock()
+            driftCompensation = newValue
+            lock.unlock()
+        }
+    }
+    private var driftCompensation = 0.0
     public var kp = 0.5
     public var ki = 0.002
 
@@ -75,7 +90,8 @@ public final class OrientationFilter {
 
         var w = gyro - bias
         omega = w
-        accumulatedTravel.total += length(w) * dt
+        let travelStep = length(w) * dt
+        accumulatedTravel.total += travelStep
         accumulatedTravel.yaw += q.act(w).y * dt
         if accelNorm > 0.7, accelNorm < 1.3 {
             let measuredUp = accel / accelNorm
@@ -87,6 +103,9 @@ public final class OrientationFilter {
         let angle = length(w) * dt
         if angle > 1e-9 {
             q = simd_normalize(q * simd_quatd(angle: angle, axis: normalize(w)))
+        }
+        if driftCompensation != 0, travelStep > 0 {
+            q = simd_normalize(simd_quatd(angle: -driftCompensation * travelStep, axis: SIMD3(0, 1, 0)) * q)
         }
     }
 
