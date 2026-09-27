@@ -1,6 +1,6 @@
 # Коррекция дрейфа «вперёд» по магнитометру
 
-**Status:** reviewing
+**Status:** done
 **Branch:** magnetometer-yaw-correction
 **Worktree:** none
 **Mode:** interactive (дизайн и план — автоапрув пользователя)
@@ -78,7 +78,16 @@ Invariants:
 - Наблюдатель поворачивает мир только вокруг вертикали; ⌃⌥R без рывка (тест); Core импортирует только Foundation, simd, CoreGraphics.
 
 ## Conclusion
-<empty — filled by up:ureview>
+
+Outcome: курс поправляется компасом (калибровка ⌃⌥K, PI-наблюдатель смещения нуля по вертикали); на записи с каруселью уход 24° → 1°, в очках оценка смещения 0,32–0,37 °/с.
+
+Invariants:
+- Без калибровки курс как раньше — тест `withoutCalibrationVerticalBiasStillDrifts`.
+- Поворот только вокруг вертикали, ⌃⌥R без рывка, заморозка при искажённом поле — тесты `MagneticYawObserverTests`.
+- Core — Foundation, simd, CoreGraphics.
+
+Review findings:
+- Critical: `try!` при чтении `magCalibration.v1` ронял бы приложение на каждом запуске при испорченной записи — чтение и запись настроек (`magCalibration.v1`, `viewCalibration`) через хелперы с логом и голосовым сообщением; проверено подложенной испорченной записью.
 
 ### Deviations from plan
 - Phase 3: постоянная времени компаса 8 с вместо 20 с — на записи со скачком нуля 0,5 °/с при 20 с остаток 10°, при 8 с — 1°.
