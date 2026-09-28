@@ -457,7 +457,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let renderer else { return }
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
-        filter.trustNextStillness()
         renderer.calibration.yaw = 0
     }
 

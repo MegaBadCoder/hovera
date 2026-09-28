@@ -1,9 +1,9 @@
 import Foundation
 import simd
 
-/// Комплементарный фильтр ориентации головы: гироскоп интегрируется за вычетом нуля,
-/// выученного в покое, наклон поправляется по акселерометру, курс — по компасу, если
-/// задана его калибровка.
+/// Комплементарный фильтр ориентации головы: гироскоп интегрируется, наклон поправляется
+/// по акселерометру. Курс держит компас, если задана его калибровка; без компаса из
+/// гироскопа вычитается ноль, выученный в моменты покоя.
 ///
 /// Мировая и связанная система координат: X вправо, Y вверх, Z назад
 /// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
@@ -104,8 +104,11 @@ public final class OrientationFilter {
             return
         }
 
-        biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
-        var w = gyro - biasLearner.bias
+        var w = gyro
+        if compass == nil {
+            biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
+            w -= biasLearner.bias
+        }
         omega = w
         accumulatedTravel.total += length(w) * dt
         accumulatedTravel.yaw += q.act(w).y * dt
