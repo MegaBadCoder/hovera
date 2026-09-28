@@ -63,11 +63,12 @@ public final class SpatialScene {
         return true
     }
 
-    /// Ставит экран `index` в направлении взгляда.
+    /// Ставит экран `index` в направлении взгляда и снимает поворот в плоскости.
     public func place(_ index: Int, head: simd_quatd) {
         let gaze = head.yawPitch
         screens[index].yaw = gaze.yaw
         screens[index].pitch = gaze.pitch
+        screens[index].roll = 0
     }
 
     /// Захватывает или отпускает экран `index` под текущим взглядом.
@@ -90,7 +91,7 @@ public final class SpatialScene {
     }
 
     /// Выстраивает все экраны в ряд по центру взгляда, как в `defaultLayout`, сохраняя
-    /// их количество, дистанцию, ширину и соотношение сторон. Отпускает захваченный экран.
+    /// их количество и соотношение сторон, снимает поворот в плоскости. Отпускает захваченный экран.
     public func gatherInFront(head: simd_quatd) {
         let gaze = head.yawPitch
         let layout = SpatialScene.defaultLayout(count: screens.count, aspect: screens[0].aspect)
@@ -99,28 +100,30 @@ public final class SpatialScene {
             screens[index].pitch = gaze.pitch
             screens[index].distance = layout[index].distance
             screens[index].width = layout[index].width
+            screens[index].roll = 0
         }
         grabbed = nil
     }
 
-    /// Ставит все экраны дугой вплотную друг к другу вокруг направления взгляда, сохраняя их
-    /// порядок слева направо и ширину. Расстояние у всех — медиана текущих, высота — как у
-    /// взгляда, наклон снимается. Отпускает захваченный экран.
+    /// Ставит все экраны дугой вплотную друг к другу, сохраняя их порядок слева направо и ширину.
+    /// Средний экран встаёт по направлению взгляда на медианном расстоянии без поворота в
+    /// плоскости, со своим наклоном; остальные крепятся к соседям краями, как створки на петлях.
+    /// Отпускает захваченный экран.
     public func arrangeInArc(head: simd_quatd) {
         let gaze = head.yawPitch
         let distances = screens.map(\.distance).sorted()
-        let distance = distances[distances.count / 2]
         let order = screens.indices.sorted { wrap(screens[$0].yaw - gaze.yaw) > wrap(screens[$1].yaw - gaze.yaw) }
-        for index in screens.indices {
-            screens[index].distance = distance
-            screens[index].pitch = gaze.pitch
-            screens[index].tilt = 0
+        let middle = order.count / 2
+        let anchor = order[middle]
+        screens[anchor].yaw = gaze.yaw
+        screens[anchor].pitch = gaze.pitch
+        screens[anchor].distance = distances[distances.count / 2]
+        screens[anchor].roll = 0
+        for position in stride(from: middle - 1, through: 0, by: -1) {
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position + 1]], on: .left)
         }
-        let halves = order.map { horizontalHalfAngle(screens[$0]) }
-        var edge = gaze.yaw + halves.reduce(0, +)
-        for (position, index) in order.enumerated() {
-            screens[index].yaw = edge - halves[position]
-            edge -= 2 * halves[position]
+        for position in (middle + 1)..<order.count {
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position - 1]], on: .right)
         }
         grabbed = nil
     }
