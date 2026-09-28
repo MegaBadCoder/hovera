@@ -498,10 +498,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func arrangeInArc() {
         guard let renderer else { return }
-        scene.arrangeInArc(head: renderer.currentHead)
+        scene.arrangeInArc(head: renderer.currentHead, join: savedJoin())
         saveScene()
         arrangeDisplays()
         log("screens arranged in an arc")
+    }
+
+    private func savedJoin() -> ScreenJoin {
+        UserDefaults.standard.string(forKey: "screenJoin").flatMap(ScreenJoin.init(rawValue:)) ?? .hinge
+    }
+
+    @objc private func chooseJoin(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, ScreenJoin(rawValue: raw) != nil else { return }
+        UserDefaults.standard.set(raw, forKey: "screenJoin")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == raw ? .on : .off }
+        log("screen join \(raw)")
+    }
+
+    private func joinMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Стыковка экранов", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for (join, title) in [(ScreenJoin.hinge, "Как тройной монитор: вертикально, стык по всей длине"),
+                              (.gaze, "По взгляду: каждый экран смотрит на вас")] {
+            let option = menuItem(title, #selector(chooseJoin(_:)))
+            option.representedObject = join.rawValue
+            option.state = join == savedJoin() ? .on : .off
+            submenu.addItem(option)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func turnLeft() {
+        turnTargetScreen(by: turnStep)
+    }
+
+    @objc private func turnRight() {
+        turnTargetScreen(by: -turnStep)
+    }
+
+    private func turnTargetScreen(by angle: Double) {
+        let index = targetScreen()
+        scene.turn(index, by: angle)
+        saveScene()
+        log(String(format: "screen %d pan %.0f°", index + 1, scene.screens[index].pan * 180 / .pi))
+    }
+
+    private var turnStep: Double { 2 * .pi / 180 }
+
+    @objc private func tiltAllBack() {
+        scene.tiltAll(by: tiltStep)
+        saveScene()
+    }
+
+    @objc private func tiltAllForward() {
+        scene.tiltAll(by: -tiltStep)
+        saveScene()
     }
 
     @objc private func gatherScreens() {
@@ -625,6 +677,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltBack() }
         hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltForward() }
+        hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnLeft() }
+        hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnRight() }
+        hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllBack() }
+        hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllForward() }
         hotkeys.register(keyCode: kVK_LeftArrow) { [weak self] in self?.adjustCalibration(yaw: 1) }
         hotkeys.register(keyCode: kVK_RightArrow) { [weak self] in self?.adjustCalibration(yaw: -1) }
         hotkeys.register(keyCode: kVK_ANSI_Comma) { [weak self] in self?.adjustCalibration(roll: 0.5) }
@@ -668,6 +724,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
+        menu.addItem(joinMenu())
+        menu.addItem(menuItem("Довернуть экран влево   ⌃⌥⇧←", #selector(turnLeft)))
+        menu.addItem(menuItem("Довернуть экран вправо   ⌃⌥⇧→", #selector(turnRight)))
+        menu.addItem(menuItem("Наклонить все назад   ⌃⌥⌘↑", #selector(tiltAllBack)))
+        menu.addItem(menuItem("Наклонить все вперёд   ⌃⌥⌘↓", #selector(tiltAllForward)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
@@ -818,7 +879,7 @@ extension AppDelegate: MouseTapDelegate {
     }
 
     func snapped(_ pose: ScreenPose, screen: Int) -> ScreenPose {
-        let result = RayDeskCore.snapped(pose, index: screen, among: scene.screens, threshold: 3 * .pi / 180)
+        let result = RayDeskCore.snapped(pose, index: screen, among: scene.screens, threshold: 3 * .pi / 180, join: savedJoin())
         if result.neighbor != snapNeighbor {
             snapNeighbor = result.neighbor
             renderer?.snappedNeighbor = result.neighbor

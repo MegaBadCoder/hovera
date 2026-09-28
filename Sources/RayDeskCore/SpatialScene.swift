@@ -105,11 +105,14 @@ public final class SpatialScene {
         grabbed = nil
     }
 
-    /// Ставит все экраны дугой вплотную друг к другу, сохраняя их порядок слева направо и ширину.
-    /// Средний экран встаёт по направлению взгляда на медианном расстоянии без поворота в
-    /// плоскости, со своим наклоном; остальные крепятся к соседям краями, как створки на петлях.
-    /// Отпускает захваченный экран.
-    public func arrangeInArc(head: simd_quatd) {
+    /// Ставит все экраны дугой вплотную друг к другу, сохраняя их порядок слева направо.
+    ///
+    /// Средний экран встаёт по направлению взгляда на медианном расстоянии, без поворотов в
+    /// плоскости и вокруг вертикали; остальные крепятся к соседям краями способом `join`.
+    /// При `.hinge` это тройной монитор: все экраны получают ширину среднего и стоят вертикально,
+    /// поэтому стыки ровные по всей длине и боковые не перекашиваются. При `.gaze` ширины
+    /// сохраняются, наклон у всех — как у среднего. Отпускает захваченный экран.
+    public func arrangeInArc(head: simd_quatd, join: ScreenJoin) {
         let gaze = head.yawPitch
         let distances = screens.map(\.distance).sorted()
         let order = screens.indices.sorted { wrap(screens[$0].yaw - gaze.yaw) > wrap(screens[$1].yaw - gaze.yaw) }
@@ -119,13 +122,33 @@ public final class SpatialScene {
         screens[anchor].pitch = gaze.pitch
         screens[anchor].distance = distances[distances.count / 2]
         screens[anchor].roll = 0
+        screens[anchor].pan = 0
+        if join == .hinge {
+            screens[anchor].tilt = gaze.pitch
+            for index in screens.indices {
+                screens[index].width = screens[anchor].width
+            }
+        }
         for position in stride(from: middle - 1, through: 0, by: -1) {
-            screens[order[position]] = attached(screens[order[position]], to: screens[order[position + 1]], on: .left)
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position + 1]], on: .left, join: join)
         }
         for position in (middle + 1)..<order.count {
-            screens[order[position]] = attached(screens[order[position]], to: screens[order[position - 1]], on: .right)
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position - 1]], on: .right, join: join)
         }
         grabbed = nil
+    }
+
+    /// Наклоняет все экраны вместе на `angle` (плюс — верх от зрителя), каждый вокруг своей
+    /// горизонтальной оси; наклон каждого ограничен ±60°.
+    public func tiltAll(by angle: Double) {
+        for index in screens.indices {
+            screens[index] = tilted(screens[index], by: angle)
+        }
+    }
+
+    /// Поворачивает экран `index` вокруг вертикали на `angle` — см. `turned(_:among:by:)`.
+    public func turn(_ index: Int, by angle: Double) {
+        screens[index] = turned(index, among: screens, by: angle)
     }
 
     /// Изменяет дистанцию экрана `index`, умножая на `factor`, в пределах 0.4…6 м.

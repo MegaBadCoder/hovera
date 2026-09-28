@@ -8,7 +8,8 @@ import simd
 /// `aspect` — отношение ширины к высоте, `tilt` — наклон экрана вокруг его
 /// горизонтальной оси через центр (радианы, плюс — верх уходит от зрителя),
 /// `roll` — поворот экрана в своей плоскости вокруг луча взгляда на центр
-/// (радианы, плюс — против часовой стрелки для зрителя).
+/// (радианы, плюс — против часовой стрелки для зрителя), `pan` — поворот экрана вокруг
+/// его вертикальной оси через центр (радианы, плюс — лицо экрана поворачивается влево).
 public struct ScreenPose: Codable, Equatable, Sendable {
     public var yaw: Double
     public var pitch: Double
@@ -17,8 +18,9 @@ public struct ScreenPose: Codable, Equatable, Sendable {
     public var aspect: Double
     public var tilt: Double
     public var roll: Double
+    public var pan: Double
 
-    public init(yaw: Double, pitch: Double, distance: Double, width: Double, aspect: Double, tilt: Double = 0, roll: Double = 0) {
+    public init(yaw: Double, pitch: Double, distance: Double, width: Double, aspect: Double, tilt: Double = 0, roll: Double = 0, pan: Double = 0) {
         self.yaw = yaw
         self.pitch = pitch
         self.distance = distance
@@ -26,6 +28,7 @@ public struct ScreenPose: Codable, Equatable, Sendable {
         self.aspect = aspect
         self.tilt = tilt
         self.roll = roll
+        self.pan = pan
     }
 
     /// Строит позу по положению центра и направлениям сторон экрана в мировых осях.
@@ -44,19 +47,19 @@ public struct ScreenPose: Codable, Equatable, Sendable {
         let base = yawPitchQuat(yaw: yaw, pitch: pitch)
         let baseRight = base.act(SIMD3(1, 0, 0))
         let baseUp = base.act(SIMD3(0, 1, 0))
-        let roll = atan2(dot(right, baseUp), dot(right, baseRight))
-        let rolled = simd_quatd(angle: roll, axis: SIMD3(0, 0, 1))
-        let rolledUp = base.act(rolled.act(SIMD3(0, 1, 0)))
         let toward = base.act(SIMD3(0, 0, 1))
-        let tilt = -atan2(dot(up, toward), dot(up, rolledUp))
-        self.init(yaw: yaw, pitch: pitch, distance: distance, width: width, aspect: aspect, tilt: tilt, roll: roll)
+        let normal = cross(right, up)
+        let tilt = -asin(max(-1, min(1, dot(up, toward))))
+        let pan = atan2(-dot(right, toward), dot(normal, toward))
+        let roll = atan2(-dot(up, baseRight), dot(up, baseUp))
+        self.init(yaw: yaw, pitch: pitch, distance: distance, width: width, aspect: aspect, tilt: tilt, roll: roll, pan: pan)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case yaw, pitch, distance, width, aspect, tilt, roll
+        case yaw, pitch, distance, width, aspect, tilt, roll, pan
     }
 
-    /// Читает позу; у раскладок, сохранённых до появления наклона и поворота, `tilt` и `roll` равны 0.
+    /// Читает позу; у раскладок, сохранённых до появления наклона и поворотов, `tilt`, `roll` и `pan` равны 0.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         yaw = try container.decode(Double.self, forKey: .yaw)
@@ -66,6 +69,7 @@ public struct ScreenPose: Codable, Equatable, Sendable {
         aspect = try container.decode(Double.self, forKey: .aspect)
         tilt = try container.decodeIfPresent(Double.self, forKey: .tilt) ?? 0
         roll = try container.decodeIfPresent(Double.self, forKey: .roll) ?? 0
+        pan = try container.decodeIfPresent(Double.self, forKey: .pan) ?? 0
     }
 
     /// Направление на центр экрана относительно головы.
@@ -75,6 +79,7 @@ public struct ScreenPose: Codable, Equatable, Sendable {
 
     private var surfaceRotation: simd_quatd {
         simd_quatd(angle: roll, axis: SIMD3(0, 0, 1)) * simd_quatd(angle: -tilt, axis: SIMD3(1, 0, 0))
+            * simd_quatd(angle: pan, axis: SIMD3(0, 1, 0))
     }
 
     /// Центр экрана в мировых осях, метры.

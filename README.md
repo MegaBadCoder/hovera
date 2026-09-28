@@ -41,7 +41,9 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `R` — "forward" is where I look now (recenter). Aim at a distant reference point.
 - `Space` — put the screen under your gaze where you look; `G` — grab / release a screen.
 - `↑` / `↓` — closer / further; `=` / `-` — bigger / smaller; `⇧↑` / `⇧↓` — tilt the screen back / forward (5° steps, up to 60°).
-- `A` — arrange all screens in an arc around your gaze, edge to edge (order and widths kept).
+- `A` — arrange all screens in an arc, edge to edge. Default is a racing-style triple monitor: same size, upright, joined along the whole edge; menu → Screen joining switches to “facing you” (widths kept, each screen faces your eyes).
+- `⇧←` / `⇧→` — turn the screen under your gaze by 2°; a joined side monitor swings around the shared edge like on a real stand.
+- `⌘↑` / `⌘↓` — tilt all screens together.
 - Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
