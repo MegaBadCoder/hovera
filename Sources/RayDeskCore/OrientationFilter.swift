@@ -1,8 +1,9 @@
 import Foundation
 import simd
 
-/// Комплементарный фильтр ориентации головы: гироскоп интегрируется, наклон
-/// поправляется по акселерометру, курс — по компасу, если задана его калибровка.
+/// Комплементарный фильтр ориентации головы: гироскоп интегрируется за вычетом нуля,
+/// выученного в покое, наклон поправляется по акселерометру, курс — по компасу, если
+/// задана его калибровка.
 ///
 /// Мировая и связанная система координат: X вправо, Y вверх, Z назад
 /// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
@@ -18,6 +19,7 @@ public final class OrientationFilter {
     private var localField: (strength: Double, dip: Double)?
     private var referenceField: (strength: Double, dip: Double)?
     private var verticalBiasEstimate = 0.0
+    private var biasLearner = StillnessBiasLearner()
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
     /// накопил достаточно отсчётов для доверенной оценки ориентации.
@@ -102,7 +104,8 @@ public final class OrientationFilter {
             return
         }
 
-        var w = gyro
+        biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
+        var w = gyro - biasLearner.bias
         omega = w
         accumulatedTravel.total += length(w) * dt
         accumulatedTravel.yaw += q.act(w).y * dt
@@ -155,6 +158,35 @@ public final class OrientationFilter {
         let error = atan2(sin(heading - reference), cos(heading - reference))
         verticalBiasEstimate += Compass.integralGain * error * dt
         q = simd_normalize(simd_quatd(angle: -Compass.proportionalGain * error * dt, axis: SIMD3(0, 1, 0)) * q)
+    }
+
+    /// Смещение нуля гироскопа, выученное в моменты покоя, рад/с по осям тела.
+    public var gyroBias: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return biasLearner.bias
+    }
+
+    func configureBiasLearner(_ change: (inout StillnessBiasLearner) -> Void) {
+        lock.lock()
+        change(&biasLearner)
+        lock.unlock()
+    }
+
+    /// Ненадолго разрешает учить ноль по любым спокойным моментам — см. `StillnessBiasLearner.trustNextStillness()`.
+    public func trustNextStillness() {
+        lock.lock()
+        biasLearner.trustNextStillness()
+        lock.unlock()
+    }
+
+    /// Начинает обучение нуля с известного значения, например сохранённого с прошлого запуска.
+    ///
+    /// - Parameter bias: смещение нуля по осям тела, рад/с.
+    public func seedGyroBias(_ bias: SIMD3<Double>) {
+        lock.lock()
+        biasLearner = StillnessBiasLearner(bias: bias)
+        lock.unlock()
     }
 
     /// Сколько голова повернулась с момента создания фильтра, по гироскопу за вычетом смещения нуля.

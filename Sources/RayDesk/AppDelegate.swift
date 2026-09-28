@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var frameLink: CADisplayLink?
     private var renderer: Renderer?
     private var isCalibrating = false
+    private var statusTicks = 0
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private let recorder = GlassesRecorder()
     private let speech = AVSpeechSynthesizer()
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
 
         loadCompassCalibration()
+        loadGyroBias()
         loadMacAnchor()
         imu = GlassesIMU(filter: filter)
         imu?.start()
@@ -131,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = done.wait(timeout: .now() + 2)
         }
         saveScene()
+        saveGyroBias()
         for slot in slots { slot.stop() }
         imu?.stop()
         accessibilityTimer?.invalidate()
@@ -318,12 +321,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadCompassCalibration() {
+        guard UserDefaults.standard.bool(forKey: "compassEnabled") else {
+            log("compass: off")
+            return
+        }
         guard let calibration = loadSetting(MagnetometerCalibration.self, key: "magCalibration.v1", name: "Калибровка компаса") else {
             log("compass: not calibrated")
             return
         }
         filter.magnetometerCalibration = calibration
         log("compass: calibration loaded")
+    }
+
+    private func loadGyroBias() {
+        guard let values = UserDefaults.standard.array(forKey: "gyroBias.v1") as? [Double], values.count == 3 else { return }
+        filter.seedGyroBias(SIMD3(values[0], values[1], values[2]))
+        log(String(format: "gyro bias seeded: %.3f %.3f %.3f °/s", values[0] * 180 / .pi, values[1] * 180 / .pi, values[2] * 180 / .pi))
+    }
+
+    private func saveGyroBias() {
+        let bias = filter.gyroBias
+        UserDefaults.standard.set([bias.x, bias.y, bias.z], forKey: "gyroBias.v1")
+    }
+
+    @objc private func toggleCompass(_ sender: NSMenuItem) {
+        let enabled = !UserDefaults.standard.bool(forKey: "compassEnabled")
+        UserDefaults.standard.set(enabled, forKey: "compassEnabled")
+        sender.state = enabled ? .on : .off
+        if enabled {
+            loadCompassCalibration()
+        } else {
+            filter.magnetometerCalibration = nil
+            log("compass: off")
+        }
     }
 
     @objc private func calibrateCompass() {
@@ -340,7 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let calibration = try fitter.result()
             saveSetting(calibration, key: "magCalibration.v1")
-            filter.magnetometerCalibration = calibration
+            if UserDefaults.standard.bool(forKey: "compassEnabled") {
+                filter.magnetometerCalibration = calibration
+            }
             log(String(format: "compass calibrated: center %.1f %.1f %.1f radius %.2f dip %.1f° samples %d",
                        calibration.center.x, calibration.center.y, calibration.center.z,
                        calibration.radius, calibration.dip * 180 / .pi, fitter.sampleCount))
@@ -359,11 +391,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func disableCompass() {
-        UserDefaults.standard.removeObject(forKey: "magCalibration.v1")
-        filter.magnetometerCalibration = nil
-        log("compass: disabled")
-    }
 
     private func loadMacAnchor() {
         macAnchor = loadSetting(MacAnchor.self, key: "macAnchor.v1", name: "Позиция экрана Mac")
@@ -430,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let renderer else { return }
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
+        filter.trustNextStillness()
         renderer.calibration.yaw = 0
     }
 
@@ -534,7 +562,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
-        menu.addItem(menuItem("Выключить компас", #selector(disableCompass)))
+        let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
+        compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
+        menu.addItem(compassItem)
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
         menu.addItem(.separator())
@@ -571,13 +601,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
+        statusTicks += 1
+        if statusTicks % 30 == 0 { saveGyroBias() }
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
                                   filter.magnetometerCalibration == nil ? "✗" : "✓")
-        let compass = filter.magnetometerCalibration == nil ? "компас ✗" : String(format: "компас ✓ %.3f °/с", filter.verticalBias * 180 / .pi)
+        let learned = filter.gyroBias * 180 / .pi
+        let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
+            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас %.3f °/с", filter.verticalBias * 180 / .pi))
         log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс", compass, imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000))
     }
 

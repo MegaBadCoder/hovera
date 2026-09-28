@@ -38,22 +38,41 @@ private let degree = Double.pi / 180
     #expect(abs(yp.yaw - .pi / 2) < 2 * degree)
 }
 
+private let testField = SIMD3(0.0, -22.0, -26.0)
+
+private func fieldInHead(yaw: Double) -> SIMD3<Double> {
+    simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0)).inverse.act(testField) + SIMD3(21, 79, -28)
+}
+
 @Test(arguments: [0.5, 1.0, 1.5])
 func slowHeadRotationIsTrackedNotAbsorbedAsBias(degreesPerSecond: Double) {
     let filter = OrientationFilter()
     let dt = 0.002
+    var yaw = 0.0
     for _ in 0..<Int(5.0 / dt) {
-        filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt)
+        filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), magnetometer: fieldInHead(yaw: yaw), dt: dt)
     }
     let before = filter.orientation(predictAhead: 0).yawPitch.yaw
 
     let seconds = 20.0
+    let rate = degreesPerSecond * .pi / 180
     for _ in 0..<Int(seconds / dt) {
-        filter.update(gyro: SIMD3(0, degreesPerSecond * .pi / 180, 0), accel: SIMD3(0, 1, 0), dt: dt)
+        yaw += rate * dt
+        filter.update(gyro: SIMD3(0, rate, 0), accel: SIMD3(0, 1, 0), magnetometer: fieldInHead(yaw: yaw), dt: dt)
     }
     let turned = (filter.orientation(predictAhead: 0).yawPitch.yaw - before) * 180 / .pi
 
     #expect(abs(turned - degreesPerSecond * seconds) < 0.05 * degreesPerSecond * seconds)
+}
+
+@Test func withoutMagnetometerOnlyTurnsSlowerThanTheGateCanBeMistakenForBias() {
+    let filter = OrientationFilter()
+    let dt = 0.002
+    for _ in 0..<Int(5.0 / dt) { filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt) }
+    let before = filter.orientation(predictAhead: 0).yawPitch.yaw
+    for _ in 0..<Int(20.0 / dt) { filter.update(gyro: SIMD3(0, 1.5 * .pi / 180, 0), accel: SIMD3(0, 1, 0), dt: dt) }
+    let turned = (filter.orientation(predictAhead: 0).yawPitch.yaw - before) * 180 / .pi
+    #expect(abs(turned - 30) < 1.5)
 }
 
 @Test func headMicroMotionIsNotLearnedAsBias() {
@@ -62,11 +81,13 @@ func slowHeadRotationIsTrackedNotAbsorbedAsBias(degreesPerSecond: Double) {
     for step in 0..<Int(30.0 / dt) {
         let t = Double(step) * dt
         let sway = 1.2 * .pi / 180 * sin(2 * .pi * 0.3 * t)
-        filter.update(gyro: SIMD3(0, sway + 0.8 * .pi / 180, 0), accel: SIMD3(0, 1, 0), dt: dt)
+        let yaw = -1.2 / (2 * .pi * 0.3) * .pi / 180 * cos(2 * .pi * 0.3 * t) + 0.8 * .pi / 180 * t
+        filter.update(gyro: SIMD3(0, sway + 0.8 * .pi / 180, 0), accel: SIMD3(0, 1, 0), magnetometer: fieldInHead(yaw: yaw), dt: dt)
     }
+    let restYaw = -1.2 / (2 * .pi * 0.3) * .pi / 180 * cos(2 * .pi * 0.3 * 30) + 0.8 * .pi / 180 * 30
     let before = filter.orientation(predictAhead: 0).yawPitch.yaw
     for _ in 0..<Int(10.0 / dt) {
-        filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: dt)
+        filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), magnetometer: fieldInHead(yaw: restYaw), dt: dt)
     }
     let after = filter.orientation(predictAhead: 0).yawPitch.yaw
 

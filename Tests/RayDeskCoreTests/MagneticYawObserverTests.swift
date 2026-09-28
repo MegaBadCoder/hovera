@@ -31,10 +31,13 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     return atan2(sin(estimated - trueYaw), cos(estimated - trueYaw))
 }
 
-@Test func withoutCalibrationVerticalBiasStillDrifts() {
+@Test func withoutCompassCalibrationStillnessLearningRemovesBias() {
     let filter = OrientationFilter()
-    let trueYaw = run(filter, seconds: 60, gyroBias: SIMD3(0, 0.25 * degree, 0))
-    #expect(abs(yawError(filter, trueYaw: trueYaw) / degree - 15) < 1)
+    var trueYaw = run(filter, seconds: 30, gyroBias: SIMD3(0, 0.25 * degree, 0))
+    let settled = yawError(filter, trueYaw: trueYaw)
+    trueYaw += run(filter, seconds: 60, gyroBias: SIMD3(0, 0.25 * degree, 0), initialYaw: trueYaw)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 0.5)
+    #expect(abs(filter.gyroBias.y / degree - 0.25) < 0.02)
 }
 
 @Test func compassRemovesVerticalGyroBias() {
@@ -47,7 +50,7 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
 
     #expect(abs(errorAfter - errorBefore) / degree < 1)
     #expect(abs(errorAfter) / degree < 3)
-    #expect(abs(filter.verticalBias / degree - 0.25) < 0.03)
+    #expect(abs((filter.gyroBias.y + filter.verticalBias) / degree - 0.25) < 0.03)
 }
 
 @Test func compassWorksWhileHeadTurns() {
@@ -77,39 +80,43 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     #expect(abs(filter.orientation(predictAhead: 0).yawPitch.yaw) / degree < 0.5)
 }
 
-@Test func compassKeepsRecordedWearFromTurningLikeACarousel() throws {
+@Test func recordedWearStaysPutWithStillnessLearningAndRecenter() throws {
     let rows = try Fixture.rows("carousel.csv.lzfse")
-    var fitter = HardIronFitter()
-    for row in rows { fitter.add(magnetometer: SIMD3(row[9], -row[8], row[10]), up: simd_normalize(SIMD3(row[1], row[2], row[3]))) }
-    let fitted = try fitter.result()
+    let fitted = try TrackingReplay.compassCalibration(rows)
 
-    func headingDrift(compass: Bool) -> Double {
+    func headings(compass: Bool, recenterAt: Double?) -> [(Double, Double)] {
         let filter = OrientationFilter()
         if compass { filter.magnetometerCalibration = fitted }
         var previousTick = rows[0][0]
         var time = 0.0
-        var headings: [(Double, Double)] = []
+        var pressed = false
+        var result: [(Double, Double)] = []
         for row in rows.dropFirst() {
             let dt = (row[0] - previousTick) / 10_000
             previousTick = row[0]
             guard dt > 0, dt < 0.05 else { continue }
             time += dt
+            if let recenterAt, !pressed, time >= recenterAt {
+                filter.trustNextStillness()
+                pressed = true
+            }
             let magnetometer = SIMD3(row[9], -row[8], row[10])
             filter.update(gyro: SIMD3(row[4], row[5], row[6]) * degree, accel: SIMD3(row[1], row[2], row[3]) / 9.80665, magnetometer: magnetometer, dt: dt)
             let world = filter.orientation(predictAhead: 0).act(magnetometer - fitted.center)
-            headings.append((time, atan2(world.x, world.z)))
+            result.append((time, atan2(world.x, world.z)))
         }
-        let early = headings.filter { (100..<130).contains($0.0) }.map(\.1)
-        let late = headings.filter { (300..<330).contains($0.0) }.map(\.1)
+        return result
+    }
+    func drift(_ series: [(Double, Double)], from early: Range<Double>, to late: Range<Double>) -> Double {
         let mean = { (values: [Double]) in atan2(values.map(sin).reduce(0, +), values.map(cos).reduce(0, +)) }
-        let difference = mean(late) - mean(early)
+        let difference = mean(series.filter { late.contains($0.0) }.map(\.1)) - mean(series.filter { early.contains($0.0) }.map(\.1))
         return abs(atan2(sin(difference), cos(difference))) / degree
     }
 
-    let without = headingDrift(compass: false)
-    let with = headingDrift(compass: true)
-    #expect(without > 15)
-    #expect(with < 5)
+    let learnerOnly = headings(compass: false, recenterAt: 290)
+    #expect(drift(learnerOnly, from: 100..<130, to: 200..<230) < 3)
+    #expect(drift(learnerOnly, from: 300..<310, to: 320..<330) < 2)
+    #expect(drift(headings(compass: true, recenterAt: nil), from: 100..<130, to: 300..<330) < 3)
 }
 
 @Test func orientationDependentCompassErrorDoesNotRockTheWorld() {
@@ -141,5 +148,5 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     let settledError = yawError(filter, trueYaw: trueYaw)
     trueYaw += run(filter, seconds: 120, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settledError) / degree < 1)
-    #expect(abs(filter.verticalBias / degree - 0.25) < 0.05)
+    #expect(abs((filter.gyroBias.y + filter.verticalBias) / degree - 0.25) < 0.05)
 }
