@@ -1,6 +1,6 @@
 # Режим медитации
 
-**Status:** executing
+**Status:** verifying
 **Branch:** meditation-mode
 **Worktree:** /Users/v/projects/hovera/.worktrees/meditation-mode
 **Mode:** interactive
@@ -96,7 +96,22 @@ Approach: чистая логика и синтез в `RayDeskCore` через 
 
 
 ## Verify
-<empty — filled by up:uverify>
+
+**Result:** pending smoke in glasses
+
+Positive:
+- `swift test` — 140 тестов, из них 13 новых (переход, дыхание, синтезатор)
+- шейдеры неба компилируются в рантайме Metal; превью неба отрисовано офлайн (звёзды, туманности, планета, кольцо дыхания)
+- сборка `./build.sh` проходит
+
+Invariants:
+- пик синтезатора ≤ −1 dBFS — `neverLouderThanMinusOneDecibel` на 40 с при сильном эффекте
+- плавная громкость — `fadesInSmoothlyWithoutAClick`, `fadesOutToSilence`
+- вне медитации проход неба не выполняется (`skyAmount > 0`), экраны с непрозрачностью 1
+- курсор не прыгает в медитации — `observeGaze` и `warpTarget` пропускаются при `meditation.isActive`
+
+Notes: проверка в очках отложена — очки отключены с 12:05.
+
 
 ## Conclusion
 <empty — filled by up:ureview>
