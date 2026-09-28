@@ -23,6 +23,12 @@
 - Очки RayNeo Air-серии (USB `1bbb:af50`). Пока проверено на одной паре, отзывы о других моделях очень нужны.
 - Для сборки — Xcode 16 / Swift 6.
 
+## Скачать
+
+Возьмите `Hovera-0.1.0-macOS-arm64.zip` в [Releases](https://github.com/MegaBadCoder/hovera/releases), распакуйте и перенесите `RayDesk.app` в «Программы». Только для Mac на Apple Silicon.
+
+Сборка пока не нотаризована, поэтому macOS блокирует первый запуск: откройте её один раз, затем Системные настройки → Конфиденциальность и безопасность → «Всё равно открыть». Или выполните `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
+
 ## Сборка и запуск
 
 ```bash

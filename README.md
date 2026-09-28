@@ -23,6 +23,12 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 - RayNeo Air-series glasses (USB `1bbb:af50`). Tested on one pair so far; reports from other models are welcome.
 - Xcode 16 / Swift 6 toolchain to build.
 
+## Download
+
+Grab `Hovera-0.1.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
+
+The app is not notarized yet, so macOS blocks the first launch: open it once, then System Settings → Privacy & Security → "Open Anyway". Or run `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
+
 ## Build and run
 
 ```bash
