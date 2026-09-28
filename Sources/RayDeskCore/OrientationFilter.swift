@@ -15,6 +15,8 @@ public final class OrientationFilter {
     private(set) var sampleCount = 0
     private var compass: MagnetometerCalibration?
     private var magneticReference: Double?
+    private var localField: (strength: Double, dip: Double)?
+    private var referenceField: (strength: Double, dip: Double)?
     private var verticalBiasEstimate = 0.0
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
@@ -42,6 +44,8 @@ public final class OrientationFilter {
             lock.lock()
             compass = newValue
             magneticReference = nil
+            localField = newValue.map { ($0.radius, $0.dip) }
+            referenceField = nil
             verticalBiasEstimate = 0
             lock.unlock()
         }
@@ -59,6 +63,7 @@ public final class OrientationFilter {
         lock.lock()
         initialized = false
         magneticReference = nil
+        referenceField = nil
         verticalBiasEstimate = 0
         lock.unlock()
     }
@@ -121,16 +126,30 @@ public final class OrientationFilter {
 
     private func observeCompass(_ magnetometer: SIMD3<Double>, calibration: MagnetometerCalibration, dt: Double) {
         let field = magnetometer - calibration.center
-        let magnitude = length(field)
-        guard abs(magnitude / calibration.radius - 1) < Compass.maxFieldDeviation else { return }
-        let dip = acos(max(-1, min(1, dot(field / magnitude, q.inverse.act(SIMD3(0, 1, 0))))))
-        guard abs(dip - calibration.dip) < Compass.maxDipDeviation else { return }
+        let strength = length(field)
+        guard strength > 0 else { return }
+        let dip = acos(max(-1, min(1, dot(field / strength, q.inverse.act(SIMD3(0, 1, 0))))))
+
+        var local = localField ?? (calibration.radius, calibration.dip)
+        let adaptation = min(1, dt / Compass.placeAdaptationSeconds)
+        local.strength += (strength - local.strength) * adaptation
+        local.dip += (dip - local.dip) * adaptation
+        localField = local
+
+        if let reference = referenceField,
+           abs(local.strength / reference.strength - 1) > Compass.maxFieldDeviation || abs(local.dip - reference.dip) > Compass.maxDipDeviation {
+            magneticReference = nil
+        }
+        guard abs(strength / local.strength - 1) < Compass.maxFieldDeviation,
+              abs(dip - local.dip) < Compass.maxDipDeviation
+        else { return }
         let world = q.act(field)
-        guard length(SIMD2(world.x, world.z)) > Compass.minHorizontalShare * calibration.radius else { return }
+        guard length(SIMD2(world.x, world.z)) > Compass.minHorizontalShare * strength else { return }
 
         let heading = atan2(world.x, world.z)
         guard let reference = magneticReference else {
             magneticReference = heading
+            referenceField = local
             return
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
@@ -187,6 +206,7 @@ private enum TiltCorrection {
 private enum Compass {
     static let maxFieldDeviation = 0.03
     static let maxDipDeviation = 5 * Double.pi / 180
+    static let placeAdaptationSeconds = 30.0
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 8
     static let integralGain = proportionalGain * proportionalGain / 4

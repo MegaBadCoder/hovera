@@ -65,7 +65,7 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     let learned = filter.verticalBias
     let rotatedField = simd_quatd(angle: 40 * degree, axis: SIMD3(0, 1, 0)).act(earthField) * 1.15
     _ = run(filter, seconds: 60, gyroBias: SIMD3(0, 0.25 * degree, 0), field: rotatedField)
-    #expect(abs(filter.verticalBias - learned) < 1e-9)
+    #expect(abs(filter.verticalBias - learned) / degree < 0.01)
 }
 
 @Test func recenterDoesNotMakeTheCompassPullBack() {
@@ -110,4 +110,36 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     let with = headingDrift(compass: true)
     #expect(without > 15)
     #expect(with < 5)
+}
+
+@Test func orientationDependentCompassErrorDoesNotRockTheWorld() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    let dt = 0.002
+    var trueYaw = 0.0
+    var worstBias = 0.0
+    for step in 0..<Int(240 / dt) {
+        let time = Double(step) * dt
+        let phase = time.truncatingRemainder(dividingBy: 20)
+        let rate = phase < 1.5 ? 55 * degree : (phase >= 10 && phase < 11.5 ? -55 * degree : 0)
+        trueYaw += rate * dt
+        let head = simd_quatd(angle: trueYaw, axis: SIMD3(0, 1, 0))
+        let distortion = simd_quatd(angle: 6 * degree * sin(2 * trueYaw), axis: SIMD3(0, 1, 0))
+        filter.update(gyro: SIMD3(0, rate, 0), accel: head.inverse.act(SIMD3(0, 1, 0)),
+                      magnetometer: head.inverse.act(distortion.act(earthField)) + hardIron, dt: dt)
+        if time > 20 { worstBias = max(worstBias, abs(filter.verticalBias)) }
+    }
+    #expect(worstBias / degree < 0.1)
+    #expect(abs(yawError(filter, trueYaw: trueYaw)) / degree < 4)
+}
+
+@Test func compassAdaptsWhenSittingSomewhereElse() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    let tilted = simd_quatd(angle: 8 * degree, axis: SIMD3(1, 0, 0)).act(earthField) * 0.93
+    var trueYaw = run(filter, seconds: 240, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted)
+    let settledError = yawError(filter, trueYaw: trueYaw)
+    trueYaw += run(filter, seconds: 120, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted, initialYaw: trueYaw)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settledError) / degree < 1)
+    #expect(abs(filter.verticalBias / degree - 0.25) < 0.05)
 }
