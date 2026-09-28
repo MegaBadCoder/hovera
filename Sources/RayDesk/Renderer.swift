@@ -10,6 +10,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let gridPipeline: MTLRenderPipelineState
     private let skyPipeline: MTLRenderPipelineState
     private let skyDepthState: MTLDepthStencilState
+    private let nebulaBakePipeline: MTLRenderPipelineState
+    private var nebulaMap: MTLTexture?
     private let gridVertices: MTLBuffer
     private let gridVertexCount: Int
     private let depthState: MTLDepthStencilState
@@ -95,6 +97,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         skyDescriptor.rasterSampleCount = view.sampleCount
         skyPipeline = try device.makeRenderPipelineState(descriptor: skyDescriptor)
 
+        let bakeDescriptor = MTLRenderPipelineDescriptor()
+        bakeDescriptor.vertexFunction = library.makeFunction(name: "skyVertex")
+        bakeDescriptor.fragmentFunction = library.makeFunction(name: "nebulaBakeFragment")
+        bakeDescriptor.colorAttachments[0].pixelFormat = .rgba16Float
+        nebulaBakePipeline = try device.makeRenderPipelineState(descriptor: bakeDescriptor)
+
         let gridDescriptor = MTLRenderPipelineDescriptor()
         gridDescriptor.vertexFunction = library.makeFunction(name: "gridVertex")
         gridDescriptor.fragmentFunction = library.makeFunction(name: "gridFragment")
@@ -141,7 +149,37 @@ final class Renderer: NSObject, MTKViewDelegate {
         if meditation.isActive, meditation.progress == 0 {
             meditationStart = CACurrentMediaTime()
         }
+        if meditation.isActive, nebulaMap == nil {
+            nebulaMap = bakeNebula()
+        }
     }
+
+    private func bakeNebula() -> MTLTexture? {
+        let size = Renderer.nebulaMapSize
+        let descriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: .rgba16Float, size: size, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        guard let map = device.makeTexture(descriptor: descriptor), let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        var faceSize = Float(size)
+        for face in 0..<6 {
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = map
+            pass.colorAttachments[0].slice = face
+            pass.colorAttachments[0].loadAction = .dontCare
+            pass.colorAttachments[0].storeAction = .store
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+            var faceIndex = UInt32(face)
+            encoder.setRenderPipelineState(nebulaBakePipeline)
+            encoder.setFragmentBytes(&faceIndex, length: MemoryLayout<UInt32>.stride, index: 0)
+            encoder.setFragmentBytes(&faceSize, length: MemoryLayout<Float>.stride, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            encoder.endEncoding()
+        }
+        commandBuffer.commit()
+        return map
+    }
+
+    private static let nebulaMapSize = 1024
 
     func draw(in view: MTKView) {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -178,7 +216,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let viewMatrix = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
 
         let skyAmount = Float(meditation.eased)
-        if skyAmount > 0 {
+        if skyAmount > 0, let nebulaMap {
             let breathing = Float(Breathing.openness(at: now - meditationStart))
             var sky = SkyUniforms(
                 inverseViewProjection: (projection * viewMatrix).inverse,
@@ -187,6 +225,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setRenderPipelineState(skyPipeline)
             encoder.setDepthStencilState(skyDepthState)
             encoder.setFragmentBytes(&sky, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+            encoder.setFragmentTexture(nebulaMap, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         }
 
