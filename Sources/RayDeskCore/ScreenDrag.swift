@@ -3,6 +3,7 @@ import CoreGraphics
 private let maxPitch = 80 * Double.pi / 180
 private let minDistance = 0.4
 private let maxDistance = 6.0
+private let maxTilt = 60 * Double.pi / 180
 
 /// Возвращает позу экрана после перетаскивания мышью на `delta` точек экрана.
 ///
@@ -28,5 +29,13 @@ public func dragged(_ pose: ScreenPose, byPoints delta: CGVector, displayPointWi
 public func scrolled(_ pose: ScreenPose, by delta: Double) -> ScreenPose {
     var result = pose
     result.distance = min(maxDistance, max(minDistance, result.distance * pow(1.05, -delta)))
+    return result
+}
+
+/// Возвращает позу экрана, наклонённого ещё на `angle` радиан (плюс — верх от зрителя);
+/// наклон ограничен ±60°.
+public func tilted(_ pose: ScreenPose, by angle: Double) -> ScreenPose {
+    var result = pose
+    result.tilt = min(maxTilt, max(-maxTilt, result.tilt + angle))
     return result
 }

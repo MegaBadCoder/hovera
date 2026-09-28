@@ -234,6 +234,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
     }
 
+    @objc private func tiltBack() {
+        tiltTargetScreen(by: tiltStep)
+    }
+
+    @objc private func tiltForward() {
+        tiltTargetScreen(by: -tiltStep)
+    }
+
+    private func tiltTargetScreen(by angle: Double) {
+        let index = targetScreen()
+        scene.setPose(index, tilted(scene.screens[index], by: angle))
+        saveScene()
+        log(String(format: "screen %d tilt %.0f°", index, scene.screens[index].tilt * 180 / .pi))
+    }
+
+    private var tiltStep: Double { 5 * .pi / 180 }
+
     @objc private func bigger() {
         scene.adjustWidth(targetScreen(), by: 1.1)
         saveScene()
@@ -597,6 +614,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             isCalibrating ? adjustCalibration(pitch: -0.5) : farther()
         }
+        hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltBack() }
+        hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltForward() }
         hotkeys.register(keyCode: kVK_LeftArrow) { [weak self] in self?.adjustCalibration(yaw: 1) }
         hotkeys.register(keyCode: kVK_RightArrow) { [weak self] in self?.adjustCalibration(yaw: -1) }
         hotkeys.register(keyCode: kVK_ANSI_Comma) { [weak self] in self?.adjustCalibration(roll: 0.5) }
@@ -633,6 +652,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Дальше   ⌃⌥↓", #selector(farther)))
         menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
         menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
+        menu.addItem(menuItem("Наклонить назад   ⌃⌥⇧↑", #selector(tiltBack)))
+        menu.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
         menu.addItem(.separator())
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))

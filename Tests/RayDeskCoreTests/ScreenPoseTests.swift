@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import simd
 @testable import RayDeskCore
@@ -76,4 +77,60 @@ private let degree = Double.pi / 180
     let pose = ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1.0, aspect: 1.0)
     let behind = SIMD3<Double>(0, 0, 1)
     #expect(pose.intersect(rayDirection: behind) == nil)
+}
+
+@Test func tiltedScreenCornersStillMapToTheirUV() {
+    for tilt in [-40.0, -15.0, 25.0, 50.0] {
+        let pose = ScreenPose(yaw: 0.4, pitch: -0.2, distance: 1.5, width: 1.0, aspect: 16.0 / 9, tilt: tilt * degree)
+        let m = pose.modelMatrix
+        for (x, y, u, v) in [(-0.99, 0.99, 0.005, 0.005), (0.99, -0.99, 0.995, 0.995), (0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 0.75, 0.25)] {
+            let p = m * SIMD4<Float>(Float(x), Float(y), 0, 1)
+            let hit = pose.intersect(rayDirection: SIMD3(Double(p.x), Double(p.y), Double(p.z)))
+            #expect(hit != nil)
+            if let uv = hit?.uv {
+                #expect(abs(uv.x - u) < 1e-4 && abs(uv.y - v) < 1e-4)
+            }
+        }
+    }
+}
+
+@Test func tiltingBackPushesTheTopAwayFromTheViewer() {
+    let pose = ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1.0, aspect: 1.0, tilt: 30 * degree)
+    let top = pose.modelMatrix * SIMD4<Float>(0, 1, 0, 1)
+    let bottom = pose.modelMatrix * SIMD4<Float>(0, -1, 0, 1)
+    #expect(top.z < -1.5)
+    #expect(bottom.z > -1.5)
+}
+
+@Test func tiltKeepsTheScreenCenterInPlace() {
+    let flat = ScreenPose(yaw: 0.3, pitch: 0.1, distance: 1.5, width: 1.0, aspect: 1.0)
+    var tilted = flat
+    tilted.tilt = 35 * degree
+    let a = flat.modelMatrix * SIMD4<Float>(0, 0, 0, 1)
+    let b = tilted.modelMatrix * SIMD4<Float>(0, 0, 0, 1)
+    #expect(simd_length(a - b) < 1e-5)
+}
+
+@Test func screenSavedBeforeTiltExistedLoadsFlat() {
+    let json = #"[{"yaw":0.1,"pitch":0.2,"distance":1.5,"width":1,"aspect":1.7777}]"#
+    let screens = SpatialScene.decode(Data(json.utf8), default: 2, aspect: 16.0 / 9)
+    #expect(screens.count == 1)
+    #expect(screens[0].yaw == 0.1)
+    #expect(screens[0].tilt == 0)
+}
+
+@Test func tiltSurvivesSaving() throws {
+    let pose = ScreenPose(yaw: 0.1, pitch: 0.2, distance: 1.5, width: 1, aspect: 1.5, tilt: 0.3)
+    let decoded = try JSONDecoder().decode(ScreenPose.self, from: JSONEncoder().encode(pose))
+    #expect(decoded == pose)
+}
+
+@Test func tiltStepsAreClampedToSixtyDegrees() {
+    var pose = ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1, aspect: 1)
+    pose = tilted(pose, by: 5 * degree)
+    #expect(abs(pose.tilt - 5 * degree) < 1e-12)
+    for _ in 0..<30 { pose = tilted(pose, by: 5 * degree) }
+    #expect(abs(pose.tilt - 60 * degree) < 1e-12)
+    for _ in 0..<40 { pose = tilted(pose, by: -5 * degree) }
+    #expect(abs(pose.tilt + 60 * degree) < 1e-12)
 }

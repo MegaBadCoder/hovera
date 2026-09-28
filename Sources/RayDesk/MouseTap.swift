@@ -114,8 +114,15 @@ final class MouseTap {
             keepOutOfGlasses(event: event, delegate: delegate)
         case .scrollWheel:
             if hotkey, let target = dragTarget(event: event, delegate: delegate) {
-                let delta = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
-                delegate.setPose(target, scrolled(delegate.pose(of: target), by: delta))
+                let vertical = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+                let pose = delegate.pose(of: target)
+                if flags.contains(.maskShift) {
+                    let horizontal = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+                    let delta = vertical != 0 ? vertical : horizontal
+                    delegate.setPose(target, tilted(pose, by: delta * .pi / 180))
+                } else {
+                    delegate.setPose(target, scrolled(pose, by: vertical))
+                }
                 delegate.scrollApplied(to: target)
                 return nil
             }
