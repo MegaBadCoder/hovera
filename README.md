@@ -46,7 +46,14 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
 - `J` — force the cursor to where you look.
 - `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.
+- `Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
 - `[` / `]` — field of view; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — gaze mark in the log; `Q` — quit.
+
+## Meditation mode
+
+⌃⌥Z fades the screens out and surrounds you with space: stars, slowly drifting nebulae and a planet below. The sky is drawn procedurally on the GPU and stays put as you turn your head. Press ⌃⌥Z again to get your screens back.
+
+The sound is generated on the fly, no audio files: soft chords without a melody and ocean waves. "Neural effect" (menu → Meditation) adds a gentle 6 Hz pulse to the music volume, similar in spirit to brain.fm; off / low / medium / high. "Breathing" shows a glowing ring in front of you: 4 s inhale, 6 s exhale. The cursor does not follow your gaze while meditating.
 
 ## How tracking works
 
