@@ -103,6 +103,28 @@ public final class SpatialScene {
         grabbed = nil
     }
 
+    /// Ставит все экраны дугой вплотную друг к другу вокруг направления взгляда, сохраняя их
+    /// порядок слева направо и ширину. Расстояние у всех — медиана текущих, высота — как у
+    /// взгляда, наклон снимается. Отпускает захваченный экран.
+    public func arrangeInArc(head: simd_quatd) {
+        let gaze = head.yawPitch
+        let distances = screens.map(\.distance).sorted()
+        let distance = distances[distances.count / 2]
+        let order = screens.indices.sorted { wrap(screens[$0].yaw - gaze.yaw) > wrap(screens[$1].yaw - gaze.yaw) }
+        for index in screens.indices {
+            screens[index].distance = distance
+            screens[index].pitch = gaze.pitch
+            screens[index].tilt = 0
+        }
+        let halves = order.map { horizontalHalfAngle(screens[$0]) }
+        var edge = gaze.yaw + halves.reduce(0, +)
+        for (position, index) in order.enumerated() {
+            screens[index].yaw = edge - halves[position]
+            edge -= 2 * halves[position]
+        }
+        grabbed = nil
+    }
+
     /// Изменяет дистанцию экрана `index`, умножая на `factor`, в пределах 0.4…6 м.
     public func adjustDistance(_ index: Int, by factor: Double) {
         screens[index].distance = min(maxDistance, max(minDistance, screens[index].distance * factor))
