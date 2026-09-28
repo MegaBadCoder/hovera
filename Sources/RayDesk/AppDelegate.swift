@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
+    private let cameraHead = CameraHeadTracker()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -496,6 +497,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
     }
 
+    @objc private func toggleCameraHead(_ sender: NSMenuItem) {
+        if cameraHead.isRunning || sender.state == .on {
+            cameraHead.stop()
+            sender.state = .off
+            log("camera head tracking off")
+            return
+        }
+        sender.state = .on
+        cameraHead.start { [weak self] error in
+            guard let error else {
+                log("camera head tracking on")
+                return
+            }
+            sender.state = .off
+            log("camera head tracking failed: \(error)")
+            self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+        }
+    }
+
+    private func logCameraHead() {
+        guard cameraHead.isRunning else { return }
+        let reading = cameraHead.takeReading()
+        guard let position = reading.position else {
+            log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")
+            return
+        }
+        let jitter = (reading.jitter ?? .zero) * 1000
+        let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
+        log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
+                   position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
+                   reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
+    }
+
     @objc private func moveWindowToGaze() {
         guard let target = lastCursorHit?.target else {
             say("Посмотрите на экран, куда перенести окно.")
@@ -760,6 +794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
+        menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)
@@ -804,6 +839,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
+        logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",
