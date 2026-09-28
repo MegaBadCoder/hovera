@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastCursorHit: CursorHit?
     private var macAnchor: MacAnchor?
     private var lastGazeHit: GazeHit?
+    private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -495,6 +496,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
     }
 
+    @objc private func arrangeInArc() {
+        guard let renderer else { return }
+        scene.arrangeInArc(head: renderer.currentHead)
+        saveScene()
+        arrangeDisplays()
+        log("screens arranged in an arc")
+    }
+
     @objc private func gatherScreens() {
         guard let renderer else { return }
         scene.gatherInFront(head: renderer.currentHead)
@@ -637,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_Z) { [weak self] in self?.toggleMeditation() }
+        hotkeys.register(keyCode: kVK_ANSI_A) { [weak self] in self?.arrangeInArc() }
     }
 
     private func setupMenu() {
@@ -657,6 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
+        menu.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
@@ -806,7 +817,21 @@ extension AppDelegate: MouseTapDelegate {
         log("drag began: screen \(screen + 1)")
     }
 
+    func snapped(_ pose: ScreenPose, screen: Int) -> ScreenPose {
+        let result = RayDeskCore.snapped(pose, index: screen, among: scene.screens, threshold: 3 * .pi / 180)
+        if result.neighbor != snapNeighbor {
+            snapNeighbor = result.neighbor
+            renderer?.snappedNeighbor = result.neighbor
+            if let neighbor = result.neighbor {
+                log("screen \(screen + 1) snapped to \(neighbor + 1)")
+            }
+        }
+        return result.pose
+    }
+
     func dragEnded() {
+        snapNeighbor = nil
+        renderer?.snappedNeighbor = nil
         renderer?.draggingScreen = nil
         saveScene()
         arrangeDisplays()

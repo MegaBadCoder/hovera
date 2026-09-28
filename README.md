@@ -41,7 +41,8 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `R` — "forward" is where I look now (recenter). Aim at a distant reference point.
 - `Space` — put the screen under your gaze where you look; `G` — grab / release a screen.
 - `↑` / `↓` — closer / further; `=` / `-` — bigger / smaller; `⇧↑` / `⇧↓` — tilt the screen back / forward (5° steps, up to 60°).
-- Mouse with ⌃⌥ held — drag a screen; scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
+- `A` — arrange all screens in an arc around your gaze, edge to edge (order and widths kept).
+- Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
 - `J` — force the cursor to where you look.

@@ -39,6 +39,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var slots: [ScreenSlot] = []
     var cursorScreen: Int?
     var draggingScreen: Int?
+    var snappedNeighbor: Int?
     var onFrame: ((simd_quatd) -> Void)?
 
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
@@ -238,7 +239,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() where screenOpacity > 0 {
             let model = pose.modelMatrix
             let texture = slot.texture ?? placeholder
-            let borderAlpha: Float = (scene.grabbed == i || draggingScreen == i) ? 1.0 : (cursorScreen == i ? 0.6 : 0.25)
+            let borderAlpha: Float = (scene.grabbed == i || draggingScreen == i || snappedNeighbor == i) ? 1.0 : (cursorScreen == i ? 0.6 : 0.25)
             var uniforms = Uniforms(
                 mvp: projection * viewMatrix * model,
                 border: SIMD4(3 / Float(texture.width), 3 / Float(texture.height), borderAlpha, screenOpacity)

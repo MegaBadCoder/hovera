@@ -13,6 +13,7 @@ protocol MouseTapDelegate: AnyObject {
     func bounds(of target: CursorTarget) -> CGRect
     func pose(of screen: Int) -> ScreenPose
     func setPose(_ screen: Int, _ pose: ScreenPose)
+    func snapped(_ pose: ScreenPose, screen: Int) -> ScreenPose
     func dragBegan(_ screen: Int)
     func dragEnded()
     func scrollApplied(to screen: Int)
@@ -24,6 +25,7 @@ final class MouseTap {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var draggingScreen: Int?
+    private var freePose: ScreenPose?
     private var lastLocation: CGPoint?
 
     init?(delegate: MouseTapDelegate) {
@@ -93,6 +95,7 @@ final class MouseTap {
         case .leftMouseDown:
             if hotkey, let target = dragTarget(event: event, delegate: delegate) {
                 draggingScreen = target
+                freePose = delegate.pose(of: target)
                 CGAssociateMouseAndMouseCursorPosition(0)
                 delegate.dragBegan(target)
                 return nil
@@ -107,6 +110,7 @@ final class MouseTap {
             if draggingScreen != nil {
                 CGAssociateMouseAndMouseCursorPosition(1)
                 draggingScreen = nil
+                freePose = nil
                 delegate.dragEnded()
                 return nil
             }
@@ -151,8 +155,9 @@ final class MouseTap {
         let dx = event.getDoubleValueField(.mouseEventDeltaX)
         let dy = event.getDoubleValueField(.mouseEventDeltaY)
         let width = delegate.bounds(of: target).width
-        let pose = dragged(delegate.pose(of: target), byPoints: CGVector(dx: dx, dy: dy), displayPointWidth: Double(width))
-        delegate.setPose(target, pose)
+        let pose = dragged(freePose ?? delegate.pose(of: target), byPoints: CGVector(dx: dx, dy: dy), displayPointWidth: Double(width))
+        freePose = pose
+        delegate.setPose(target, delegate.snapped(pose, screen: target))
     }
 
     private func updateCursorScreen(event: CGEvent, delegate: MouseTapDelegate) {
