@@ -2,7 +2,7 @@
 
 **Status:** done
 **Branch:** screen-snap
-**Worktree:** /Users/v/projects/hovera/.worktrees/screen-snap
+**Worktree:** .worktrees/screen-snap
 **Mode:** interactive
 
 ## Design

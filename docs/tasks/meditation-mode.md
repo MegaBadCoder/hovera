@@ -2,7 +2,7 @@
 
 **Status:** done
 **Branch:** meditation-mode
-**Worktree:** /Users/v/projects/hovera/.worktrees/meditation-mode
+**Worktree:** .worktrees/meditation-mode
 **Mode:** interactive
 
 ## Design
