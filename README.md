@@ -1,36 +1,86 @@
-# RayDesk
+# Hovera
 
-Виртуальные мониторы macOS в AR-очках RayNeo (Air-серия, USB `1bbb:af50`): 2–4 экрана висят в пространстве вокруг головы (3DoF), курсор приходит туда, куда смотришь.
+Floating virtual monitors for RayNeo AR glasses on macOS.
 
-## Сборка и запуск
+On a Mac, RayNeo glasses behave like a plain second display: the picture is glued to your face and turns with your head. Hovera creates several virtual displays and pins them in the room around you. Look left for mail, straight ahead for code, right for the browser. The cursor follows your gaze.
+
+[Русская версия](README.ru.md)
+
+> Unofficial project, not affiliated with RayNeo or TCL. The app is still called **RayDesk** inside; the rename is pending.
+
+## Features
+
+- 2–4 virtual monitors placed around your head with 3DoF head tracking (~500 Hz IMU over USB).
+- The cursor jumps to the screen you look at, including your MacBook's built-in display.
+- Move screens with ⌃⌥ + mouse drag; resize them and move them closer or further away.
+- A compass (the glasses' magnetometer) keeps "forward" from drifting. It remembers the field separately for each gaze direction, so its orientation-dependent error does not push screens around.
+- Voice prompt to recalibrate the compass when something magnetic near the glasses changes the field (earbuds, a new seat).
+- Horizon grid and manual view calibration.
+
+## Requirements
+
+- macOS 15 or later.
+- RayNeo Air-series glasses (USB `1bbb:af50`). Tested on one pair so far; reports from other models are welcome.
+- Xcode 16 / Swift 6 toolchain to build.
+
+## Build and run
 
 ```bash
 ./build.sh
 open RayDesk.app
 ```
 
-Нужны разрешения «Запись экрана» (картинка мониторов) и «Универсальный доступ» (перетаскивание мышью, прыжок курсора). Лог — `~/Library/Logs/RayDesk.log`. Тесты логики — `swift test`.
+Grant **Screen Recording** (to show the monitors) and **Accessibility** (to drag screens and move the cursor) when macOS asks. Log: `~/Library/Logs/RayDesk.log`. Tests: `swift test`.
 
-## Управление (⌃⌥ + клавиша, работают из любого приложения)
+The build is signed with your first "Apple Development" identity if you have one, otherwise ad hoc. An unsigned or ad-hoc build loses the Screen Recording permission after every rebuild.
 
-- `R` — «вперёд» = куда смотрю (мир и экраны поворачиваются вместе)
-- `Space` — поставить экран под взглядом туда, куда смотрю; `G` — взять/отпустить экран
-- `↑`/`↓` — ближе/дальше, `=`/`-` — больше/меньше
-- мышь с зажатыми ⌃⌥ — тащить экран, скролл — ближе/дальше
-- `D` — сетка горизонта; `C` — ручная настройка сетки: `←`/`→` вперёд, `↑`/`↓` горизонт, `,`/`.` наклон
-- `B` — запомнить, где экран MacBook (смотреть на его центр); после этого взгляд на MacBook тоже переносит курсор
-- `J` — курсор принудительно туда, куда смотрю (панель или MacBook)
-- `K` — калибровка компаса (голосовые подсказки, ~30 с крутить головой во все стороны); после неё «вперёд» не уплывает
-- `[`/`]` — угол обзора, `H` — скрыть картинку, `V` — запись видео очков в `~/Movies`, `M` — метка взгляда в лог, `Q` — выход
+## Controls
 
-## Стабилизация
+All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 
-От пульса и микродвижений голова чуть покачивается, и картинка дрожит. Меню «Стабилизация картинки» (по умолчанию «Выключена») сглаживает мелкие движения фильтром One Euro, быстрые повороты проходят почти без задержки.
+- `R` — "forward" is where I look now (recenter). Aim at a distant reference point.
+- `Space` — put the screen under your gaze where you look; `G` — grab / release a screen.
+- `↑` / `↓` — closer / further; `=` / `-` — bigger / smaller.
+- Mouse with ⌃⌥ held — drag a screen; scroll — closer / further.
+- `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
+- `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
+- `J` — force the cursor to where you look.
+- `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.
+- `[` / `]` — field of view; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — gaze mark in the log; `Q` — quit.
 
-## Курсор
+## How tracking works
 
-Курсор прыгает к панели или MacBook под взглядом один раз при переводе взгляда и дальше двигается свободно. Упор в нижний край панели переводит его на MacBook, уход вверх с MacBook — на панель под взглядом; на невидимый дисплей очков курсор не заходит. Без ⌃⌥B взгляд сильно вниз (ниже −30°) считается взглядом на MacBook.
+- Gyroscope integration, tilt corrected by the accelerometer (complementary filter).
+- Worn on the head, the gyro's zero point wanders by up to 0.5°/s and jumps when you adjust the glasses. Only an absolute reference can hold "forward", so the compass gently pulls the heading toward the magnetic field.
+- The compass is off by up to ~14° when you look to the side. Hovera keeps a separate field reference per 15° gaze sector and compares the compass only with what it saw in the same head orientation.
+- Without a compass calibration, the gyro's zero point is learned in moments of stillness.
 
-## Ограничения
+Tests replay real recorded head motion and check jitter, lag and drift in world axes.
 
-Очки отслеживают только повороты головы: при наклонах и смещениях корпуса экраны сдвигаются относительно комнаты. Поправляется `⌃⌥R` по дальней опорной точке. Без калибровки компаса «вперёд» уплывает на ~10°/мин: на голове ноль гироскопа смещается от напряжения оправы.
+## Recording sensor data
+
+For debugging tracking you can record raw IMU data to `~/Library/Logs/RayDesk-imu` (30-minute files, the last 4 are kept, up to ~300 MB):
+
+```bash
+defaults write local.raydesk recordIMU -bool true
+```
+
+## Limitations
+
+- 3DoF only: leaning or moving your body shifts the screens relative to the room. Press ⌃⌥R to recenter.
+- Uses the private `CGVirtualDisplay` API to create displays.
+- Not notarized yet.
+
+## Acknowledgements
+
+Protocol details and ideas came from these open projects:
+
+- [RayNeo-Air-3S-Pro-OpenVR](https://github.com/verncat/RayNeo-Air-3S-Pro-OpenVR)
+- [ar-drivers-rs](https://github.com/badicsalex/ar-drivers-rs)
+- [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) and [Breezy Desktop](https://github.com/wheaney/breezy-desktop)
+- [Fusion](https://github.com/xioTechnologies/Fusion)
+- [XRealDesk](https://github.com/PlunderStruck/XRealDesk)
+
+## License
+
+[MIT](LICENSE)

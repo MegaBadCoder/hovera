@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadGyroBias()
         loadMacAnchor()
         imu = GlassesIMU(filter: filter)
-        if UserDefaults.standard.object(forKey: "recordIMU") as? Bool ?? true {
+        if UserDefaults.standard.bool(forKey: "recordIMU") {
             imu?.recorder = IMURecorder()
         }
         imu?.start()
