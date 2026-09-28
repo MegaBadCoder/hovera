@@ -1,6 +1,6 @@
 # Магнит краёв и сборка дугой
 
-**Status:** executing
+**Status:** done
 **Branch:** screen-snap
 **Worktree:** /Users/v/projects/hovera/.worktrees/screen-snap
 **Mode:** interactive
@@ -46,8 +46,34 @@ TDD: yes — вся геометрия в `RayDeskCore/ScreenSnap.swift` и `Spa
 - `Renderer.swift`: `highlightedScreens` — яркая рамка.
 - README на двух языках.
 
+### Phase 3 — после проверки в очках
+- `ScreenPose`: `pan` (поворот вокруг своей вертикали), разбор кадра на `tilt`/`roll`/`pan`.
+- `ScreenSnap.swift`: `ScreenJoin { gaze, hinge }`, параметр `join:` у `attached`/`snapped`, `turned(_:among:by:)`.
+- `SpatialScene`: `arrangeInArc(head:join:)` (при `.hinge` — одинаковая ширина и вертикальные экраны), `tiltAll(by:)`, `turn(_:by:)`.
+- `AppDelegate`: меню «Стыковка экранов» (`screenJoin`, по умолчанию `.hinge`), ⌃⌥⇧←/→ доворот, ⌃⌥⌘↑/↓ общий наклон.
+- `Renderer`: подсветка соседа — `snappedNeighbor` (одна пара за раз, второй экран подсвечен как перетаскиваемый).
+- `MouseTap`: свободная поза перетаскивания подхватывает параллельные изменения того же экрана (скролл, клавиши).
+
 ## Verify
-<empty — filled by up:uverify>
+
+**Result:** passed
+
+- `swift test` — 159 тестов: совпадение углов на стыке при наклоне, вертикальность и отсутствие перекоса тройного монитора, доворот вокруг стыка, общий наклон, обратная совместимость раскладок.
+- Smoke: в очках 28.09 — «я считаю это хорошо».
 
 ## Conclusion
-<empty — filled by up:ureview>
+
+Outcome: магнит краёв, сборка дугой и тройной монитор с доворотом и общим наклоном — ветка `screen-snap`.
+
+Invariants:
+- без соседа в пределах порога перетаскивание как раньше — `snapped` возвращает позу без изменений (`screenFartherThanTheThresholdStaysWhereItIs`)
+- стык по всей длине — `hingeJoinSharesTheWholeEdgeEvenWhenTilted`, `tripleMonitorArcIsUprightSameSizeAndJoinedAlongTheWholeEdge`
+- порядок слева направо сохраняется — тесты дуги; ширины сохраняются в режиме `.gaze`, в тройном мониторе выравниваются по среднему (по решению пользователя)
+- раскладки без `roll`/`pan` читаются с нулями — `decodeIfPresent`
+
+### Deviations from plan
+- Phase 3 добавлена после проверки в очках (см. Design).
+
+Review findings:
+- Important: свободная поза перетаскивания затирала параллельный скролл того же экрана — исправлено: поза перебазируется, если экран изменили извне.
+

@@ -26,6 +26,7 @@ final class MouseTap {
     private var runLoopSource: CFRunLoopSource?
     private var draggingScreen: Int?
     private var freePose: ScreenPose?
+    private var shownPose: ScreenPose?
     private var lastLocation: CGPoint?
 
     init?(delegate: MouseTapDelegate) {
@@ -111,6 +112,7 @@ final class MouseTap {
                 CGAssociateMouseAndMouseCursorPosition(1)
                 draggingScreen = nil
                 freePose = nil
+                shownPose = nil
                 delegate.dragEnded()
                 return nil
             }
@@ -155,9 +157,18 @@ final class MouseTap {
         let dx = event.getDoubleValueField(.mouseEventDeltaX)
         let dy = event.getDoubleValueField(.mouseEventDeltaY)
         let width = delegate.bounds(of: target).width
-        let pose = dragged(freePose ?? delegate.pose(of: target), byPoints: CGVector(dx: dx, dy: dy), displayPointWidth: Double(width))
+        let live = delegate.pose(of: target)
+        var free = freePose ?? live
+        if let shownPose, live != shownPose {
+            let position = (free.yaw, free.pitch)
+            free = live
+            (free.yaw, free.pitch) = position
+        }
+        let pose = dragged(free, byPoints: CGVector(dx: dx, dy: dy), displayPointWidth: Double(width))
         freePose = pose
-        delegate.setPose(target, delegate.snapped(pose, screen: target))
+        let shown = delegate.snapped(pose, screen: target)
+        shownPose = shown
+        delegate.setPose(target, shown)
     }
 
     private func updateCursorScreen(event: CGEvent, delegate: MouseTapDelegate) {
