@@ -48,6 +48,7 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
 - `J` — force the cursor to where you look.
+- `W` — move the active window to the screen you look at (it keeps its place on the screen and shrinks if it does not fit).
 - `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.
 - `Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
 - `[` / `]` — field of view; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — gaze mark in the log; `Q` — quit.

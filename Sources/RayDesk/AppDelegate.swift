@@ -496,6 +496,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
     }
 
+    @objc private func moveWindowToGaze() {
+        guard let target = lastCursorHit?.target else {
+            say("Посмотрите на экран, куда перенести окно.")
+            return
+        }
+        let display: CGDirectDisplayID
+        switch target {
+        case .virtual(let index): display = slots[index].virtualScreen.displayID
+        case .mac: display = CGMainDisplayID()
+        }
+        do {
+            let moved = try WindowMover.moveFrontWindow(to: display)
+            log(String(format: "window of %@ moved to %@ at %.0f,%.0f %.0f×%.0f", moved.app, String(describing: target),
+                       moved.frame.minX, moved.frame.minY, moved.frame.width, moved.frame.height))
+        } catch WindowMoveError.noAccessibility {
+            say("Нужно разрешение «Универсальный доступ» для RayDesk.")
+        } catch WindowMoveError.noFrontWindow {
+            log("window move: no front window")
+            say("Нет активного окна.")
+        } catch {
+            log("window move failed: \(error)")
+            say("Это окно не переносится.")
+        }
+    }
+
     @objc private func arrangeInArc() {
         guard let renderer else { return }
         scene.arrangeInArc(head: renderer.currentHead, join: savedJoin())
@@ -703,6 +728,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_Z) { [weak self] in self?.toggleMeditation() }
         hotkeys.register(keyCode: kVK_ANSI_A) { [weak self] in self?.arrangeInArc() }
+        hotkeys.register(keyCode: kVK_ANSI_W) { [weak self] in self?.moveWindowToGaze() }
     }
 
     private func setupMenu() {
@@ -733,6 +759,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
+        menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)
