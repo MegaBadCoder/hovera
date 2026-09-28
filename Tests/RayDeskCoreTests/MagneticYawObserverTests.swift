@@ -163,7 +163,7 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
                       magnetometer: head.inverse.act(distortion.act(earthField)) + hardIron, dt: dt)
         if time > 20 { worstError = max(worstError, abs(yawError(filter, trueYaw: trueYaw))) }
     }
-    #expect(worstError / degree < 7)
+    #expect(worstError / degree < 1)
 }
 
 @Test func compassAdaptsWhenSittingSomewhereElse() {

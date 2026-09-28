@@ -15,7 +15,7 @@ public final class OrientationFilter {
     private var initialized = false
     private(set) var sampleCount = 0
     private var compass: MagnetometerCalibration?
-    private var magneticReference: Double?
+    private var magneticReferences: [SIMD2<Int>: Double] = [:]
     private var localField: (strength: Double, dip: Double)?
     private var referenceField: (strength: Double, dip: Double)?
     private var lastCompassError = 0.0
@@ -34,7 +34,8 @@ public final class OrientationFilter {
     public init() {}
 
     /// Калибровка магнитометра. Пока она задана, курс плавно подтягивается к направлению
-    /// поля, запомненному при первом показании; `nil` выключает компас.
+    /// поля, запомненному для того же направления взгляда (секторы по 15° по курсу и наклону):
+    /// так ошибка компаса, зависящая от поворота головы, не сдвигает мир; `nil` выключает компас.
     /// Любая установка сбрасывает опорное направление поля.
     public var magnetometerCalibration: MagnetometerCalibration? {
         get {
@@ -45,7 +46,7 @@ public final class OrientationFilter {
         set {
             lock.lock()
             compass = newValue
-            magneticReference = nil
+            magneticReferences = [:]
             localField = newValue.map { ($0.radius, $0.dip) }
             referenceField = nil
             lastCompassError = 0
@@ -65,7 +66,7 @@ public final class OrientationFilter {
     public func reset() {
         lock.lock()
         initialized = false
-        magneticReference = nil
+        magneticReferences = [:]
         referenceField = nil
         lastCompassError = 0
         lock.unlock()
@@ -142,7 +143,7 @@ public final class OrientationFilter {
 
         if let reference = referenceField,
            abs(local.strength / reference.strength - 1) > Compass.maxFieldDeviation || abs(local.dip - reference.dip) > Compass.maxDipDeviation {
-            magneticReference = nil
+            magneticReferences = [:]
         }
         guard abs(strength / local.strength - 1) < Compass.maxFieldDeviation,
               abs(dip - local.dip) < Compass.maxDipDeviation
@@ -151,9 +152,11 @@ public final class OrientationFilter {
         guard length(SIMD2(world.x, world.z)) > Compass.minHorizontalShare * strength else { return }
 
         let heading = atan2(world.x, world.z)
-        guard let reference = magneticReference else {
-            magneticReference = heading
-            referenceField = local
+        let look = q.yawPitch
+        let sector = SIMD2(Int((look.yaw / Compass.sectorSize).rounded()), Int((look.pitch / Compass.sectorSize).rounded()))
+        if magneticReferences.isEmpty { referenceField = local }
+        guard let reference = magneticReferences[sector] else {
+            magneticReferences[sector] = heading
             return
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
@@ -216,7 +219,7 @@ public final class OrientationFilter {
         lock.lock()
         let yp = q.yawPitch
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
-        magneticReference = nil
+        magneticReferences = [:]
         lastCompassError = 0
         lock.unlock()
     }
@@ -242,4 +245,5 @@ private enum Compass {
     static let placeAdaptationSeconds = 30.0
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 4
+    static let sectorSize = 15 * Double.pi / 180
 }
