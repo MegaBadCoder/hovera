@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var renderer: Renderer?
     private var isCalibrating = false
     private var statusTicks = 0
+    private var compassFieldPrompted = false
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private let recorder = GlassesRecorder()
     private let speech = AVSpeechSynthesizer()
@@ -367,6 +368,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.finishCompassCalibration() }
     }
 
+    private func promptCompassRecalibrationIfFieldChanged() {
+        guard filter.compassFieldChanged else {
+            compassFieldPrompted = false
+            return
+        }
+        guard !compassFieldPrompted, !isCalibratingCompass else { return }
+        compassFieldPrompted = true
+        log("compass: field around the glasses differs from calibration")
+        say("Магнитное поле у очков изменилось, например от наушников. Чтобы экраны держались точнее, откалибруйте компас: Control Option K.")
+    }
+
     private func finishCompassCalibration() {
         isCalibratingCompass = false
         guard let fitter = imu?.finishCompassCalibration() else { return }
@@ -605,6 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
+        promptCompassRecalibrationIfFieldChanged()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",
@@ -613,7 +626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   filter.magnetometerCalibration == nil ? "✗" : "✓")
         let learned = filter.gyroBias * 180 / .pi
         let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
-            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi))
+            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? " · поле изменилось" : ""))
         log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс", compass, imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000))
     }
 

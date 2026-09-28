@@ -175,3 +175,27 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     trueYaw += run(filter, seconds: 120, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settledError) / degree < 1)
 }
+
+@Test func earbudsNearTheGlassesAreNoticedAndRecalibrationClearsIt() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    _ = run(filter, seconds: 60, gyroBias: .zero)
+    #expect(!filter.compassFieldChanged)
+
+    let withEarbuds = simd_quatd(angle: 30 * degree, axis: SIMD3(1, 0, 0)).act(earthField) * 1.85
+    _ = run(filter, seconds: 20, gyroBias: .zero, field: withEarbuds)
+    #expect(filter.compassFieldChanged)
+
+    filter.magnetometerCalibration = MagnetometerCalibration(center: hardIron, radius: 34 * 1.85,
+                                                             dip: acos(simd_dot(simd_normalize(withEarbuds), SIMD3(0, 1, 0))))
+    _ = run(filter, seconds: 5, gyroBias: .zero, field: withEarbuds)
+    #expect(!filter.compassFieldChanged)
+}
+
+@Test func sittingSomewhereElseIsNotReportedAsAChangedField() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    let tilted = simd_quatd(angle: 5 * degree, axis: SIMD3(1, 0, 0)).act(earthField) * 0.93
+    _ = run(filter, seconds: 120, gyroBias: .zero, field: tilted)
+    #expect(!filter.compassFieldChanged)
+}

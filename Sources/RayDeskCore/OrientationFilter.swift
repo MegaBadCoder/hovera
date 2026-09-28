@@ -19,6 +19,7 @@ public final class OrientationFilter {
     private var localField: (strength: Double, dip: Double)?
     private var referenceField: (strength: Double, dip: Double)?
     private var lastCompassError = 0.0
+    private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
@@ -50,8 +51,19 @@ public final class OrientationFilter {
             localField = newValue.map { ($0.radius, $0.dip) }
             referenceField = nil
             lastCompassError = 0
+            fieldDiffersFromCalibration = false
             lock.unlock()
         }
+    }
+
+    /// `true`, если поле вокруг очков в среднем за последние полминуты заметно отличается от
+    /// калиброванного: сила больше чем на 15 % или наклон больше чем на 10°. Так бывает, когда
+    /// рядом с очками появился магнит, например наушники. Сбрасывается, когда поле вернулось
+    /// (в пределах 8 % и 6°) или задана новая калибровка.
+    public var compassFieldChanged: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fieldDiffersFromCalibration
     }
 
     /// Насколько курс по гироскопу расходился с компасом в последнем принятом показании, рад;
@@ -140,6 +152,13 @@ public final class OrientationFilter {
         local.strength += (strength - local.strength) * adaptation
         local.dip += (dip - local.dip) * adaptation
         localField = local
+        let strengthChange = abs(local.strength / calibration.radius - 1)
+        let dipChange = abs(local.dip - calibration.dip)
+        if strengthChange > Compass.changedFieldStrength || dipChange > Compass.changedFieldDip {
+            fieldDiffersFromCalibration = true
+        } else if strengthChange < Compass.restoredFieldStrength, dipChange < Compass.restoredFieldDip {
+            fieldDiffersFromCalibration = false
+        }
 
         if let reference = referenceField,
            abs(local.strength / reference.strength - 1) > Compass.maxFieldDeviation || abs(local.dip - reference.dip) > Compass.maxDipDeviation {
@@ -246,4 +265,8 @@ private enum Compass {
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 4
     static let sectorSize = 15 * Double.pi / 180
+    static let changedFieldStrength = 0.15
+    static let changedFieldDip = 10 * Double.pi / 180
+    static let restoredFieldStrength = 0.08
+    static let restoredFieldDip = 6 * Double.pi / 180
 }
