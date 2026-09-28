@@ -37,6 +37,7 @@ public struct AmbientSynth {
 
     private let sampleRate: Double
     private var volume = 0.0
+    private var depth = 0.0
     private var time = 0.0
     private var random: UInt64
     private var phases: [Double]
@@ -55,6 +56,7 @@ public struct AmbientSynth {
     private static let chordCrossfadeSeconds = 4.0
     private static let detune = 0.0015
     private static let voicesPerChord = 4
+    private static let depthChangeSeconds = 1.0
 
     /// - Parameters:
     ///   - sampleRate: частота дискретизации выхода, Гц.
@@ -85,8 +87,10 @@ public struct AmbientSynth {
     public mutating func render(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frames: Int) {
         let dt = 1 / sampleRate
         let volumeStep = dt / Self.fadeSeconds
-        let depth = neuralEffect.depth
+        let depthStep = dt / Self.depthChangeSeconds
+        let targetDepth = neuralEffect.depth
         for i in 0..<frames {
+            depth += max(-depthStep, min(depthStep, targetDepth - depth))
             if volume < targetVolume {
                 volume = min(targetVolume, volume + volumeStep)
             } else if volume > targetVolume {

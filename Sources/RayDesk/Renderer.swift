@@ -8,6 +8,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
+    private let skyPipeline: MTLRenderPipelineState
+    private let skyDepthState: MTLDepthStencilState
     private let gridVertices: MTLBuffer
     private let gridVertexCount: Int
     private let depthState: MTLDepthStencilState
@@ -38,10 +40,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     var onFrame: ((simd_quatd) -> Void)?
 
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
+    private(set) var meditation = MeditationTransition()
+    var breathingEnabled = false
+    private var breathingVisibility = 0.0
+    private var meditationStart = CACurrentMediaTime()
+    private let skyClockStart = CACurrentMediaTime()
 
     private struct Uniforms {
         var mvp: simd_float4x4
         var border: SIMD4<Float>
+    }
+
+    private struct SkyUniforms {
+        var inverseViewProjection: simd_float4x4
+        var params: SIMD4<Float>
     }
 
     init(view: MTKView, scene: SpatialScene, filter: OrientationFilter) throws {
@@ -68,7 +80,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
         descriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
         descriptor.rasterSampleCount = view.sampleCount
+        descriptor.colorAttachments[0].isBlendingEnabled = true
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+
+        let skyDescriptor = MTLRenderPipelineDescriptor()
+        skyDescriptor.vertexFunction = library.makeFunction(name: "skyVertex")
+        skyDescriptor.fragmentFunction = library.makeFunction(name: "skyFragment")
+        skyDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        skyDescriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
+        skyDescriptor.rasterSampleCount = view.sampleCount
+        skyPipeline = try device.makeRenderPipelineState(descriptor: skyDescriptor)
 
         let gridDescriptor = MTLRenderPipelineDescriptor()
         gridDescriptor.vertexFunction = library.makeFunction(name: "gridVertex")
@@ -86,6 +111,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         depthDescriptor.depthCompareFunction = .less
         depthDescriptor.isDepthWriteEnabled = true
         depthState = device.makeDepthStencilState(descriptor: depthDescriptor)!
+        let skyDepthDescriptor = MTLDepthStencilDescriptor()
+        skyDepthDescriptor.depthCompareFunction = .always
+        skyDepthDescriptor.isDepthWriteEnabled = false
+        skyDepthState = device.makeDepthStencilState(descriptor: skyDepthDescriptor)!
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -107,10 +136,21 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    func toggleMeditation() {
+        meditation.toggle()
+        if meditation.isActive, meditation.progress == 0 {
+            meditationStart = CACurrentMediaTime()
+        }
+    }
+
     func draw(in view: MTKView) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
         let head = headPipeline.renderedOrientation(frameInterval: now - lastFrameTime)
+        let frameSeconds = min(now - lastFrameTime, 0.1)
+        meditation.advance(by: frameSeconds)
+        let breathingTarget = breathingEnabled ? 1.0 : 0.0
+        breathingVisibility += max(-frameSeconds, min(frameSeconds, breathingTarget - breathingVisibility))
         lastFrameTime = now
         currentHead = head
         scene.tick(head: head)
@@ -137,24 +177,38 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
         let viewMatrix = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
 
+        let skyAmount = Float(meditation.eased)
+        if skyAmount > 0 {
+            let breathing = Float(Breathing.openness(at: now - meditationStart))
+            var sky = SkyUniforms(
+                inverseViewProjection: (projection * viewMatrix).inverse,
+                params: SIMD4(Float(now - skyClockStart), skyAmount, breathing, Float(breathingVisibility))
+            )
+            encoder.setRenderPipelineState(skyPipeline)
+            encoder.setDepthStencilState(skyDepthState)
+            encoder.setFragmentBytes(&sky, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        }
+
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setFragmentSamplerState(sampler, index: 0)
 
-        for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() {
+        let screenOpacity = 1 - skyAmount
+        for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() where screenOpacity > 0 {
             let model = pose.modelMatrix
             let texture = slot.texture ?? placeholder
             let borderAlpha: Float = (scene.grabbed == i || draggingScreen == i) ? 1.0 : (cursorScreen == i ? 0.6 : 0.25)
             var uniforms = Uniforms(
                 mvp: projection * viewMatrix * model,
-                border: SIMD4(3 / Float(texture.width), 3 / Float(texture.height), borderAlpha, 0)
+                border: SIMD4(3 / Float(texture.width), 3 / Float(texture.height), borderAlpha, screenOpacity)
             )
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        if showsGrid {
+        if showsGrid, skyAmount == 0 {
             var gridUniforms = Uniforms(mvp: projection * viewMatrix, border: SIMD4(0.15, 0.75, 0.3, 1))
             encoder.setRenderPipelineState(gridPipeline)
             encoder.setVertexBuffer(gridVertices, offset: 0, index: 1)
@@ -258,7 +312,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (edge.x < u.border.x || edge.y < u.border.y) {
             color.rgb = mix(color.rgb, float3(0.55, 0.75, 1.0), u.border.z);
         }
-        return float4(color.rgb, 1);
+        return float4(color.rgb, u.border.w);
     }
-    """
+    """ + skyShaderSource
 }

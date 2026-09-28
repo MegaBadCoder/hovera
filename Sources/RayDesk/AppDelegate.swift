@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastCursorHit: CursorHit?
     private var macAnchor: MacAnchor?
     private var lastGazeHit: GazeHit?
+    private let meditationAudio = MeditationAudio()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -170,10 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
             renderer.headPipeline.predictionSeconds = savedPrediction / 1000
         }
+        renderer.breathingEnabled = UserDefaults.standard.bool(forKey: "meditationBreathing")
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
             lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
             lastCursorHit = RayDeskCore.cursorHit(head: head, screens: scene.screens, mac: macAnchor)
+            guard self.renderer?.meditation.isActive != true else { return }
             warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
         }
         view.delegate = renderer
@@ -481,6 +484,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveScene()
         arrangeDisplays()
     }
+    private func meditationMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Медитация", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.addItem(menuItem("Включить / выключить   ⌃⌥Z", #selector(toggleMeditation)))
+        let breathing = menuItem("Дыхание (вдох 4 с, выдох 6 с)", #selector(toggleBreathing(_:)))
+        breathing.state = UserDefaults.standard.bool(forKey: "meditationBreathing") ? .on : .off
+        submenu.addItem(breathing)
+        submenu.addItem(.separator())
+        submenu.addItem(NSMenuItem(title: "Нейроэффект", action: nil, keyEquivalent: ""))
+        let saved = savedNeuralEffect()
+        meditationAudio.neuralEffect = saved
+        for (effect, title) in [(NeuralEffect.off, "Выключен"), (.low, "Слабый"), (.medium, "Средний"), (.high, "Сильный")] {
+            let option = menuItem("   " + title, #selector(chooseNeuralEffect(_:)))
+            option.representedObject = effect.rawValue
+            option.state = effect == saved ? .on : .off
+            submenu.addItem(option)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    private func savedNeuralEffect() -> NeuralEffect {
+        UserDefaults.standard.string(forKey: "meditationNeuralEffect").flatMap(NeuralEffect.init(rawValue:)) ?? .low
+    }
+
+    @objc private func toggleMeditation() {
+        guard let renderer else { return }
+        renderer.toggleMeditation()
+        if renderer.meditation.isActive {
+            do {
+                try meditationAudio.start()
+            } catch {
+                log("meditation audio failed: \(error)")
+                say("Не удалось включить звук медитации.")
+            }
+        } else {
+            meditationAudio.stop()
+        }
+        log("meditation \(renderer.meditation.isActive ? "on" : "off")")
+    }
+
+    @objc private func toggleBreathing(_ sender: NSMenuItem) {
+        let enabled = !UserDefaults.standard.bool(forKey: "meditationBreathing")
+        UserDefaults.standard.set(enabled, forKey: "meditationBreathing")
+        renderer?.breathingEnabled = enabled
+        sender.state = enabled ? .on : .off
+        log("meditation breathing \(enabled ? "on" : "off")")
+    }
+
+    @objc private func chooseNeuralEffect(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let effect = NeuralEffect(rawValue: raw) else { return }
+        UserDefaults.standard.set(effect.rawValue, forKey: "meditationNeuralEffect")
+        meditationAudio.neuralEffect = effect
+        sender.menu?.items.forEach { item in
+            guard let value = item.representedObject as? String else { return }
+            item.state = value == raw ? .on : .off
+        }
+        log("meditation neural effect \(raw)")
+    }
+
     private func savedStabilization() -> StabilizationLevel {
         UserDefaults.standard.string(forKey: "stabilization").flatMap(StabilizationLevel.init(rawValue:)) ?? .off
     }
@@ -554,6 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_J) { [weak self] in self?.warpCursorToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
+        hotkeys.register(keyCode: kVK_ANSI_Z) { [weak self] in self?.toggleMeditation() }
     }
 
     private func setupMenu() {
@@ -581,6 +645,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(compassItem)
         menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
         menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
+        menu.addItem(.separator())
+        menu.addItem(meditationMenu())
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
@@ -682,7 +748,8 @@ extension AppDelegate: MouseTapDelegate {
     }
 
     func warpTarget(cursor: CursorTarget?) -> CursorTarget? {
-        warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
+        guard renderer?.meditation.isActive != true else { return nil }
+        return warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
     }
 
     func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint? {
