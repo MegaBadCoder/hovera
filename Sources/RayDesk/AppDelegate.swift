@@ -613,7 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   filter.magnetometerCalibration == nil ? "✗" : "✓")
         let learned = filter.gyroBias * 180 / .pi
         let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
-            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас %.3f °/с", filter.verticalBias * 180 / .pi))
+            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi))
         log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс", compass, imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000))
     }
 

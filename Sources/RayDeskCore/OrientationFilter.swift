@@ -18,7 +18,7 @@ public final class OrientationFilter {
     private var magneticReference: Double?
     private var localField: (strength: Double, dip: Double)?
     private var referenceField: (strength: Double, dip: Double)?
-    private var verticalBiasEstimate = 0.0
+    private var lastCompassError = 0.0
     private var biasLearner = StillnessBiasLearner()
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
@@ -33,9 +33,9 @@ public final class OrientationFilter {
 
     public init() {}
 
-    /// Калибровка магнитометра. Пока она задана, компас медленно оценивает смещение нуля
-    /// гироскопа вокруг мировой вертикали и вычитает его; `nil` выключает компас.
-    /// Любая установка сбрасывает опорное направление поля и оценку смещения.
+    /// Калибровка магнитометра. Пока она задана, курс плавно подтягивается к направлению
+    /// поля, запомненному при первом показании; `nil` выключает компас.
+    /// Любая установка сбрасывает опорное направление поля.
     public var magnetometerCalibration: MagnetometerCalibration? {
         get {
             lock.lock()
@@ -48,25 +48,26 @@ public final class OrientationFilter {
             magneticReference = nil
             localField = newValue.map { ($0.radius, $0.dip) }
             referenceField = nil
-            verticalBiasEstimate = 0
+            lastCompassError = 0
             lock.unlock()
         }
     }
 
-    /// Оценка смещения нуля гироскопа вокруг мировой вертикали по компасу, рад/с.
-    public var verticalBias: Double {
+    /// Насколько курс по гироскопу расходился с компасом в последнем принятом показании, рад;
+    /// плюс — курс левее поля.
+    public var compassError: Double {
         lock.lock()
         defer { lock.unlock() }
-        return verticalBiasEstimate
+        return lastCompassError
     }
 
-    /// Сбрасывает фильтр к неинициализированному состоянию и обнуляет оценку компаса.
+    /// Сбрасывает фильтр к неинициализированному состоянию и забывает опору компаса.
     public func reset() {
         lock.lock()
         initialized = false
         magneticReference = nil
         referenceField = nil
-        verticalBiasEstimate = 0
+        lastCompassError = 0
         lock.unlock()
     }
 
@@ -122,11 +123,8 @@ public final class OrientationFilter {
         if angle > 1e-9 {
             q = simd_normalize(q * simd_quatd(angle: angle, axis: normalize(w)))
         }
-        if let compass {
-            q = simd_normalize(simd_quatd(angle: -verticalBiasEstimate * dt, axis: SIMD3(0, 1, 0)) * q)
-            if let magnetometer {
-                observeCompass(magnetometer, calibration: compass, dt: dt)
-            }
+        if let compass, let magnetometer {
+            observeCompass(magnetometer, calibration: compass, dt: dt)
         }
     }
 
@@ -159,7 +157,7 @@ public final class OrientationFilter {
             return
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
-        verticalBiasEstimate += Compass.integralGain * error * dt
+        lastCompassError = error
         q = simd_normalize(simd_quatd(angle: -Compass.proportionalGain * error * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
@@ -212,14 +210,14 @@ public final class OrientationFilter {
         return simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega)))
     }
 
-    /// Обнуляет текущий yaw, сохраняя pitch и roll.
+    /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
+    /// за верное: опора поля берётся заново со следующего принятого показания.
     public func alignYawToZero() {
         lock.lock()
         let yp = q.yawPitch
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
-        if let reference = magneticReference {
-            magneticReference = atan2(sin(reference - yp.yaw), cos(reference - yp.yaw))
-        }
+        magneticReference = nil
+        lastCompassError = 0
         lock.unlock()
     }
 }
@@ -243,6 +241,5 @@ private enum Compass {
     static let maxDipDeviation = 5 * Double.pi / 180
     static let placeAdaptationSeconds = 30.0
     static let minHorizontalShare = 0.2
-    static let proportionalGain = 1.0 / 8
-    static let integralGain = proportionalGain * proportionalGain / 4
+    static let proportionalGain = 1.0 / 4
 }
