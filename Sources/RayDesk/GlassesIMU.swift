@@ -17,6 +17,7 @@ final class GlassesIMU {
     private(set) var isConnected = false
     private(set) var temperature = 0.0
     private var compassFitter: HardIronFitter?
+    var recorder: IMURecorder?
 
     init(filter: OrientationFilter) {
         self.filter = filter
@@ -104,6 +105,7 @@ final class GlassesIMU {
     private func handle(report: UnsafeMutablePointer<UInt8>, length: CFIndex) {
         guard let sample = decoder.decode(UnsafeBufferPointer(start: report, count: length)) else { return }
         temperature = sample.temperature
+        recorder?.record(sample)
         filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer, dt: sample.dt)
         counterLock.lock()
         samplesSinceLastRead += 1

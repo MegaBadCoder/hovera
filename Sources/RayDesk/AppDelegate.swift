@@ -54,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadGyroBias()
         loadMacAnchor()
         imu = GlassesIMU(filter: filter)
+        if UserDefaults.standard.object(forKey: "recordIMU") as? Bool ?? true {
+            imu?.recorder = IMURecorder()
+        }
         imu?.start()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -284,11 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = CACurrentMediaTime()
         let travel = filter.travel
         let previous = lastCorrection ?? (now, travel)
-        log(String(format: "CORRECTION %@ yaw %.1f° since %.0f s travel %.0f° yawTravel %.0f° temp %.1f °C",
+        log(String(format: "CORRECTION %@ yaw %.1f° since %.0f s travel %.0f° yawTravel %.0f° temp %.1f °C at %.4f",
                    kind, yawDegrees, now - previous.time,
                    (travel.total - previous.travel.total) * 180 / .pi,
                    (travel.yaw - previous.travel.yaw) * 180 / .pi,
-                   imu?.temperature ?? 0))
+                   imu?.temperature ?? 0, Date().timeIntervalSinceReferenceDate))
         lastCorrection = (now, travel)
     }
 
