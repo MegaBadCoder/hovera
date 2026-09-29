@@ -98,8 +98,8 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
 
 @Test func lookingDownMakesTheFaceLookBigger() {
     let turn = FaceTurnModel()
-    #expect(turn.sizeFactor(yaw: 0, pitch: -20 * degree) > 1.15)
-    #expect(turn.sizeFactor(yaw: 0, pitch: 20 * degree) < 0.9)
+    #expect(turn.sizeFactor(yaw: 0, pitch: -20 * degree) > 1.05)
+    #expect((0.88...0.96).contains(turn.sizeFactor(yaw: 0, pitch: 25 * degree)))
 }
 
 @Test func faceTouchingTheFrameEdgeIsCropped() {

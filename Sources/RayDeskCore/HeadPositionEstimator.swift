@@ -18,7 +18,7 @@ public struct FaceTurnModel: Sendable {
     public var pivotRadius: Double
 
     public init(sizeFloor: Double = 0.30, sizeTilt: Double = -0.10, sizeLimit: Double = 0.70,
-                pitchSize: Double = 0.6, pivotRadius: Double = 0.05) {
+                pitchSize: Double = 0.2, pivotRadius: Double = 0.05) {
         self.sizeFloor = sizeFloor
         self.sizeTilt = sizeTilt
         self.sizeLimit = sizeLimit

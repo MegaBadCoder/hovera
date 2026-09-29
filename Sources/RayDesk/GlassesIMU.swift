@@ -112,7 +112,7 @@ final class GlassesIMU {
         counterLock.lock()
         samplesSinceLastRead += 1
         if let magnetometer = sample.magnetometer, compassFitter != nil {
-            compassFitter?.add(magnetometer: magnetometer, up: simd_normalize(sample.accel))
+            compassFitter?.add(magnetometer: magnetometer, up: simd_normalize(sample.accel), orientation: filter.orientation(predictAhead: 0))
         }
         counterLock.unlock()
     }

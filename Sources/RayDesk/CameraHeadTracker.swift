@@ -71,7 +71,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let maxDepthJump = 0.12
     private static let holdYaw = 20 * Double.pi / 180
     private static let resumeYaw = 15 * Double.pi / 180
-    private static let holdPitch = 25 * Double.pi / 180
+    private static let holdPitch = 38 * Double.pi / 180
     private static let maxTrackedSpeed = 30 * Double.pi / 180
     private static let referenceSpeed = 10 * Double.pi / 180
     private static let carrySeconds = 1.0

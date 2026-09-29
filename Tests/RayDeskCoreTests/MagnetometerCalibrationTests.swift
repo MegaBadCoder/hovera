@@ -57,3 +57,37 @@ private func randomRotation(_ generator: inout SystemRandomNumberGenerator) -> s
     let decoded = try JSONDecoder().decode(MagnetometerCalibration.self, from: JSONEncoder().encode(calibration))
     #expect(decoded == calibration)
 }
+
+@Test func orientationKeepsHeadingTheSameWhereverYouLook() throws {
+    var generator = SystemRandomNumberGenerator()
+    let steepField = SIMD3(-14.3, 50.3, -5.4)
+    let distortion = SIMD3(1.04, 1.0, 0.97)
+    func reading(_ head: simd_quatd) -> SIMD3<Double> {
+        head.inverse.act(steepField) * distortion + hardIron
+    }
+    func headHold(yaw: Double, pitch: Double, roll: Double) -> simd_quatd {
+        simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: pitch, axis: SIMD3(1, 0, 0)) * simd_quatd(angle: roll, axis: SIMD3(0, 0, 1))
+    }
+    var sphereOnly = HardIronFitter()
+    var withOrientation = HardIronFitter()
+    for _ in 0..<3000 {
+        let head = headHold(yaw: .random(in: -1.6...1.6, using: &generator), pitch: .random(in: -0.8...0.6, using: &generator),
+                            roll: .random(in: -0.6...0.6, using: &generator))
+        let noise = SIMD3(Double.random(in: -0.5...0.5, using: &generator), Double.random(in: -0.5...0.5, using: &generator), Double.random(in: -0.5...0.5, using: &generator))
+        let up = head.inverse.act(SIMD3(0, 1, 0))
+        sphereOnly.add(magnetometer: reading(head) + noise, up: up)
+        withOrientation.add(magnetometer: reading(head) + noise, up: up, orientation: head)
+    }
+    func headingSpread(_ calibration: MagnetometerCalibration) -> Double {
+        let headings = stride(from: -60.0, through: 60.0, by: 15).map { degrees -> Double in
+            let head = headHold(yaw: degrees * .pi / 180, pitch: -0.26, roll: 0)
+            let world = head.act(reading(head) - calibration.center)
+            return atan2(world.x, world.z) * 180 / .pi
+        }
+        return headings.max()! - headings.min()!
+    }
+    let refined = try withOrientation.result()
+    #expect(headingSpread(refined) < 2)
+    #expect(headingSpread(refined) < headingSpread(try sphereOnly.result()))
+    #expect(abs(refined.dip - acos(steepField.y / simd_length(steepField))) < 2 * .pi / 180)
+}

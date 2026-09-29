@@ -30,6 +30,10 @@ public enum MagnetometerCalibrationError: Error, Equatable {
 }
 
 /// Собирает показания магнитометра, пока пользователь крутит головой, и вписывает в них сферу.
+///
+/// Если к отсчётам приложена ориентация очков, центр уточняется по ней: поле Земли в мире одно и то же,
+/// поэтому показание равно повёрнутому в оси очков полю плюс центр. Так центр по горизонтали
+/// находится точно, даже когда голова поворачивалась не во все стороны, а сфера вписывается криво.
 public struct HardIronFitter {
     public static let minSamples = 1500
     public static let maxRelativeSpread = 0.03
@@ -38,6 +42,7 @@ public struct HardIronFitter {
 
     private var fields: [SIMD3<Double>] = []
     private var ups: [SIMD3<Double>] = []
+    private var orientations: [simd_quatd] = []
 
     public init() {}
 
@@ -48,9 +53,11 @@ public struct HardIronFitter {
     /// - Parameters:
     ///   - magnetometer: поле по осям тела, сырые единицы.
     ///   - up: единичный вектор «вверх» по осям тела (нормированное показание акселерометра).
-    public mutating func add(magnetometer: SIMD3<Double>, up: SIMD3<Double>) {
+    ///   - orientation: ориентация очков в мире в момент отсчёта; `nil` — центр только по сфере.
+    public mutating func add(magnetometer: SIMD3<Double>, up: SIMD3<Double>, orientation: simd_quatd? = nil) {
         fields.append(magnetometer)
         ups.append(up)
+        if let orientation { orientations.append(orientation) }
     }
 
     /// Вписывает сферу методом наименьших квадратов и проверяет качество.
@@ -93,13 +100,35 @@ public struct HardIronFitter {
             throw MagnetometerCalibrationError.insufficientCoverage(spreads[0])
         }
 
+        if orientations.count == fields.count, let refined = refinedByOrientation() {
+            let strength = simd_length(refined.world)
+            return MagnetometerCalibration(center: refined.center, radius: strength, dip: acos(max(-1, min(1, refined.world.y / strength))))
+        }
         let dip = zip(directions, ups).map { acos(max(-1, min(1, simd_dot($0, simd_normalize($1))))) }.reduce(0, +) / Double(directions.count)
         return MagnetometerCalibration(center: center, radius: radius, dip: dip)
     }
 
+    private func refinedByOrientation() -> (center: SIMD3<Double>, world: SIMD3<Double>)? {
+        var normal = [[Double]](repeating: [Double](repeating: 0, count: 7), count: 6)
+        for (field, orientation) in zip(fields, orientations) {
+            let toBody = simd_matrix3x3(orientation.inverse)
+            for axis in 0..<3 {
+                var row = [Double](repeating: 0, count: 6)
+                for k in 0..<3 { row[k] = toBody[k][axis] }
+                row[3 + axis] = 1
+                for i in 0..<6 {
+                    for j in 0..<6 { normal[i][j] += row[i] * row[j] }
+                    normal[i][6] += row[i] * field[axis]
+                }
+            }
+        }
+        guard let solution = solve(normal) else { return nil }
+        return (SIMD3(solution[3], solution[4], solution[5]), SIMD3(solution[0], solution[1], solution[2]))
+    }
+
     private func solve(_ matrix: [[Double]]) -> [Double]? {
         var m = matrix
-        let n = 4
+        let n = matrix.count
         for column in 0..<n {
             guard let pivot = (column..<n).max(by: { abs(m[$0][column]) < abs(m[$1][column]) }), abs(m[pivot][column]) > 1e-9 else { return nil }
             m.swapAt(column, pivot)
