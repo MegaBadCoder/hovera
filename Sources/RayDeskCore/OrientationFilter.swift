@@ -2,8 +2,9 @@ import Foundation
 import simd
 
 /// Комплементарный фильтр ориентации головы: гироскоп интегрируется, наклон поправляется
-/// по акселерометру. Курс держит компас, если задана его калибровка; без компаса из
-/// гироскопа вычитается ноль, выученный в моменты покоя.
+/// по акселерометру. Из гироскопа вычитается ноль, выученный в моменты покоя: с компасом —
+/// по повороту векторов тяжести и поля (`VectorBiasLearner`), без него — по разбросу
+/// показаний (`StillnessBiasLearner`). Курс держит компас, если задана его калибровка.
 ///
 /// Мировая и связанная система координат: X вправо, Y вверх, Z назад
 /// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
@@ -21,6 +22,7 @@ public final class OrientationFilter: @unchecked Sendable {
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
+    private var vectorLearner = VectorBiasLearner()
     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
     private var historyNext = 0
     private var historyCount = 0
@@ -59,6 +61,11 @@ public final class OrientationFilter: @unchecked Sendable {
         }
         set {
             lock.lock()
+            if compass == nil, newValue != nil {
+                vectorLearner = VectorBiasLearner(bias: biasLearner.bias)
+            } else if compass != nil, newValue == nil {
+                biasLearner = StillnessBiasLearner(bias: vectorLearner.bias)
+            }
             compass = newValue
             magneticReferences = [:]
             localField = newValue.map { ($0.radius, $0.dip) }
@@ -133,7 +140,10 @@ public final class OrientationFilter: @unchecked Sendable {
         }
 
         var w = gyro
-        if compass == nil {
+        if let compass {
+            vectorLearner.add(gyro: gyro, accel: accel, field: magnetometer.map { $0 - compass.center }, dt: dt)
+            w -= vectorLearner.bias
+        } else {
             biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
             w -= biasLearner.bias
         }
@@ -237,7 +247,7 @@ public final class OrientationFilter: @unchecked Sendable {
     public var gyroBias: SIMD3<Double> {
         lock.lock()
         defer { lock.unlock() }
-        return biasLearner.bias
+        return compass == nil ? biasLearner.bias : vectorLearner.bias
     }
 
     func configureBiasLearner(_ change: (inout StillnessBiasLearner) -> Void) {
@@ -259,6 +269,7 @@ public final class OrientationFilter: @unchecked Sendable {
     public func seedGyroBias(_ bias: SIMD3<Double>) {
         lock.lock()
         biasLearner = StillnessBiasLearner(bias: bias)
+        vectorLearner = VectorBiasLearner(bias: bias)
         lock.unlock()
     }
 
@@ -321,7 +332,7 @@ private enum Compass {
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 4
     static let sectorSize = 15 * Double.pi / 180
-    static let maxCorrectionRate = 0.5 * Double.pi / 180
+    static let maxCorrectionRate = 0.2 * Double.pi / 180
     static let changedFieldStrength = 0.15
     static let changedFieldDip = 10 * Double.pi / 180
     static let restoredFieldStrength = 0.08
