@@ -296,7 +296,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func markReference() {
         let yp = head.yawPitch
-        log(String(format: "MARK взгляд %.1f° / %.1f°", yp.yaw * 180 / .pi, yp.pitch * 180 / .pi))
+        let now = CACurrentMediaTime()
+        let since = lastCorrection.map { now - $0.time } ?? 0
+        log(String(format: "MARK yaw %.1f° pitch %.1f° since %.0f s at %.4f",
+                   -yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, since, Date().timeIntervalSinceReferenceDate))
+        NSSound(named: "Tink")?.play()
     }
     @objc private func toggleCalibration() {
         guard let renderer else { return }
@@ -977,6 +981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
         menu.addItem(.separator())
         menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
+        menu.addItem(menuItem("Метка: смотрю на средний экран (только в лог)   ⌃⌥M", #selector(markReference)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
         menu.addItem(joinMenu())
