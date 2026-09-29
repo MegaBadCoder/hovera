@@ -23,6 +23,14 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var file: FileHandle?
     private var pending: [String] = []
     private var currentPhase = ""
+    private var estimator = HeadPositionEstimator(camera: FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9))
+    private var smoother = VectorSmoother(timeConstants: SIMD3(0.15, 0.15, 0.3))
+    private var referenceTurn: (yaw: Double, pitch: Double)?
+    private var referenceNeck: SIMD3<Double>?
+    private var referenceSince: Double?
+    private var lastFaceTime = 0.0
+    private static let referenceSettleSeconds = 0.5
+    private static let maxOffset = 0.5
     private let orientation: @Sendable () -> simd_quatd
 
     init(orientation: @escaping @Sendable () -> simd_quatd) {
@@ -94,6 +102,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         session.commitConfiguration()
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         camera.aspect = Double(dimensions.width) / Double(max(dimensions.height, 1))
+        lock.withLock { estimator.camera = camera }
         log(String(format: "camera: %@ %dx%d, assumed field of view %.0f°", device.localizedName,
                    dimensions.width, dimensions.height, Self.assumedFieldOfView * 180 / .pi))
     }
@@ -120,6 +129,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             let position = camera.headPosition(face: face.boundingBox)
             spread.add(position, at: time)
             latestAngles = SIMD3(face.yaw?.doubleValue ?? .nan, face.pitch?.doubleValue ?? .nan, face.roll?.doubleValue ?? .nan)
+            trackNeck(face: face.boundingBox, head: head, time: time)
         }
         let phase = currentPhase
         lock.unlock()
@@ -137,6 +147,42 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                       box.midX, box.midY, box.width, box.height, position.x, position.y, position.z,
                       (face.yaw?.doubleValue ?? .nan) * degree, (face.pitch?.doubleValue ?? .nan) * degree,
                       (face.roll?.doubleValue ?? .nan) * degree, face.confidence, features, headColumns))
+    }
+
+    private func trackNeck(face: CGRect, head: simd_quatd, time: Double) {
+        let turn = head.yawPitch
+        if referenceTurn == nil {
+            referenceTurn = turn
+            referenceSince = time
+            smoother.reset()
+        }
+        guard let referenceTurn, let referenceSince else { return }
+        let yaw = remainder(turn.yaw - referenceTurn.yaw, 2 * .pi)
+        let neck = estimator.neckPosition(face: face, yaw: yaw, pitch: turn.pitch - referenceTurn.pitch)
+        smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.2) : 0.033)
+        lastFaceTime = time
+        if time - referenceSince < Self.referenceSettleSeconds {
+            referenceNeck = smoother.value
+        }
+    }
+
+    /// Начинает отсчёт сдвига головы заново от текущего положения и поворота.
+    func resetReference() {
+        lock.withLock {
+            referenceTurn = nil
+            referenceNeck = nil
+            referenceSince = nil
+        }
+    }
+
+    /// Сдвиг шеи от опорного положения в осях камеры, метры; ноль, пока опоры нет.
+    func neckOffset() -> SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let referenceNeck, let current = smoother.value else { return .zero }
+        let offset = current - referenceNeck
+        let length = simd_length(offset)
+        return length > Self.maxOffset ? offset * (Self.maxOffset / length) : offset
     }
 
     private func landmarkColumns(_ face: VNFaceObservation) -> String {

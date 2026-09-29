@@ -495,11 +495,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
+        if renderer.headOffset != nil {
+            cameraHead.resetReference()
+        }
+    }
+
+    @objc private func toggleWallMode(_ sender: NSMenuItem) {
+        guard let renderer else { return }
+        if renderer.headOffset != nil {
+            renderer.headOffset = nil
+            sender.state = .off
+            log("wall mode off")
+            return
+        }
+        let enable = { [weak self] in
+            guard let self, let renderer = self.renderer else { return }
+            cameraHead.resetReference()
+            let cameraYaw = macAnchor?.pose.yaw ?? 0
+            renderer.headOffset = { [cameraHead] in worldOffset(fromCamera: cameraHead.neckOffset(), cameraYaw: cameraYaw) }
+            sender.state = .on
+            say("Экраны как на стене. Сядьте удобно и смотрите прямо, я запоминаю положение.")
+            log("wall mode on")
+        }
+        if cameraHead.isRunning {
+            enable()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            enable()
+        }
     }
 
     @objc private func toggleCameraHead(_ sender: NSMenuItem) {
         if cameraHead.isRunning || sender.state == .on {
             cameraHead.stop()
+            renderer?.headOffset = nil
             sender.state = .off
             log("camera head tracking off")
             return
@@ -573,6 +609,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let jitter = (reading.jitter ?? .zero) * 1000
         let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
+        let neck = cameraHead.neckOffset() * 100
+        log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см%@", neck.x, neck.y, neck.z, renderer?.headOffset != nil ? " · экраны на стене" : ""))
         log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
                    position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
                    reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
@@ -844,6 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
+        menu.addItem(menuItem("Экраны как на стене (камера, эксперимент)", #selector(toggleWallMode(_:))))
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)

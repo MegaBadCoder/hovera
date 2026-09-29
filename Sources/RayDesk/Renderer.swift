@@ -45,6 +45,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private(set) var meditation = MeditationTransition()
     var breathingEnabled = false
+    var headOffset: (() -> SIMD3<Double>)?
     private var breathingVisibility = 0.0
     private var meditationStart = CACurrentMediaTime()
     private let skyClockStart = CACurrentMediaTime()
@@ -214,13 +215,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             aspect: Float(size.width / max(size.height, 1)),
             near: 0.05, far: 100
         )
-        let viewMatrix = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
+        let rotationOnly = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
+        let offset = headOffset?() ?? .zero
+        let viewMatrix = rotationOnly * .translation(SIMD3(Float(-offset.x), Float(-offset.y), Float(-offset.z)))
 
         let skyAmount = Float(meditation.eased)
         if skyAmount > 0, let nebulaMap {
             let breathing = Float(Breathing.openness(at: now - meditationStart))
             var sky = SkyUniforms(
-                inverseViewProjection: (projection * viewMatrix).inverse,
+                inverseViewProjection: (projection * rotationOnly).inverse,
                 params: SIMD4(Float(now - skyClockStart), skyAmount, breathing, Float(breathingVisibility))
             )
             encoder.setRenderPipelineState(skyPipeline)
