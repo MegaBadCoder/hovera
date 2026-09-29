@@ -24,6 +24,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
   <key>NSScreenCaptureUsageDescription</key><string>RayDesk показывает виртуальный монитор в очках.</string>
+  <key>NSCameraUsageDescription</key><string>RayDesk оценивает по камере, где голова, чтобы экраны держались на месте. Кадры не сохраняются.</string>
 </dict>
 </plist>
 PLIST

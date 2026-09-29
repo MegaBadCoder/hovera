@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
+    private var cameraDebugWindow: CameraDebugWindow?
+    private lazy var cameraHead = CameraHeadTracker { [filter] uptime in (filter.orientation(atUptime: uptime), filter.angularSpeed) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -544,6 +546,183 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
+        if renderer.headOffset != nil {
+            cameraHead.resetReference(after: 0.5)
+        }
+    }
+
+    @objc private func toggleCameraDebug(_ sender: NSMenuItem) {
+        if let window = cameraDebugWindow, window.isVisible {
+            window.close()
+            cameraHead.observe(nil)
+            sender.state = .off
+            log("camera debug window off")
+            return
+        }
+        let open = { [weak self] in
+            guard let self else { return }
+            let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].virtualScreen.displayID
+            let screen = NSScreen.screens.first { $0.displayID == display }
+            let window = CameraDebugWindow(session: cameraHead.captureSession, on: screen)
+            cameraDebugWindow = window
+            cameraHead.observe { [weak window] observation in window?.update(observation) }
+            window.show()
+            sender.state = .on
+            log("camera debug window on")
+        }
+        if cameraHead.isRunning {
+            open()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            open()
+        }
+    }
+
+    private var wallDepthStrength: Double {
+        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.25
+    }
+
+    @objc private func chooseWallDepth(_ sender: NSMenuItem) {
+        guard let percent = sender.representedObject as? Int else { return }
+        UserDefaults.standard.set(Double(percent) / 100, forKey: "wallDepthStrength")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == percent ? .on : .off }
+        log("wall depth strength \(percent)%")
+    }
+
+    @objc private func toggleWallMode(_ sender: NSMenuItem) {
+        guard let renderer else { return }
+        if renderer.headOffset != nil {
+            renderer.headOffset = nil
+            sender.state = .off
+            log("wall mode off")
+            return
+        }
+        let enable = { [weak self] in
+            guard let self, let renderer = self.renderer else { return }
+            cameraHead.resetReference(after: 4)
+            let cameraYaw = macAnchor?.pose.yaw ?? 0
+            var referenceHead: simd_quatd?
+            var generation = -1
+            renderer.headOffset = { [cameraHead, weak self] head in
+                if cameraHead.referenceGeneration != generation {
+                    generation = cameraHead.referenceGeneration
+                    referenceHead = head
+                }
+                var offset = cameraHead.neckOffset()
+                offset.z *= self?.wallDepthStrength ?? 0.25
+                let neck = worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
+                guard let referenceHead else { return neck }
+                return neck + eyeArcOffset(head: head, reference: referenceHead)
+            }
+            sender.state = .on
+            say("Экраны как на стене. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")
+            log("wall mode on")
+        }
+        if cameraHead.isRunning {
+            enable()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            enable()
+        }
+    }
+
+    @objc private func toggleCameraHead(_ sender: NSMenuItem) {
+        if cameraHead.isRunning || sender.state == .on {
+            cameraHead.stop()
+            renderer?.headOffset = nil
+            sender.state = .off
+            log("camera head tracking off")
+            return
+        }
+        sender.state = .on
+        cameraHead.start { [weak self] error in
+            guard let error else {
+                log("camera head tracking on")
+                return
+            }
+            sender.state = .off
+            log("camera head tracking failed: \(error)")
+            self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+        }
+    }
+
+    @objc private func guidedCameraMeasurement() {
+        let steps: [(phase: String, seconds: Double, prompt: String)] = [
+            ("rest", 12, "Замер по шагам. Смотрите прямо на средний экран и не двигайтесь."),
+            ("turn-left", 8, "Поверните голову к левому монитору и замрите."),
+            ("rest", 6, "Снова прямо."),
+            ("turn-right", 8, "Поверните голову к правому монитору и замрите."),
+            ("rest", 6, "Снова прямо."),
+            ("lean-in", 8, "Наклонитесь к экрану, не поворачивая головы."),
+            ("rest", 6, "Вернитесь."),
+            ("lean-back", 8, "Отклонитесь назад."),
+            ("rest", 6, "Вернитесь."),
+            ("shift-left", 8, "Сдвиньтесь всем телом влево, смотрите прямо."),
+            ("rest", 6, "Вернитесь."),
+            ("shift-right", 8, "Сдвиньтесь всем телом вправо, смотрите прямо."),
+            ("rest", 6, "Вернитесь."),
+        ]
+        let run = { [weak self] in
+            guard let self else { return }
+            var start = 0.0
+            for step in steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
+                    self?.cameraHead.phase = step.phase
+                    self?.say(step.prompt)
+                    log("CAMERA phase \(step.phase)")
+                }
+                start += step.seconds
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
+                self?.cameraHead.phase = ""
+                self?.say("Замер окончен, спасибо.")
+                log("CAMERA guided measurement done")
+            }
+        }
+        if cameraHead.isRunning {
+            run()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            run()
+        }
+    }
+
+    private func logCameraHead() {
+        guard cameraHead.isRunning else { return }
+        let reading = cameraHead.takeReading()
+        guard let position = reading.position else {
+            log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")
+            return
+        }
+        let jitter = (reading.jitter ?? .zero) * 1000
+        let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
+        let neck = cameraHead.neckOffset() * 100
+        log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см · задержка кадра %.0f мс%@", neck.x, neck.y, neck.z,
+                   (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · экраны на стене" : ""))
+        log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
+                   position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
+                   reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
     }
 
     @objc private func moveWindowToGaze() {
@@ -811,6 +990,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
+        menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
+        menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
+        menu.addItem(menuItem("Экраны как на стене (камера, эксперимент)", #selector(toggleWallMode(_:))))
+        menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
+        let depth = NSMenuItem(title: "Стена: сила вперёд-назад", action: nil, keyEquivalent: "")
+        let strengths = NSMenu()
+        for percent in [25, 50, 75, 100] {
+            let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
+            option.representedObject = percent
+            option.state = Double(percent) / 100 == wallDepthStrength ? .on : .off
+            strengths.addItem(option)
+        }
+        depth.submenu = strengths
+        menu.addItem(depth)
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)
@@ -855,6 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
+        logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",

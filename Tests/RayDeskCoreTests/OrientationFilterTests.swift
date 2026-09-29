@@ -202,3 +202,21 @@ private func settle(_ filter: OrientationFilter, gravityInHead: SIMD3<Double>, s
 
     #expect(abs(pitch) / degree < 1)
 }
+
+@Test func pastOrientationIsInterpolatedFromHistory() {
+    let filter = OrientationFilter()
+    final class Clock: @unchecked Sendable { var now = 100.0 }
+    let clock = Clock()
+    filter.clock = { clock.now }
+    let dt = 0.002
+    let rate = 90 * Double.pi / 180
+    for _ in 0..<500 {
+        filter.update(gyro: SIMD3(0, rate, 0), accel: SIMD3(0, 1, 0), dt: dt)
+        clock.now += dt
+    }
+    let now = filter.orientation(atUptime: clock.now).yawPitch.yaw
+    let earlier = filter.orientation(atUptime: clock.now - 0.1).yawPitch.yaw
+    #expect(abs((now - earlier) - rate * 0.1) < 0.01)
+    #expect(abs(filter.orientation(atUptime: clock.now + 5).yawPitch.yaw - now) < 1e-9)
+    #expect(abs(filter.angularSpeed - rate) < 1e-9)
+}
