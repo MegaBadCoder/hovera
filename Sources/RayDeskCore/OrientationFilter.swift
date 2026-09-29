@@ -21,6 +21,9 @@ public final class OrientationFilter: @unchecked Sendable {
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
+    private var restorer = FirmwareZeroRestorer()
+    private var restoring = true
+    private var learningWithCompass = false
     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
     private var historyNext = 0
     private var historyCount = 0
@@ -43,6 +46,30 @@ public final class OrientationFilter: @unchecked Sendable {
     public var gyroScale: SIMD3<Double> {
         get { lock.withLock { scale } }
         set { lock.withLock { scale = newValue } }
+    }
+
+    /// Отменять ли пересчёты нуля гироскопа прошивкой очков (см. `FirmwareZeroRestorer`);
+    /// по умолчанию да. Выключение забывает накопленную поправку.
+    public var restoresFirmwareZero: Bool {
+        get { lock.withLock { restoring } }
+        set {
+            lock.withLock {
+                restoring = newValue
+                restorer = FirmwareZeroRestorer()
+            }
+        }
+    }
+
+    /// Сколько пересчётов нуля прошивкой отменено с последнего сброса фильтра.
+    public var restoredFirmwareUpdates: Int {
+        lock.withLock { restorer.restoredUpdates }
+    }
+
+    /// Учить и вычитать ноль гироскопа и при включённом компасе; по умолчанию нет —
+    /// тогда при компасе ноль не вычитается.
+    public var learnsBiasWithCompass: Bool {
+        get { lock.withLock { learningWithCompass } }
+        set { lock.withLock { learningWithCompass = newValue } }
     }
 
     public init() {}
@@ -91,6 +118,7 @@ public final class OrientationFilter: @unchecked Sendable {
     public func reset() {
         lock.lock()
         initialized = false
+        restorer = FirmwareZeroRestorer()
         magneticReferences = [:]
         referenceField = nil
         lastCompassError = 0
@@ -119,7 +147,7 @@ public final class OrientationFilter: @unchecked Sendable {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
-        let gyro = gyro * scale
+        let gyro = (restoring ? restorer.restore(gyro) : gyro) * scale
         sampleCount &+= 1
 
         let accelNorm = length(accel)
@@ -133,7 +161,7 @@ public final class OrientationFilter: @unchecked Sendable {
         }
 
         var w = gyro
-        if compass == nil {
+        if compass == nil || learningWithCompass {
             biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
             w -= biasLearner.bias
         }

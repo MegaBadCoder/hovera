@@ -142,7 +142,8 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
 
     let learnerOnly = headings(compass: false, recenterAt: 290)
     #expect(drift(learnerOnly, from: 100..<130, to: 200..<230) < 3)
-    #expect(drift(learnerOnly, from: 300..<310, to: 320..<330) < 2)
+    #expect(drift(learnerOnly, from: 100..<130, to: 320..<330) < 4)
+    #expect(drift(learnerOnly, from: 270..<280, to: 290..<300) < 2)
     #expect(drift(headings(compass: true, recenterAt: nil), from: 100..<130, to: 300..<330) < 3)
 }
 
