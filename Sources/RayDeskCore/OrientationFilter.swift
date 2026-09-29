@@ -31,6 +31,14 @@ public final class OrientationFilter {
     }
 
     public var kp = 0.5
+    private var scale = SIMD3<Double>(1, 1, 1)
+
+    /// Во сколько раз умножать показания гироскопа по каждой оси очков — поправка масштаба
+    /// из `GyroScaleCalibration`; по умолчанию единицы.
+    public var gyroScale: SIMD3<Double> {
+        get { lock.withLock { scale } }
+        set { lock.withLock { scale = newValue } }
+    }
 
     public init() {}
 
@@ -106,6 +114,7 @@ public final class OrientationFilter {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
+        let gyro = gyro * scale
         sampleCount &+= 1
 
         let accelNorm = length(accel)

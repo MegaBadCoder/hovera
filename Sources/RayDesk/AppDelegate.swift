@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         loadCompassCalibration()
         loadGyroBias()
+        loadGyroScale()
         loadMacAnchor()
         imu = GlassesIMU(filter: filter)
         if UserDefaults.standard.bool(forKey: "recordIMU") {
@@ -356,6 +357,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         filter.magnetometerCalibration = calibration
         log("compass: calibration loaded")
+    }
+
+    private func loadGyroScale() {
+        guard let values = UserDefaults.standard.array(forKey: "gyroScale.v1") as? [Double], values.count == 3 else { return }
+        filter.gyroScale = SIMD3(values[0], values[1], values[2])
+        log(String(format: "gyro scale loaded: %.4f %.4f %.4f", values[0], values[1], values[2]))
+    }
+
+    @objc private func calibrateGyroScale() {
+        guard let imu else { return }
+        let box = GyroScaleBox()
+        say("Калибровка масштаба гироскопа. Поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте.")
+        log("gyro scale calibration started")
+        imu.sampleSink = { [weak self] sample in
+            guard let (previous, current) = box.add(sample) else { return }
+            DispatchQueue.main.async { self?.gyroScaleStageChanged(from: previous, to: current) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self, weak imu] in
+            guard imu?.sampleSink != nil, box.isRunning else { return }
+            imu?.sampleSink = nil
+            self?.say("Калибровка гироскопа прервана: время вышло.")
+            log("gyro scale calibration timed out")
+        }
+    }
+
+    private func gyroScaleStageChanged(from previous: GyroScaleCalibration.Stage, to stage: GyroScaleCalibration.Stage) {
+        switch stage {
+        case .readyToTurn:
+            say("Ноль измерен. Медленно поверните очки на два полных оборота и прижмите дужку к тому же краю. Потом не трогайте.")
+        case .turning:
+            break
+        case .finished(let scale, let measured):
+            imu?.sampleSink = nil
+            let updated = SIMD3(1, scale, 1)
+            filter.gyroScale = updated
+            UserDefaults.standard.set([updated.x, updated.y, updated.z], forKey: "gyroScale.v1")
+            log(String(format: "gyro scale calibrated: measured %.1f° for 720°, scale %.4f, stored %.4f", measured, scale, updated.y))
+            say(String(format: "Готово. Гироскоп ошибался на %.1f процента, поправка сохранена.", (1 / scale - 1) * 100))
+        case .failed(.notUpright):
+            imu?.sampleSink = nil
+            say("Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново.")
+            log("gyro scale calibration failed: not upright")
+        case .failed(.wrongTurnCount(let measured)):
+            imu?.sampleSink = nil
+            say("Не получилось: насчитал не два оборота. Начните заново.")
+            log(String(format: "gyro scale calibration failed: measured %.1f°", measured))
+        case .waitingForRest:
+            break
+        }
     }
 
     private func loadGyroBias() {
@@ -757,6 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Наклонить все вперёд   ⌃⌥⌘↓", #selector(tiltAllForward)))
         menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
         menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
+        menu.addItem(menuItem("Калибровка масштаба гироскопа (очки на столе)", #selector(calibrateGyroScale)))
         menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
@@ -951,5 +1002,27 @@ func log(_ message: String) {
         try? handle.close()
     } else {
         try? data.write(to: logURL)
+    }
+}
+
+private final class GyroScaleBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calibration = GyroScaleCalibration(turns: 2)
+
+    var isRunning: Bool {
+        lock.withLock {
+            switch calibration.stage {
+            case .finished, .failed: false
+            default: true
+            }
+        }
+    }
+
+    func add(_ sample: IMUSample) -> (GyroScaleCalibration.Stage, GyroScaleCalibration.Stage)? {
+        lock.withLock {
+            let previous = calibration.stage
+            let current = calibration.add(gyro: sample.gyro, accel: sample.accel, dt: sample.dt)
+            return previous == current ? nil : (previous, current)
+        }
     }
 }
