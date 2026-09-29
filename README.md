@@ -60,6 +60,10 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
 - `[` / `]` — field of view; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — gaze mark in the log; `Q` — quit.
 
+## Gyro scale calibration
+
+Worn on the head, a gyro that under- or over-counts turns by a few percent makes the screens lag behind your head and then slowly swing back into place. Menu → "Калибровка масштаба гироскопа (очки на столе)": stand the glasses on the table as if worn, press one temple against the edge of the laptop, wait for the voice prompt, turn them two full turns and press the temple back against the same edge. The correction is saved. On the author's pair the gyro under-counted by 3.3 %.
+
 ## Meditation mode
 
 ⌃⌥Z fades the screens out and surrounds you with space: stars, slowly drifting nebulae and a planet below. The sky is drawn procedurally on the GPU and stays put as you turn your head. Press ⌃⌥Z again to get your screens back.
