@@ -500,6 +500,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var wallDepthStrength: Double {
+        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.5
+    }
+
+    @objc private func chooseWallDepth(_ sender: NSMenuItem) {
+        guard let percent = sender.representedObject as? Int else { return }
+        UserDefaults.standard.set(Double(percent) / 100, forKey: "wallDepthStrength")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == percent ? .on : .off }
+        log("wall depth strength \(percent)%")
+    }
+
     @objc private func toggleWallMode(_ sender: NSMenuItem) {
         guard let renderer else { return }
         if renderer.headOffset != nil {
@@ -512,7 +523,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let renderer = self.renderer else { return }
             cameraHead.resetReference()
             let cameraYaw = macAnchor?.pose.yaw ?? 0
-            renderer.headOffset = { [cameraHead] in worldOffset(fromCamera: cameraHead.neckOffset(), cameraYaw: cameraYaw) }
+            renderer.headOffset = { [cameraHead, weak self] in
+                var offset = cameraHead.neckOffset()
+                offset.z *= self?.wallDepthStrength ?? 0.5
+                return worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
+            }
             sender.state = .on
             say("Экраны как на стене. Сядьте удобно и смотрите прямо, я запоминаю положение.")
             log("wall mode on")
@@ -883,6 +898,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
         menu.addItem(menuItem("Экраны как на стене (камера, эксперимент)", #selector(toggleWallMode(_:))))
+        let depth = NSMenuItem(title: "Стена: сила вперёд-назад", action: nil, keyEquivalent: "")
+        let strengths = NSMenu()
+        for percent in [25, 50, 75, 100] {
+            let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
+            option.representedObject = percent
+            option.state = Double(percent) / 100 == wallDepthStrength ? .on : .off
+            strengths.addItem(option)
+        }
+        depth.submenu = strengths
+        menu.addItem(depth)
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)
