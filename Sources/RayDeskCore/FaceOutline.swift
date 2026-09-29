@@ -2,11 +2,14 @@ import CoreGraphics
 import Foundation
 import simd
 
-/// Ширина лица вдоль линии глаз по точкам контура: в отличие от рамки Vision, она не меняется,
-/// когда голова наклоняется к плечу.
+/// Размер и центр лица по верхней, жёсткой его части: ширина — между краями контура у ушей
+/// вдоль линии глаз, центр — середина между глазами. В отличие от рамки Vision, они не меняются,
+/// когда голова наклоняется к плечу или открывается рот.
 public struct FaceOutline: Equatable, Sendable {
     /// Ширина лица вдоль линии глаз в долях ширины кадра.
     public var width: Double
+    /// Середина между глазами в долях кадра, начало внизу слева.
+    public var center: CGPoint
     /// Наклон линии глаз в кадре, радианы, плюс — против часовой стрелки.
     public var roll: Double
 
@@ -28,8 +31,10 @@ public struct FaceOutline: Equatable, Sendable {
         let eyeLine = centre(rightEye) - centre(leftEye)
         guard simd_length(eyeLine) > 1e-6 else { return nil }
         let axis = simd_normalize(eyeLine)
-        let along = contour.map { simd_dot(widthUnits($0), axis) }
-        width = along.max()! - along.min()!
+        func span(_ a: CGPoint, _ b: CGPoint) -> Double { abs(simd_dot(widthUnits(a) - widthUnits(b), axis)) }
+        width = (span(contour[0], contour[contour.count - 1]) + span(contour[1], contour[contour.count - 2])) / 2
+        let middle = (centre(leftEye) + centre(rightEye)) / 2
+        center = CGPoint(x: middle.x, y: middle.y * aspect)
         roll = atan2(axis.y, axis.x)
         if roll > .pi / 2 { roll -= .pi } else if roll < -.pi / 2 { roll += .pi }
     }

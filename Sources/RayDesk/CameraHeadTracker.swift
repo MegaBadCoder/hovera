@@ -330,7 +330,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private func measuredBox(_ face: VNFaceObservation) -> CGRect {
         let box = face.boundingBox
         guard let outline = faceOutline(face) else { return box }
-        return outline.equivalentBox(center: CGPoint(x: box.midX, y: box.midY), aspect: camera.aspect)
+        return outline.equivalentBox(center: outline.center, aspect: camera.aspect)
     }
 
     private func landmarkPoints(_ face: VNFaceObservation) -> [CGPoint] {
