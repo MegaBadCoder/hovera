@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
-    private let cameraHead = CameraHeadTracker()
+    private lazy var cameraHead = CameraHeadTracker { [filter] in filter.orientation(predictAhead: 0) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -516,6 +516,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func guidedCameraMeasurement() {
+        let steps: [(phase: String, seconds: Double, prompt: String)] = [
+            ("rest", 12, "Замер по шагам. Смотрите прямо на средний экран и не двигайтесь."),
+            ("turn-left", 8, "Поверните голову к левому монитору и замрите."),
+            ("rest", 6, "Снова прямо."),
+            ("turn-right", 8, "Поверните голову к правому монитору и замрите."),
+            ("rest", 6, "Снова прямо."),
+            ("lean-in", 8, "Наклонитесь к экрану, не поворачивая головы."),
+            ("rest", 6, "Вернитесь."),
+            ("lean-back", 8, "Отклонитесь назад."),
+            ("rest", 6, "Вернитесь."),
+            ("shift-left", 8, "Сдвиньтесь всем телом влево, смотрите прямо."),
+            ("rest", 6, "Вернитесь."),
+            ("shift-right", 8, "Сдвиньтесь всем телом вправо, смотрите прямо."),
+            ("rest", 6, "Вернитесь."),
+        ]
+        let run = { [weak self] in
+            guard let self else { return }
+            var start = 0.0
+            for step in steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
+                    self?.cameraHead.phase = step.phase
+                    self?.say(step.prompt)
+                    log("CAMERA phase \(step.phase)")
+                }
+                start += step.seconds
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
+                self?.cameraHead.phase = ""
+                self?.say("Замер окончен, спасибо.")
+                log("CAMERA guided measurement done")
+            }
+        }
+        if cameraHead.isRunning {
+            run()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            run()
+        }
+    }
+
     private func logCameraHead() {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
@@ -795,6 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
+        menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
         let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
         compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
         menu.addItem(compassItem)

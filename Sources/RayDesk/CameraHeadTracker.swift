@@ -1,6 +1,7 @@
 import AVFoundation
 import Vision
 import RayDeskCore
+import simd
 
 struct CameraHeadReading {
     var position: SIMD3<Double>?
@@ -21,6 +22,17 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var camera = FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9)
     private var file: FileHandle?
     private var pending: [String] = []
+    private var currentPhase = ""
+    private let orientation: @Sendable () -> simd_quatd
+
+    init(orientation: @escaping @Sendable () -> simd_quatd) {
+        self.orientation = orientation
+    }
+
+    var phase: String {
+        get { lock.withLock { currentPhase } }
+        set { lock.withLock { currentPhase = newValue } }
+    }
 
     private static let assumedFieldOfView = 70 * Double.pi / 180
 
@@ -88,10 +100,18 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let request = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(cvPixelBuffer: pixels, options: [:]).perform([request])
+        let head = orientation()
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixels, options: [:])
+        let rectangles = VNDetectFaceRectanglesRequest()
+        try? handler.perform([rectangles])
         let time = Date().timeIntervalSinceReferenceDate
-        let face = request.results?.max { $0.boundingBox.width < $1.boundingBox.width }
+        var face = rectangles.results?.max { $0.boundingBox.width < $1.boundingBox.width }
+        if let found = face {
+            let landmarks = VNDetectFaceLandmarksRequest()
+            landmarks.inputFaceObservations = [found]
+            try? handler.perform([landmarks])
+            face = landmarks.results?.first ?? found
+        }
 
         lock.lock()
         frames += 1
@@ -101,19 +121,45 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             spread.add(position, at: time)
             latestAngles = SIMD3(face.yaw?.doubleValue ?? .nan, face.pitch?.doubleValue ?? .nan, face.roll?.doubleValue ?? .nan)
         }
+        let phase = currentPhase
         lock.unlock()
 
+        let headColumns = String(format: "%.5f,%.5f,%.5f,%.5f", head.real, head.imag.x, head.imag.y, head.imag.z)
         guard let face else {
-            record(String(format: "%.4f,,,,,,,,,,,", time))
+            record("\(String(format: "%.4f", time)),\(phase),,,,,,,,,,,,,,,,,,,\(headColumns)")
             return
         }
         let box = face.boundingBox
         let position = camera.headPosition(face: box)
         let degree = 180 / Double.pi
-        record(String(format: "%.4f,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.1f,%.1f,%.1f,%.3f", time,
+        let features = landmarkColumns(face)
+        record(String(format: "%.4f,%@,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.1f,%.1f,%.1f,%.3f,%@,%@", time, phase,
                       box.midX, box.midY, box.width, box.height, position.x, position.y, position.z,
                       (face.yaw?.doubleValue ?? .nan) * degree, (face.pitch?.doubleValue ?? .nan) * degree,
-                      (face.roll?.doubleValue ?? .nan) * degree, face.confidence))
+                      (face.roll?.doubleValue ?? .nan) * degree, face.confidence, features, headColumns))
+    }
+
+    private func landmarkColumns(_ face: VNFaceObservation) -> String {
+        let box = face.boundingBox
+        let aspect = camera.aspect
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [SIMD2<Double>] {
+            guard let region else { return [] }
+            return region.normalizedPoints.map {
+                SIMD2(Double(box.minX + $0.x * box.width), Double(box.minY + $0.y * box.height) / aspect)
+            }
+        }
+        func centre(_ list: [SIMD2<Double>]) -> SIMD2<Double>? {
+            list.isEmpty ? nil : list.reduce(.zero, +) / Double(list.count)
+        }
+        let left = centre(points(face.landmarks?.leftEye))
+        let right = centre(points(face.landmarks?.rightEye))
+        let contour = points(face.landmarks?.faceContour).map(\.x)
+        let nose = centre(points(face.landmarks?.nose))
+        let eyes = left.flatMap { l in right.map { r in (distance: simd_length(l - r), middle: (l + r) / 2) } }
+        let contourWidth = contour.isEmpty ? Double.nan : contour.max()! - contour.min()!
+        return String(format: "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f",
+                      eyes?.distance ?? .nan, contourWidth, nose?.x ?? .nan, nose?.y ?? .nan,
+                      eyes?.middle.x ?? .nan, eyes?.middle.y ?? .nan)
     }
 
     private func record(_ line: String) {
@@ -133,7 +179,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             FileManager.default.createFile(atPath: url.path,
-                                           contents: "time,cx,cy,w,h,x,y,z,yaw,pitch,roll,confidence\n".data(using: .utf8))
+                                           contents: "time,phase,cx,cy,w,h,x,y,z,yaw,pitch,roll,confidence,eyes,contour,nosex,nosey,eyex,eyey,qw,qx,qy,qz\n".data(using: .utf8))
             file = try FileHandle(forWritingTo: url)
             file?.seekToEndOfFile()
             log("camera recording: \(url.lastPathComponent)")

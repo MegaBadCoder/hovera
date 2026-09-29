@@ -7,7 +7,7 @@ import simd
 ///
 /// Мировая и связанная система координат: X вправо, Y вверх, Z назад
 /// (вперёд — это -Z). В покое акселерометр читает +1g вдоль мировой оси Y.
-public final class OrientationFilter {
+public final class OrientationFilter: @unchecked Sendable {
     private let lock = NSLock()
     private var q = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private var omega = SIMD3<Double>(repeating: 0)
