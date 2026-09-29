@@ -9,8 +9,8 @@ final class VirtualScreen {
     var displayID: CGDirectDisplayID { display.displayID }
 
     init(index: Int, pointWidth: Int, pointHeight: Int, refreshRate: Double = 60) {
-        pixelWidth = pointWidth * 2
-        pixelHeight = pointHeight * 2
+        pixelWidth = pointWidth
+        pixelHeight = pointHeight
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.queue = .main
@@ -24,11 +24,8 @@ final class VirtualScreen {
         display = CGVirtualDisplay(descriptor: descriptor)
 
         let settings = CGVirtualDisplaySettings()
-        settings.hiDPI = 1
-        settings.modes = [
-            CGVirtualDisplayMode(width: UInt32(pixelWidth), height: UInt32(pixelHeight), refreshRate: refreshRate),
-            CGVirtualDisplayMode(width: UInt32(pointWidth), height: UInt32(pointHeight), refreshRate: refreshRate),
-        ]
+        settings.hiDPI = 0
+        settings.modes = [CGVirtualDisplayMode(width: UInt32(pixelWidth), height: UInt32(pixelHeight), refreshRate: refreshRate)]
         display.apply(settings)
     }
 }

@@ -16,6 +16,7 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 - A compass (the glasses' magnetometer) keeps "forward" from drifting. It remembers the field separately for each gaze direction, so its orientation-dependent error does not push screens around.
 - Voice prompt to recalibrate the compass when something magnetic near the glasses changes the field (earbuds, a new seat).
 - Horizon grid and manual view calibration.
+- Crisp text: virtual monitors run at 1920×1080 without HiDPI, and the picture is scaled down to the glasses' pixels with a bicubic filter plus light sharpening.
 
 ## Requirements
 

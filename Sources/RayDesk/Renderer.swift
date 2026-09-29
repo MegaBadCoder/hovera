@@ -327,6 +327,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     struct Uniforms { float4x4 mvp; float4 border; };
     struct VertexOut { float4 position [[position]]; float2 uv; };
 
+    constant float sharpenAmount = 0.6;
+
     vertex VertexOut screenVertex(uint vid [[vertex_id]], constant Uniforms &u [[buffer(0)]]) {
         const float2 corners[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 c = corners[vid];
@@ -344,16 +346,59 @@ final class Renderer: NSObject, MTKViewDelegate {
         return float4(u.border.rgb, 1);
     }
 
+    float3 sampleCatmullRom(texture2d<float> tex, sampler s, float2 uv, float lod) {
+        float2 size = float2(tex.get_width(uint(lod)), tex.get_height(uint(lod)));
+        float2 position = uv * size;
+        float2 texel1 = floor(position - 0.5) + 0.5;
+        float2 f = position - texel1;
+        float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+        float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+        float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+        float2 w3 = f * f * (-0.5 + 0.5 * f);
+        float2 w12 = w1 + w2;
+        float2 t0 = (texel1 - 1.0) / size;
+        float2 t12 = (texel1 + w2 / w12) / size;
+        float2 t3 = (texel1 + 2.0) / size;
+        float3 result = 0;
+        result += tex.sample(s, float2(t0.x, t0.y), level(lod)).rgb * w0.x * w0.y;
+        result += tex.sample(s, float2(t12.x, t0.y), level(lod)).rgb * w12.x * w0.y;
+        result += tex.sample(s, float2(t3.x, t0.y), level(lod)).rgb * w3.x * w0.y;
+        result += tex.sample(s, float2(t0.x, t12.y), level(lod)).rgb * w0.x * w12.y;
+        result += tex.sample(s, float2(t12.x, t12.y), level(lod)).rgb * w12.x * w12.y;
+        result += tex.sample(s, float2(t3.x, t12.y), level(lod)).rgb * w3.x * w12.y;
+        result += tex.sample(s, float2(t0.x, t3.y), level(lod)).rgb * w0.x * w3.y;
+        result += tex.sample(s, float2(t12.x, t3.y), level(lod)).rgb * w12.x * w3.y;
+        result += tex.sample(s, float2(t3.x, t3.y), level(lod)).rgb * w3.x * w3.y;
+        return max(result, 0.0);
+    }
+
+    float3 sampleScreen(texture2d<float> tex, sampler s, float2 uv) {
+        float2 texels = uv * float2(tex.get_width(), tex.get_height());
+        float footprint = max(length(dfdx(texels)), length(dfdy(texels)));
+        float lod = clamp(floor(log2(max(footprint, 1.0))), 0.0, float(tex.get_num_mip_levels() - 1));
+        float3 center = sampleCatmullRom(tex, s, uv, lod);
+        float2 across = dfdx(uv);
+        float2 down = dfdy(uv);
+        float3 left = tex.sample(s, uv - across, level(lod)).rgb;
+        float3 right = tex.sample(s, uv + across, level(lod)).rgb;
+        float3 up = tex.sample(s, uv - down, level(lod)).rgb;
+        float3 below = tex.sample(s, uv + down, level(lod)).rgb;
+        float3 lowest = min(center, min(min(left, right), min(up, below)));
+        float3 highest = max(center, max(max(left, right), max(up, below)));
+        float3 blurred = (left + right + up + below) * 0.25;
+        return clamp(center + sharpenAmount * (center - blurred), lowest, highest);
+    }
+
     fragment float4 screenFragment(VertexOut in [[stage_in]],
                                    constant Uniforms &u [[buffer(0)]],
                                    texture2d<float> tex [[texture(0)]],
                                    sampler s [[sampler(0)]]) {
-        float4 color = tex.sample(s, in.uv);
+        float3 color = sampleScreen(tex, s, in.uv);
         float2 edge = min(in.uv, 1 - in.uv);
         if (edge.x < u.border.x || edge.y < u.border.y) {
-            color.rgb = mix(color.rgb, float3(0.55, 0.75, 1.0), u.border.z);
+            color = mix(color, float3(0.55, 0.75, 1.0), u.border.z);
         }
-        return float4(color.rgb, u.border.w);
+        return float4(color, u.border.w);
     }
     """ + skyShaderSource
 }
