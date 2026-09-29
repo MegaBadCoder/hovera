@@ -20,10 +20,18 @@ public final class OrientationFilter: @unchecked Sendable {
     private var referenceField: (strength: Double, dip: Double)?
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
+    private(set) var magneticOffset = 0.0
+    private var headingTrail = HeadingTrail()
+    var compassTuning = CompassTuning()
+    private(set) var compassTurn = 0.0
     private var biasLearner = StillnessBiasLearner()
     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
     private var historyNext = 0
     private var historyCount = 0
+    private var trailClock = 0.0
+    private var smoothedAccel: SIMD3<Double>?
+    private var currentSector: SIMD2<Int>?
+    private var tiltIntegral = SIMD3<Double>(repeating: 0)
     var clock: @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
     private static let historySize = 256
 
@@ -65,6 +73,8 @@ public final class OrientationFilter: @unchecked Sendable {
             referenceField = nil
             lastCompassError = 0
             fieldDiffersFromCalibration = false
+            magneticOffset = 0
+            headingTrail = HeadingTrail()
             lock.unlock()
         }
     }
@@ -94,6 +104,8 @@ public final class OrientationFilter: @unchecked Sendable {
         magneticReferences = [:]
         referenceField = nil
         lastCompassError = 0
+        magneticOffset = 0
+        headingTrail = HeadingTrail()
         lock.unlock()
     }
 
@@ -144,8 +156,14 @@ public final class OrientationFilter: @unchecked Sendable {
             let measuredUp = accel / accelNorm
             let estimatedUp = q.inverse.act(SIMD3(0, 1, 0))
             let error = cross(measuredUp, estimatedUp)
+            if compassTuning.tiltIntegralGain > 0 {
+                tiltIntegral += compassTuning.tiltIntegralGain * error * dt
+            }
             w += kp * error
         }
+        w += tiltIntegral
+        let smoothing = min(1, dt / compassTuning.accelSmoothing)
+        smoothedAccel = smoothedAccel.map { $0 + (accel - $0) * smoothing } ?? accel
         let angle = length(w) * dt
         if angle > 1e-9 {
             q = simd_normalize(q * simd_quatd(angle: angle, axis: normalize(w)))
@@ -191,9 +209,28 @@ public final class OrientationFilter: @unchecked Sendable {
     }
 
     private func observeCompass(_ magnetometer: SIMD3<Double>, calibration: MagnetometerCalibration, dt: Double) {
-        let field = magnetometer - calibration.center
+        var field = magnetometer - calibration.center
         let strength = length(field)
         guard strength > 0 else { return }
+        let tuning = compassTuning
+        if tuning.tiltGate > 0 || tuning.levelWithAccel || tuning.headingTiltGate > 0, let smoothedAccel {
+            let norm = length(smoothedAccel)
+            let valid = abs(norm - 1) < tuning.accelGate && length(omega) < 30 * Double.pi / 180
+            if valid {
+                let measuredUp = smoothedAccel / norm
+                let estimatedUp = q.inverse.act(SIMD3(0, 1, 0))
+                if tuning.tiltGate > 0, acos(max(-1, min(1, dot(measuredUp, estimatedUp)))) > tuning.tiltGate { return }
+                if tuning.headingTiltGate > 0 {
+                    let plain = q.act(field)
+                    let leveled = q.act(simd_quatd(from: measuredUp, to: estimatedUp).act(field))
+                    let difference = atan2(plain.x, plain.z) - atan2(leveled.x, leveled.z)
+                    if abs(atan2(sin(difference), cos(difference))) > tuning.headingTiltGate { return }
+                }
+                if tuning.levelWithAccel { field = simd_quatd(from: measuredUp, to: estimatedUp).act(field) }
+            } else if tuning.gateInvalidAccel {
+                return
+            }
+        }
         let dip = acos(max(-1, min(1, dot(field / strength, q.inverse.act(SIMD3(0, 1, 0))))))
 
         var local = localField ?? (calibration.radius, calibration.dip)
@@ -220,16 +257,35 @@ public final class OrientationFilter: @unchecked Sendable {
         guard length(SIMD2(world.x, world.z)) > Compass.minHorizontalShare * strength else { return }
 
         let heading = atan2(world.x, world.z)
+        if tuning.absorbFastChanges {
+            magneticOffset += headingTrail.fastChange(heading: heading, time: trailClock, travel: accumulatedTravel.total, dt: dt, tuning: tuning)
+            if tuning.offsetDecaySeconds > 0 { magneticOffset *= 1 - min(1, dt / tuning.offsetDecaySeconds) }
+        }
+        trailClock += dt
         let look = q.yawPitch
-        let sector = SIMD2(Int((look.yaw / Compass.sectorSize).rounded()), Int((look.pitch / Compass.sectorSize).rounded()))
+        var sector = SIMD2(Int((look.yaw / tuning.sectorSize).rounded()), Int((look.pitch / tuning.sectorSize).rounded()))
+        if tuning.sectorHysteresis > 0, let previous = currentSector, previous != sector {
+            let centerYaw = Double(previous.x) * tuning.sectorSize, centerPitch = Double(previous.y) * tuning.sectorSize
+            let limit = tuning.sectorSize / 2 + tuning.sectorHysteresis
+            if abs(atan2(sin(look.yaw - centerYaw), cos(look.yaw - centerYaw))) < limit, abs(look.pitch - centerPitch) < limit {
+                sector = previous
+            }
+        }
+        currentSector = sector
         if magneticReferences.isEmpty { referenceField = local }
         guard let reference = magneticReferences[sector] else {
-            magneticReferences[sector] = heading
+            magneticReferences[sector] = heading - magneticOffset
             return
         }
-        let error = atan2(sin(heading - reference), cos(heading - reference))
+        if tuning.snapBack > 0, abs(atan2(sin(heading - reference), cos(heading - reference))) < tuning.snapBack {
+            magneticOffset = 0
+        }
+        magneticOffset = max(-tuning.maxOffset, min(tuning.maxOffset, magneticOffset))
+        let error = atan2(sin(heading - reference - magneticOffset), cos(heading - reference - magneticOffset))
         lastCompassError = error
-        let rate = max(-Compass.maxCorrectionRate, min(Compass.maxCorrectionRate, Compass.proportionalGain * error))
+        let cap = tuning.motionRateGain > 0 ? min(tuning.maxCorrectionRate, tuning.stillCorrectionRate + tuning.motionRateGain * length(omega)) : tuning.maxCorrectionRate
+        let rate = max(-cap, min(cap, tuning.proportionalGain * error))
+        compassTurn += rate * dt
         q = simd_normalize(simd_quatd(angle: -rate * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
@@ -290,6 +346,8 @@ public final class OrientationFilter: @unchecked Sendable {
         q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
         magneticReferences = [:]
         lastCompassError = 0
+        magneticOffset = 0
+        headingTrail = HeadingTrail()
         lock.unlock()
     }
 }
@@ -306,6 +364,62 @@ public struct RotationTravel: Equatable {
 private enum TiltCorrection {
     static let maxAccelDeviation = 0.05
     static let maxTurnRate = 30 * Double.pi / 180
+}
+
+struct CompassTuning {
+    var proportionalGain = 1.0 / 4
+    var maxCorrectionRate = 0.5 * Double.pi / 180
+    var sectorSize = 15 * Double.pi / 180
+    var absorbFastChanges = false
+    var fastWindow = 0.5
+    var fastThreshold = 1.5 * Double.pi / 180
+    var fastThresholdPerTravel = 0.2
+    var smoothing = 0.1
+    var offsetDecaySeconds = 0.0
+    var maxTravel = 20 * Double.pi / 180
+    var snapBack = 0.0
+    var maxOffset = 30 * Double.pi / 180
+    var tiltGate = 0.0
+    var levelWithAccel = false
+    var accelSmoothing = 0.5
+    var accelGate = 0.03
+    var tiltIntegralGain = 0.0
+    var gateInvalidAccel = false
+    var sectorHysteresis = 0.0
+    var headingTiltGate = 0.0
+    var motionRateGain = 0.0
+    var stillCorrectionRate = 0.05 * Double.pi / 180
+}
+
+struct HeadingTrail {
+    private var smoothed: Double?
+    private var marks: [(time: Double, heading: Double, travel: Double)] = []
+    private var absorbedUpTo = -Double.infinity
+    private var absorbedHeading = 0.0
+    private var lastMark = -Double.infinity
+
+    mutating func fastChange(heading: Double, time: Double, travel: Double, dt: Double, tuning: CompassTuning) -> Double {
+        guard var current = smoothed else {
+            smoothed = heading
+            return 0
+        }
+        current += atan2(sin(heading - current), cos(heading - current)) * min(1, dt / tuning.smoothing)
+        smoothed = current
+        if time - lastMark >= 0.01 {
+            marks.append((time, current, travel))
+            lastMark = time
+            let horizon = time - tuning.fastWindow - 0.05
+            if let drop = marks.firstIndex(where: { $0.time >= horizon }), drop > 0 { marks.removeFirst(drop) }
+        }
+        guard let old = marks.first(where: { $0.time >= time - tuning.fastWindow }), time - old.time > tuning.fastWindow * 0.8 else { return 0 }
+        let change = atan2(sin(current - old.heading), cos(current - old.heading))
+        let turned = travel - old.travel
+        guard turned < tuning.maxTravel, abs(change) > tuning.fastThreshold + tuning.fastThresholdPerTravel * turned else { return 0 }
+        let base = absorbedUpTo >= old.time ? absorbedHeading : old.heading
+        absorbedUpTo = time
+        absorbedHeading = current
+        return atan2(sin(current - base), cos(current - base))
+    }
 }
 
 private enum Compass {
