@@ -209,3 +209,34 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     trueYaw = run(filter, seconds: 10, gyroBias: .zero, field: disturbed, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 6)
 }
+
+@Test func compassWaitsForHeadMotionToTurnTheWorld() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    var trueYaw = run(filter, seconds: 60, gyroBias: .zero)
+    let settled = yawError(filter, trueYaw: trueYaw)
+    let rotated = simd_quatd(angle: 15 * degree, axis: SIMD3(0, 1, 0)).act(earthField)
+    trueYaw = run(filter, seconds: 60, gyroBias: .zero, field: rotated, initialYaw: trueYaw)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 4)
+}
+
+@Test func filterTiltErrorDoesNotSteerTheCompass() {
+    let steepField = simd_normalize(SIMD3(0.1, -0.95, -0.29)) * 50
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = MagnetometerCalibration(center: hardIron, radius: 50,
+                                                             dip: acos(simd_dot(simd_normalize(steepField), SIMD3(0, 1, 0))))
+    let dt = 0.002
+    var trueYaw = 0.0
+    var settled = 0.0
+    for step in 0..<Int(180 / dt) {
+        let time = Double(step) * dt
+        let rate = 20 * degree * (sin(2 * .pi * time / 6) >= 0 ? 1 : -1)
+        trueYaw += rate * dt
+        let head = simd_quatd(angle: trueYaw, axis: SIMD3(0, 1, 0))
+        let pitchOffset = time > 60 ? SIMD3(2 * degree, 0, 0) : .zero
+        filter.update(gyro: SIMD3(0, rate, 0) + pitchOffset, accel: head.inverse.act(SIMD3(0, 1, 0)),
+                      magnetometer: head.inverse.act(steepField) + hardIron, dt: dt)
+        if abs(time - 60) < dt / 2 { settled = yawError(filter, trueYaw: trueYaw) }
+    }
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 3)
+}
