@@ -285,9 +285,15 @@ public final class OrientationFilter: @unchecked Sendable {
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
     /// за верное: опора поля берётся заново со следующего принятого показания.
     public func alignYawToZero() {
+        alignYaw(to: 0)
+    }
+
+    /// Поворачивает мир вокруг вертикали так, чтобы текущий yaw стал равен `target` радиан
+    /// (плюс — влево); pitch и roll сохраняются. Компас принимает новое направление за верное.
+    public func alignYaw(to target: Double) {
         lock.lock()
         let yp = q.yawPitch
-        q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
+        q = simd_quatd(angle: target - yp.yaw, axis: SIMD3(0, 1, 0)) * q
         magneticReferences = [:]
         lastCompassError = 0
         lock.unlock()

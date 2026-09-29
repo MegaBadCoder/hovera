@@ -220,3 +220,17 @@ private func settle(_ filter: OrientationFilter, gravityInHead: SIMD3<Double>, s
     #expect(abs(filter.orientation(atUptime: clock.now + 5).yawPitch.yaw - now) < 1e-9)
     #expect(abs(filter.angularSpeed - rate) < 1e-9)
 }
+
+@Test func aligningYawToATargetKeepsTilt() {
+    let filter = OrientationFilter()
+    let head = simd_quatd(angle: 40 * degree, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: -15 * degree, axis: SIMD3(1, 0, 0))
+    filter.update(gyro: .zero, accel: head.inverse.act(SIMD3(0, 1, 0)), dt: 0.01)
+    for _ in 0..<50 {
+        filter.update(gyro: SIMD3(0, 0.8, 0), accel: head.inverse.act(SIMD3(0, 1, 0)), dt: 0.01)
+    }
+    let before = filter.orientation(predictAhead: 0).yawPitch
+    filter.alignYaw(to: -25 * degree)
+    let after = filter.orientation(predictAhead: 0).yawPitch
+    #expect(abs(after.yaw + 25 * degree) < 1e-9)
+    #expect(abs(after.pitch - before.pitch) < 1e-9)
+}

@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var warpPolicy = CursorWarpPolicy()
     private var lastCursorHit: CursorHit?
     private var macAnchor: MacAnchor?
+    private var macAimTimeout: DispatchWorkItem?
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
@@ -496,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.macAnchor = anchor
         saveSetting(anchor, key: "macAnchor.v1")
         log(String(format: "mac anchor: yaw %.1f° pitch %.1f°", anchor.pose.yaw * 180 / .pi, anchor.pose.pitch * 180 / .pi))
-        say("Экран Mac запомнен.")
+        NSSound(named: "Tink")?.play()
     }
 
     @objc private func warpCursorToGaze() {
@@ -546,7 +547,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func recenterWorld() {
+        guard let renderer, let anchor = macAnchor else {
+            recenterToGaze()
+            return
+        }
+        guard renderer.aimingAtMac else {
+            renderer.aimingAtMac = true
+            macAimTimeout?.cancel()
+            let timeout = DispatchWorkItem { [weak self] in self?.renderer?.aimingAtMac = false }
+            macAimTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: timeout)
+            NSSound(named: "Pop")?.play()
+            return
+        }
+        macAimTimeout?.cancel()
+        renderer.aimingAtMac = false
+        let filterYaw = filter.orientation(predictAhead: 0).yawPitch.yaw
+        let renderedYaw = renderer.currentHead.yawPitch.yaw
+        let target = remainder(anchor.pose.yaw - (renderedYaw - renderer.calibration.yaw - filterYaw), 2 * .pi)
+        logCorrection(kind: "recenter-mac", yawDegrees: remainder(anchor.pose.yaw - renderedYaw, 2 * .pi) * 180 / .pi)
+        filter.alignYaw(to: target)
+        renderer.calibration.yaw = 0
+        if renderer.headOffset != nil {
+            cameraHead.worldYawChanged(by: target - filterYaw)
+        }
+        NSSound(named: "Tink")?.play()
+    }
+
+    @objc private func recenterToGaze() {
         guard let renderer else { return }
+        macAimTimeout?.cancel()
+        renderer.aimingAtMac = false
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
@@ -953,6 +984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_0) { [weak self] in self?.morePrediction() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
         hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
+        hotkeys.register(keyCode: kVK_ANSI_R, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.recenterToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
         hotkeys.register(keyCode: kVK_ANSI_K) { [weak self] in self?.calibrateCompass() }
         hotkeys.register(keyCode: kVK_ANSI_B) { [weak self] in self?.captureMacAnchor() }
@@ -980,7 +1012,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Наклонить назад   ⌃⌥⇧↑", #selector(tiltBack)))
         menu.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
         menu.addItem(.separator())
-        menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥R", #selector(recenterWorld)))
+        menu.addItem(menuItem("Вернуть экраны по MacBook: навести перекрестие, ещё раз   ⌃⌥R", #selector(recenterWorld)))
+        menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥⇧R", #selector(recenterToGaze)))
         menu.addItem(menuItem("Метка: смотрю на средний экран (только в лог)   ⌃⌥M", #selector(markReference)))
         menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
         menu.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))

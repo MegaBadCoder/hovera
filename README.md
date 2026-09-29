@@ -45,7 +45,7 @@ The build is signed with your first "Apple Development" identity if you have one
 
 All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 
-- `R` — "forward" is where I look now (recenter). Aim at a distant reference point.
+- `R` — put the screens back using the MacBook: the first press shows a yellow outline of the laptop and a crosshair; aim the crosshair at the centre of the real MacBook and press `R` again. Without a remembered MacBook (`B`), and with `⇧R`, "forward" becomes where you look.
 - `Space` — put the screen under your gaze where you look; `G` — grab / release a screen.
 - `↑` / `↓` — closer / further; `=` / `-` — bigger / smaller; `⇧↑` / `⇧↓` — tilt the screen back / forward (5° steps, up to 60°).
 - `A` — arrange all screens in an arc, edge to edge. Default is a racing-style triple monitor: same size, upright, joined along the whole edge; menu → Screen joining switches to “facing you” (widths kept, each screen faces your eyes).
@@ -53,7 +53,7 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `⌘↑` / `⌘↓` — tilt all screens together.
 - Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
-- `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there.
+- `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there, and `R` puts the screens back relative to it.
 - `J` — force the cursor to where you look.
 - `W` — move the active window to the screen you look at (it keeps its place on the screen and shrinks if it does not fit).
 - `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.
