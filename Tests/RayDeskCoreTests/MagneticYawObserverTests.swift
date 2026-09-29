@@ -199,3 +199,13 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     _ = run(filter, seconds: 120, gyroBias: .zero, field: tilted)
     #expect(!filter.compassFieldChanged)
 }
+
+@Test func briefMagneticDisturbanceBarelyTurnsTheWorld() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    var trueYaw = run(filter, seconds: 60, gyroBias: .zero)
+    let settled = yawError(filter, trueYaw: trueYaw)
+    let disturbed = simd_quatd(angle: 18 * degree, axis: SIMD3(0, 1, 0)).act(earthField)
+    trueYaw = run(filter, seconds: 10, gyroBias: .zero, field: disturbed, initialYaw: trueYaw)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 6)
+}

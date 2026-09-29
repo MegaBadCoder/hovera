@@ -229,7 +229,8 @@ public final class OrientationFilter: @unchecked Sendable {
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
         lastCompassError = error
-        q = simd_normalize(simd_quatd(angle: -Compass.proportionalGain * error * dt, axis: SIMD3(0, 1, 0)) * q)
+        let rate = max(-Compass.maxCorrectionRate, min(Compass.maxCorrectionRate, Compass.proportionalGain * error))
+        q = simd_normalize(simd_quatd(angle: -rate * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
     /// Смещение нуля гироскопа, выученное в моменты покоя, рад/с по осям тела.
@@ -314,6 +315,7 @@ private enum Compass {
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 4
     static let sectorSize = 15 * Double.pi / 180
+    static let maxCorrectionRate = 0.5 * Double.pi / 180
     static let changedFieldStrength = 0.15
     static let changedFieldDip = 10 * Double.pi / 180
     static let restoredFieldStrength = 0.08
