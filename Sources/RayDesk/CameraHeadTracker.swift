@@ -33,7 +33,13 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var pending: [String] = []
     private var currentPhase = ""
     private var estimator = HeadPositionEstimator(camera: FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9))
-    private var smoother = VectorSmoother(timeConstants: SIMD3(0.05, 0.05, 0.1))
+    private var smoother = VectorSmoother(timeConstants: SIMD3(0.08, 0.08, 0.15))
+    private var recentNecks: [SIMD3<Double>] = []
+    private var lastRawZ: Double?
+    private var rejectedInRow = 0
+    private var holding = false
+    private var carry = SIMD3<Double>(repeating: 0)
+    private var carryStart = 0.0
     private var referenceNeck: SIMD3<Double>?
     private var referencePitch: Double?
     private var referenceWindowStart: Double?
@@ -50,9 +56,13 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let referenceWindowSeconds = 1.0
     private static let maxOffset = 0.5
     private static let maxDepthJump = 0.12
-    private static let depthTrustYaw = 25 * Double.pi / 180
-    private static let holdYaw = 50 * Double.pi / 180
+    private static let holdYaw = 20 * Double.pi / 180
+    private static let resumeYaw = 15 * Double.pi / 180
+    private static let holdPitch = 25 * Double.pi / 180
     private static let maxTrackedSpeed = 30 * Double.pi / 180
+    private static let referenceSpeed = 10 * Double.pi / 180
+    private static let referenceYaw = 10 * Double.pi / 180
+    private static let carrySeconds = 1.0
     private let orientation: @Sendable (Double) -> (orientation: simd_quatd, speed: Double)
 
     init(orientation: @escaping @Sendable (Double) -> (orientation: simd_quatd, speed: Double)) {
@@ -211,22 +221,38 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let pitch = referencePitch.map { turn.pitch - $0 } ?? 0
         lastTurn = SIMD2(yaw, pitch)
         lastAccepted = false
-        guard speed < Self.maxTrackedSpeed, abs(yaw) < Self.holdYaw else {
+        holding = holding ? abs(yaw) > Self.resumeYaw : abs(yaw) > Self.holdYaw
+        guard speed < Self.maxTrackedSpeed, !holding, abs(pitch) < Self.holdPitch else {
             lastFaceTime = time
+            recentNecks.removeAll()
+            lastRawZ = nil
             return
         }
-        var neck = estimator.neckPosition(face: face, yaw: yaw, pitch: pitch)
-        if let previous = smoother.value,
-           abs(yaw) > Self.depthTrustYaw || abs(neck.z / previous.z - 1) > Self.maxDepthJump {
-            neck.z = previous.z
+        var raw = estimator.neckPosition(face: face, yaw: yaw, pitch: pitch)
+        if let lastRawZ, abs(raw.z / lastRawZ - 1) > Self.maxDepthJump, rejectedInRow < 3 {
+            raw.z = lastRawZ
+            rejectedInRow += 1
+        } else {
+            lastRawZ = raw.z
+            rejectedInRow = 0
         }
-        smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.2) : 0.033)
+        recentNecks.append(raw)
+        if recentNecks.count > 3 { recentNecks.removeFirst() }
+        let neck = median(recentNecks)
+        smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.05) : 0.033)
         lastFaceTime = time
         lastAccepted = true
         guard let value = smoother.value else { return }
         previousEstimate = latestEstimate
         latestEstimate = (arrival, value)
-        captureReference(value, pitch: turn.pitch, time: time)
+        if speed < Self.referenceSpeed, abs(yaw) < Self.referenceYaw {
+            captureReference(value, pitch: turn.pitch, time: time)
+        }
+    }
+
+    private func median(_ values: [SIMD3<Double>]) -> SIMD3<Double> {
+        func middle(_ axis: [Double]) -> Double { axis.sorted()[axis.count / 2] }
+        return SIMD3(middle(values.map(\.x)), middle(values.map(\.y)), middle(values.map(\.z)))
     }
 
     private func captureReference(_ value: SIMD3<Double>, pitch: Double, time: Double) {
@@ -243,6 +269,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     /// Кадры во время быстрых поворотов в опору не попадают.
     func resetReference(after delay: Double) {
         lock.withLock {
+            carry = currentOffset()
+            carryStart = ProcessInfo.processInfo.systemUptime
             referenceNeck = nil
             referencePitch = nil
             referenceSamples = []
@@ -254,8 +282,15 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     /// Сдвиг шеи от опорного положения в осях камеры, метры; ноль, пока опоры нет. Между кадрами
     /// камеры значение плавно ведётся от предыдущей оценки к последней за один интервал кадра.
     func neckOffset() -> SIMD3<Double> {
-        lock.lock()
-        defer { lock.unlock() }
+        lock.withLock { currentOffset() }
+    }
+
+    private func currentOffset() -> SIMD3<Double> {
+        let fade = max(0, 1 - (ProcessInfo.processInfo.systemUptime - carryStart) / Self.carrySeconds)
+        return carry * fade + referencedOffset()
+    }
+
+    private func referencedOffset() -> SIMD3<Double> {
         guard let referenceNeck, let latest = latestEstimate else { return .zero }
         var current = latest.value
         if let previous = previousEstimate, latest.time > previous.time {

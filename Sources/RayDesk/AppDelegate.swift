@@ -536,7 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var wallDepthStrength: Double {
-        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.5
+        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.25
     }
 
     @objc private func chooseWallDepth(_ sender: NSMenuItem) {
@@ -560,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let cameraYaw = macAnchor?.pose.yaw ?? 0
             renderer.headOffset = { [cameraHead, weak self] in
                 var offset = cameraHead.neckOffset()
-                offset.z *= self?.wallDepthStrength ?? 0.5
+                offset.z *= self?.wallDepthStrength ?? 0.25
                 return worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
             }
             sender.state = .on

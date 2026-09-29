@@ -16,7 +16,7 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     let neck = estimator.neckPosition(face: rest, yaw: 0, pitch: 0)
     let face = neck + SIMD3(estimator.turn.pivotRadius * sin(yaw), estimator.turn.pivotRadius * sin(pitch), 0)
     let focal = 0.5 / tan(camera.horizontalFieldOfView / 2)
-    let width = camera.faceWidth * focal / face.z * estimator.turn.sizeFactor(yaw: yaw)
+    let width = camera.faceWidth * focal / face.z * estimator.turn.sizeFactor(yaw: yaw, pitch: pitch)
     return box(centerX: 0.5 + face.x * focal / face.z, centerY: 0.5 + face.y * focal / face.z * camera.aspect, width: width)
 }
 
@@ -87,4 +87,17 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
         previous = value
     }
     #expect(largestStep < 0.004 / 2)
+}
+
+@Test func faceStopsNarrowingPastAboutFortyDegrees() {
+    let turn = FaceTurnModel()
+    #expect(turn.sizeFactor(yaw: 60 * degree) == 0.7)
+    #expect(turn.sizeFactor(yaw: 90 * degree) == 0.7)
+    #expect(turn.sizeFactor(yaw: 20 * degree) > 0.8)
+}
+
+@Test func lookingDownMakesTheFaceLookBigger() {
+    let turn = FaceTurnModel()
+    #expect(turn.sizeFactor(yaw: 0, pitch: -20 * degree) > 1.15)
+    #expect(turn.sizeFactor(yaw: 0, pitch: 20 * degree) < 0.9)
 }

@@ -10,18 +10,26 @@ public struct FaceTurnModel: Sendable {
     /// Несимметричная часть: камера стоит не прямо напротив лица, поэтому поворот в одну сторону
     /// сужает рамку сильнее, чем в другую.
     public var sizeTilt: Double
+    /// Ниже этой доли рамка при повороте не сужается: в профиль Vision захватывает ухо и затылок.
+    public var sizeLimit: Double
+    /// Как размер лица зависит от наклона головы: размер ≈ `exp(−pitchSize·pitch)`, вниз — больше.
+    public var pitchSize: Double
     /// Расстояние от оси поворота головы (шеи) до центра лица, метры.
     public var pivotRadius: Double
 
-    public init(sizeFloor: Double = 0.30, sizeTilt: Double = -0.10, pivotRadius: Double = 0.10) {
+    public init(sizeFloor: Double = 0.30, sizeTilt: Double = -0.10, sizeLimit: Double = 0.70,
+                pitchSize: Double = 0.6, pivotRadius: Double = 0.05) {
         self.sizeFloor = sizeFloor
         self.sizeTilt = sizeTilt
+        self.sizeLimit = sizeLimit
+        self.pitchSize = pitchSize
         self.pivotRadius = pivotRadius
     }
 
-    /// Во сколько раз рамка лица уже, чем при взгляде в камеру, при повороте головы на `yaw` радиан.
-    public func sizeFactor(yaw: Double) -> Double {
-        sizeFloor + (1 - sizeFloor) * cos(yaw) + sizeTilt * sin(yaw)
+    /// Во сколько раз рамка лица меньше, чем при взгляде прямо, при повороте головы на `yaw`
+    /// и наклоне на `pitch` радиан относительно опорного положения.
+    public func sizeFactor(yaw: Double, pitch: Double = 0) -> Double {
+        max(sizeLimit, sizeFloor + (1 - sizeFloor) * cos(yaw) + sizeTilt * sin(yaw)) * exp(-pitchSize * pitch)
     }
 }
 
@@ -47,7 +55,7 @@ public struct HeadPositionEstimator: Sendable {
     ///   - pitch: наклон головы относительно опорного, радианы, плюс — вверх.
     /// - Returns: метры; x — вправо по кадру (влево от пользователя), y — вверх, z — от камеры.
     public func neckPosition(face: CGRect, yaw: Double, pitch: Double) -> SIMD3<Double> {
-        let factor = max(turn.sizeFactor(yaw: yaw), 0.2)
+        let factor = turn.sizeFactor(yaw: yaw, pitch: pitch)
         let straightened = CGRect(x: face.midX - face.width / factor / 2, y: face.midY - face.height / factor / 2,
                                   width: face.width / factor, height: face.height / factor)
         let facePosition = camera.headPosition(face: straightened)
