@@ -622,7 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return neck + eyeArcOffset(head: head, reference: referenceHead)
             }
             sender.state = .on
-            say("Экраны как на стене. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")
+            say("Дополнительная калибровка камерой включена. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")
             log("wall mode on")
         }
         if cameraHead.isRunning {
@@ -719,7 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
         let neck = cameraHead.neckOffset() * 100
         log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см · задержка кадра %.0f мс%@", neck.x, neck.y, neck.z,
-                   (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · экраны на стене" : ""))
+                   (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · калибровка камерой" : ""))
         log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
                    position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
                    reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
@@ -992,9 +992,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
-        menu.addItem(menuItem("Экраны как на стене (камера, эксперимент)", #selector(toggleWallMode(_:))))
+        menu.addItem(menuItem("Дополнительная калибровка камерой (эксперимент)", #selector(toggleWallMode(_:))))
         menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
-        let depth = NSMenuItem(title: "Стена: сила вперёд-назад", action: nil, keyEquivalent: "")
+        let depth = NSMenuItem(title: "Калибровка камерой: сила вперёд-назад", action: nil, keyEquivalent: "")
         let strengths = NSMenu()
         for percent in [25, 50, 75, 100] {
             let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
