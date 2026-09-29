@@ -1107,7 +1107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let learned = filter.gyroBias * 180 / .pi
         let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
             + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? " · поле изменилось" : ""))
-        log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс", compass, imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000))
+        log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс · пересчётов нуля прошивкой отменено %d", compass,
+                                      imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
     }
 
     private func setupMouseTap() {
