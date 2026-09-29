@@ -26,6 +26,7 @@ final class CameraDebugWindow {
         preview.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(preview)
         for layer in [boxLayer, pointsLayer] {
+            layer.isGeometryFlipped = true
             layer.frame = view.bounds
             layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
             layer.fillColor = nil
