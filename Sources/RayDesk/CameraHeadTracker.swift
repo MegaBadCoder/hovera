@@ -33,7 +33,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var pending: [String] = []
     private var currentPhase = ""
     private var estimator = HeadPositionEstimator(camera: FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9))
-    private var smoother = VectorSmoother(timeConstants: SIMD3(0.08, 0.08, 0.15))
+    private var smoother = OneEuroPositionFilter(minCutoff: SIMD3(1, 1, 0.3), beta: SIMD3(2, 2, 1.5))
+    private var deadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.003))
     private var recentNecks: [SIMD3<Double>] = []
     private var lastRawZ: Double?
     private var rejectedInRow = 0
@@ -242,7 +243,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.05) : 0.033)
         lastFaceTime = time
         lastAccepted = true
-        guard let value = smoother.value else { return }
+        guard let smoothed = smoother.value else { return }
+        let value = deadband.follow(smoothed)
         previousEstimate = latestEstimate
         latestEstimate = (arrival, value)
         if speed < Self.referenceSpeed, abs(yaw) < Self.referenceYaw {
