@@ -21,6 +21,7 @@ public final class OrientationFilter: @unchecked Sendable {
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
+    private var headSpeed = 0.0
     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
     private var historyNext = 0
     private var historyCount = 0
@@ -50,7 +51,8 @@ public final class OrientationFilter: @unchecked Sendable {
     /// Калибровка магнитометра. Пока она задана, курс плавно подтягивается к направлению
     /// поля, запомненному для того же направления взгляда (секторы по 15° по курсу и наклону):
     /// так ошибка компаса, зависящая от поворота головы, не сдвигает мир; `nil` выключает компас.
-    /// Любая установка сбрасывает опорное направление поля.
+    /// Подтяжка не быстрее 0,1°/с, пока голова стоит, плюс 10 % скорости её поворота, но не больше
+    /// 1°/с: сдвиг мира прячется в движении головы. Любая установка сбрасывает опорное направление поля.
     public var magnetometerCalibration: MagnetometerCalibration? {
         get {
             lock.lock()
@@ -138,6 +140,7 @@ public final class OrientationFilter: @unchecked Sendable {
             w -= biasLearner.bias
         }
         omega = w
+        headSpeed += (length(w) - headSpeed) * min(1, dt / Compass.headSpeedSmoothing)
         accumulatedTravel.total += length(w) * dt
         accumulatedTravel.yaw += q.act(w).y * dt
         if abs(accelNorm - 1) < TiltCorrection.maxAccelDeviation, length(w) < TiltCorrection.maxTurnRate {
@@ -229,7 +232,8 @@ public final class OrientationFilter: @unchecked Sendable {
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
         lastCompassError = error
-        let rate = max(-Compass.maxCorrectionRate, min(Compass.maxCorrectionRate, Compass.proportionalGain * error))
+        let limit = min(Compass.maxCorrectionRate, Compass.stillCorrectionRate + Compass.motionCorrectionShare * headSpeed)
+        let rate = max(-limit, min(limit, Compass.proportionalGain * error))
         q = simd_normalize(simd_quatd(angle: -rate * dt, axis: SIMD3(0, 1, 0)) * q)
     }
 
@@ -315,7 +319,10 @@ private enum Compass {
     static let minHorizontalShare = 0.2
     static let proportionalGain = 1.0 / 4
     static let sectorSize = 15 * Double.pi / 180
-    static let maxCorrectionRate = 0.5 * Double.pi / 180
+    static let stillCorrectionRate = 0.1 * Double.pi / 180
+    static let motionCorrectionShare = 0.1
+    static let maxCorrectionRate = 1.0 * Double.pi / 180
+    static let headSpeedSmoothing = 0.1
     static let changedFieldStrength = 0.15
     static let changedFieldDip = 10 * Double.pi / 180
     static let restoredFieldStrength = 0.08

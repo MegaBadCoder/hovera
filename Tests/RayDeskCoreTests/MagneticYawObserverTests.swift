@@ -43,9 +43,9 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
 @Test func compassRemovesVerticalGyroBias() {
     let filter = OrientationFilter()
     filter.magnetometerCalibration = calibration
-    var trueYaw = run(filter, seconds: 300, gyroBias: SIMD3(0, 0.25 * degree, 0))
+    var trueYaw = run(filter, seconds: 300, gyroBias: SIMD3(0, 0.08 * degree, 0))
     let errorBefore = yawError(filter, trueYaw: trueYaw)
-    trueYaw += run(filter, seconds: 60, gyroBias: SIMD3(0, 0.25 * degree, 0))
+    trueYaw += run(filter, seconds: 60, gyroBias: SIMD3(0, 0.08 * degree, 0))
     let errorAfter = yawError(filter, trueYaw: trueYaw)
 
     #expect(abs(errorAfter - errorBefore) / degree < 1)
@@ -170,9 +170,9 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     let filter = OrientationFilter()
     filter.magnetometerCalibration = calibration
     let tilted = simd_quatd(angle: 8 * degree, axis: SIMD3(1, 0, 0)).act(earthField) * 0.93
-    var trueYaw = run(filter, seconds: 240, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted)
+    var trueYaw = run(filter, seconds: 240, gyroBias: SIMD3(0, 0.08 * degree, 0), field: tilted)
     let settledError = yawError(filter, trueYaw: trueYaw)
-    trueYaw += run(filter, seconds: 120, gyroBias: SIMD3(0, 0.25 * degree, 0), field: tilted, initialYaw: trueYaw)
+    trueYaw += run(filter, seconds: 120, gyroBias: SIMD3(0, 0.08 * degree, 0), field: tilted, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settledError) / degree < 1)
 }
 
@@ -208,4 +208,22 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     let disturbed = simd_quatd(angle: 18 * degree, axis: SIMD3(0, 1, 0)).act(earthField)
     trueYaw = run(filter, seconds: 10, gyroBias: .zero, field: disturbed, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 6)
+}
+
+@Test func compassBarelyMovesTheWorldWhileTheHeadIsStill() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    var trueYaw = run(filter, seconds: 60, gyroBias: .zero)
+    let settled = yawError(filter, trueYaw: trueYaw)
+    let disturbed = simd_quatd(angle: 15 * degree, axis: SIMD3(0, 1, 0)).act(earthField)
+    trueYaw = run(filter, seconds: 30, gyroBias: .zero, field: disturbed, initialYaw: trueYaw)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 3.5)
+}
+
+@Test func compassCatchesFastGyroDriftWhileTheHeadTurns() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    let turning: (Double) -> Double = { 40 * degree * sin(2 * .pi * $0 / 5) }
+    let trueYaw = run(filter, seconds: 240, gyroBias: SIMD3(0, 0.7 * degree, 0), headYawRate: turning)
+    #expect(abs(yawError(filter, trueYaw: trueYaw)) / degree < 5)
 }
