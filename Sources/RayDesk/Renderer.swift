@@ -36,6 +36,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastFrameTime = CACurrentMediaTime()
     var macAnchor: MacAnchor?
     var aimingAtMac = false
+    var showsScreenBorders = true
 
     var slots: [ScreenSlot] = []
     var cursorScreen: Int?
@@ -244,7 +245,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() where screenOpacity > 0 {
             let model = pose.modelMatrix
             let texture = slot.texture ?? placeholder
-            let borderAlpha: Float = (scene.grabbed == i || draggingScreen == i || snappedNeighbor == i) ? 1.0 : (cursorScreen == i ? 0.6 : 0.25)
+            let moving = scene.grabbed == i || draggingScreen == i || snappedNeighbor == i
+            let borderAlpha: Float = moving ? 1.0 : (!showsScreenBorders ? 0 : (cursorScreen == i ? 0.6 : 0.25))
             var uniforms = Uniforms(
                 mvp: projection * viewMatrix * model,
                 border: SIMD4(3 / Float(texture.width), 3 / Float(texture.height), borderAlpha, screenOpacity)

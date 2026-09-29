@@ -52,6 +52,7 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `⇧←` / `⇧→` — turn the screen under your gaze by 2°; a joined side monitor swings around the shared edge like on a real stand.
 - `⌘↑` / `⌘↓` — tilt all screens together.
 - Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
+- Menu → "Рамка вокруг экранов" hides the screen borders, e.g. for films; a screen being dragged still shows its border.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there, and `R` puts the screens back relative to it.
 - `J` — force the cursor to where you look.

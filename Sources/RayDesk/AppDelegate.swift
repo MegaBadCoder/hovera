@@ -164,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size), device: MTLCreateSystemDefaultDevice())
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
+        renderer.showsScreenBorders = !UserDefaults.standard.bool(forKey: "hideScreenBorders")
         if let calibration = loadSetting(ViewCalibration.self, key: "viewCalibration", name: "Настройка сетки") {
             renderer.calibration = calibration
         }
@@ -929,6 +930,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(renderer.showsGrid, forKey: "showsGrid")
         log("grid \(renderer.showsGrid ? "on" : "off")")
     }
+    @objc private func toggleScreenBorders(_ sender: NSMenuItem) {
+        guard let renderer else { return }
+        renderer.showsScreenBorders.toggle()
+        UserDefaults.standard.set(!renderer.showsScreenBorders, forKey: "hideScreenBorders")
+        sender.state = renderer.showsScreenBorders ? .on : .off
+        log("screen borders \(renderer.showsScreenBorders ? "on" : "off")")
+    }
     @objc private func morePrediction() { changePrediction(by: 5) }
     @objc private func lessPrediction() { changePrediction(by: -5) }
     private func changePrediction(by milliseconds: Double) {
@@ -1052,6 +1060,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
         menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
+        let bordersItem = menuItem("Рамка вокруг экранов", #selector(toggleScreenBorders(_:)))
+        bordersItem.state = UserDefaults.standard.bool(forKey: "hideScreenBorders") ? .off : .on
+        menu.addItem(bordersItem)
         let stabilization = NSMenuItem(title: "Стабилизация картинки", action: nil, keyEquivalent: "")
         let levels = NSMenu()
         for (level, title) in [(StabilizationLevel.off, "Выключена"), (.weak, "Слабая"), (.medium, "Средняя"), (.strong, "Сильная")] {
