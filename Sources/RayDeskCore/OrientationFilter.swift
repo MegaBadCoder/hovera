@@ -21,6 +21,11 @@ public final class OrientationFilter: @unchecked Sendable {
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
+    private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
+    private var historyNext = 0
+    private var historyCount = 0
+    var clock: @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
+    private static let historySize = 256
 
     /// `true`, если фильтр инициализирован (выровнен по гравитации) и
     /// накопил достаточно отсчётов для доверенной оценки ориентации.
@@ -139,6 +144,41 @@ public final class OrientationFilter: @unchecked Sendable {
         if let compass, let magnetometer {
             observeCompass(magnetometer, calibration: compass, dt: dt)
         }
+        history[historyNext] = (clock(), q)
+        historyNext = (historyNext + 1) % Self.historySize
+        historyCount = min(historyCount + 1, Self.historySize)
+    }
+
+    /// Ориентация в прошлый момент времени — например, когда камера снимала кадр.
+    ///
+    /// Хранится около полусекунды истории; между отсчётами ориентация интерполируется,
+    /// за пределами истории берётся ближайший край.
+    ///
+    /// - Parameter time: момент в шкале `ProcessInfo.systemUptime` (та же, что у часов хоста), секунды.
+    public func orientation(atUptime time: Double) -> simd_quatd {
+        lock.lock()
+        defer { lock.unlock() }
+        guard historyCount > 0 else { return q }
+        let newest = (historyNext + Self.historySize - 1) % Self.historySize
+        var later = history[newest]
+        guard time < later.time else { return later.orientation }
+        for step in 1..<historyCount {
+            let earlier = history[(newest + Self.historySize - step) % Self.historySize]
+            if earlier.time <= time {
+                let span = later.time - earlier.time
+                let fraction = span > 0 ? (time - earlier.time) / span : 0
+                return simd_slerp(earlier.orientation, later.orientation, fraction)
+            }
+            later = earlier
+        }
+        return later.orientation
+    }
+
+    /// Текущая угловая скорость головы, рад/с.
+    public var angularSpeed: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return length(omega)
     }
 
     private func observeCompass(_ magnetometer: SIMD3<Double>, calibration: MagnetometerCalibration, dt: Double) {

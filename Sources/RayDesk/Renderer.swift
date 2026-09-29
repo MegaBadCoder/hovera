@@ -46,7 +46,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private(set) var meditation = MeditationTransition()
     var breathingEnabled = false
     var headOffset: (() -> SIMD3<Double>)?
-    private var headFollower = RateLimitedFollower(timeConstant: 0.08, maxSpeed: 0.6)
+    private var headFollower = RateLimitedFollower(timeConstant: 0.02, maxSpeed: 0.8)
     private var breathingVisibility = 0.0
     private var meditationStart = CACurrentMediaTime()
     private let skyClockStart = CACurrentMediaTime()

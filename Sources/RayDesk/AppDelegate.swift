@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
     private var cameraDebugWindow: CameraDebugWindow?
-    private lazy var cameraHead = CameraHeadTracker { [filter] in filter.orientation(predictAhead: 0) }
+    private lazy var cameraHead = CameraHeadTracker { [filter] uptime in (filter.orientation(atUptime: uptime), filter.angularSpeed) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -497,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
-            cameraHead.resetReference()
+            cameraHead.resetReference(after: 0.5)
         }
     }
 
@@ -556,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let enable = { [weak self] in
             guard let self, let renderer = self.renderer else { return }
-            cameraHead.resetReference()
+            cameraHead.resetReference(after: 4)
             let cameraYaw = macAnchor?.pose.yaw ?? 0
             renderer.headOffset = { [cameraHead, weak self] in
                 var offset = cameraHead.neckOffset()
@@ -564,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
             }
             sender.state = .on
-            say("Экраны как на стене. Сядьте удобно и смотрите прямо, я запоминаю положение.")
+            say("Экраны как на стене. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")
             log("wall mode on")
         }
         if cameraHead.isRunning {
@@ -660,7 +660,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let jitter = (reading.jitter ?? .zero) * 1000
         let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
         let neck = cameraHead.neckOffset() * 100
-        log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см%@", neck.x, neck.y, neck.z, renderer?.headOffset != nil ? " · экраны на стене" : ""))
+        log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см · задержка кадра %.0f мс%@", neck.x, neck.y, neck.z,
+                   (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · экраны на стене" : ""))
         log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
                    position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
                    reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
