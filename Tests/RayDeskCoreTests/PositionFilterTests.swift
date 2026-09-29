@@ -52,3 +52,20 @@ private let cameraRate = 1.0 / 30
     let back = band.follow(SIMD3(0, 0, 0.7535))
     #expect(abs(back.z - 0.753) < 1e-12)
 }
+
+@Test func leadIsOnlyAddedWhileMoving() {
+    let still = leadCompensated(SIMD3(0, 0, 0.8), speed: SIMD3(0.01, 0, -0.03), lead: 0.12)
+    #expect(still == SIMD3(0, 0, 0.8))
+    let leaning = leadCompensated(SIMD3(0, 0, 0.8), speed: SIMD3(0, 0, -0.3), lead: 0.12)
+    #expect(abs(leaning.z - (0.8 - 0.036)) < 1e-12)
+}
+
+@Test func turningTheHeadSwingsTheEyesAroundTheNeck() {
+    let straight = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
+    let left = simd_quatd(angle: .pi / 2, axis: SIMD3(0, 1, 0))
+    let arc = eyeArcOffset(head: left, reference: straight)
+    #expect(abs(arc.x - (-0.08)) < 1e-12)
+    #expect(abs(arc.z - 0.08) < 1e-12)
+    #expect(abs(arc.y) < 1e-12)
+    #expect(eyeArcOffset(head: straight, reference: straight) == .zero)
+}

@@ -45,7 +45,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private(set) var meditation = MeditationTransition()
     var breathingEnabled = false
-    var headOffset: (() -> SIMD3<Double>)?
+    var headOffset: ((simd_quatd) -> SIMD3<Double>)?
     private var headFollower = RateLimitedFollower(timeConstant: 0.02, maxSpeed: 0.8)
     private var breathingVisibility = 0.0
     private var meditationStart = CACurrentMediaTime()
@@ -217,7 +217,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             near: 0.05, far: 100
         )
         let rotationOnly = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
-        let offset = headFollower.follow(headOffset?() ?? .zero, dt: frameSeconds)
+        let offset = headFollower.follow(headOffset?(head) ?? .zero, dt: frameSeconds)
         let viewMatrix = rotationOnly * .translation(SIMD3(Float(-offset.x), Float(-offset.y), Float(-offset.z)))
 
         let skyAmount = Float(meditation.eased)

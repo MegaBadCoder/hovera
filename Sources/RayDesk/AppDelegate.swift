@@ -558,10 +558,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let renderer = self.renderer else { return }
             cameraHead.resetReference(after: 4)
             let cameraYaw = macAnchor?.pose.yaw ?? 0
-            renderer.headOffset = { [cameraHead, weak self] in
+            var referenceHead: simd_quatd?
+            var generation = -1
+            renderer.headOffset = { [cameraHead, weak self] head in
+                if cameraHead.referenceGeneration != generation {
+                    generation = cameraHead.referenceGeneration
+                    referenceHead = head
+                }
                 var offset = cameraHead.neckOffset()
                 offset.z *= self?.wallDepthStrength ?? 0.25
-                return worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
+                let neck = worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
+                guard let referenceHead else { return neck }
+                return neck + eyeArcOffset(head: head, reference: referenceHead)
             }
             sender.state = .on
             say("Экраны как на стене. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")

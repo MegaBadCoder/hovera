@@ -12,7 +12,8 @@ public struct OneEuroPositionFilter: Sendable {
     public var derivativeCutoff: Double
     /// Текущее сглаженное значение; `nil` до первого измерения.
     public private(set) var value: SIMD3<Double>?
-    private var speed = SIMD3<Double>(repeating: 0)
+    /// Сглаженная скорость, м/с.
+    public private(set) var speed = SIMD3<Double>(repeating: 0)
 
     public init(minCutoff: SIMD3<Double>, beta: SIMD3<Double>, derivativeCutoff: Double = 1) {
         self.minCutoff = minCutoff
@@ -77,4 +78,29 @@ public struct SoftDeadband: Sendable {
     public mutating func reset() {
         value = nil
     }
+}
+
+/// Упреждение положения на задержку измерения: при движении положение сдвигается вперёд
+/// на `speed·lead`, в покое упреждения нет, чтобы не усиливать дрожь.
+///
+/// - Parameters:
+///   - value: сглаженное положение, метры.
+///   - speed: сглаженная скорость, м/с.
+///   - lead: на сколько секунд вперёд экстраполировать.
+///   - startSpeed: ниже этой скорости по оси упреждения нет, м/с.
+///   - fullSpeed: с этой скорости упреждение полное, м/с.
+public func leadCompensated(_ value: SIMD3<Double>, speed: SIMD3<Double>, lead: Double,
+                            startSpeed: Double = 0.05, fullSpeed: Double = 0.15) -> SIMD3<Double> {
+    let magnitude = simd_abs(speed)
+    let share = simd_clamp((magnitude - startSpeed) / (fullSpeed - startSpeed), SIMD3(repeating: 0), SIMD3(repeating: 1))
+    return value + speed * lead * share
+}
+
+/// Где глаза головы относительно оси поворота в шее, метры в осях головы (X вправо, Y вверх,
+/// вперёд — −Z): при повороте головы глаза ходят по дуге вокруг шеи.
+public let eyesFromNeck = SIMD3<Double>(0, 0.07, -0.08)
+
+/// Сдвиг глаз из-за поворота головы относительно опорной ориентации, мировые оси, метры.
+public func eyeArcOffset(head: simd_quatd, reference: simd_quatd, eyes: SIMD3<Double> = eyesFromNeck) -> SIMD3<Double> {
+    head.act(eyes) - reference.act(eyes)
 }

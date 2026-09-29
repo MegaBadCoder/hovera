@@ -38,6 +38,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var recentNecks: [SIMD3<Double>] = []
     private var lastRawZ: Double?
     private var rejectedInRow = 0
+    private var lastLatency = 0.08
+    private var generation = 0
     private var holding = false
     private var carry = SIMD3<Double>(repeating: 0)
     private var carryStart = 0.0
@@ -171,6 +173,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         frames += 1
         latencySum += arrival - captured
         latencyCount += 1
+        lastLatency = arrival - captured
         if let face {
             faces += 1
             let position = camera.headPosition(face: face.boundingBox)
@@ -273,6 +276,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lock.withLock {
             carry = currentOffset()
             carryStart = ProcessInfo.processInfo.systemUptime
+            generation += 1
             referenceNeck = nil
             referencePitch = nil
             referenceSamples = []
@@ -287,6 +291,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lock.withLock { currentOffset() }
     }
 
+    /// Растёт при каждой смене опоры: по нему отрисовка понимает, от какого поворота головы считать дугу глаз.
+    var referenceGeneration: Int {
+        lock.withLock { generation }
+    }
+
     private func currentOffset() -> SIMD3<Double> {
         let fade = max(0, 1 - (ProcessInfo.processInfo.systemUptime - carryStart) / Self.carrySeconds)
         return carry * fade + referencedOffset()
@@ -295,9 +304,14 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private func referencedOffset() -> SIMD3<Double> {
         guard let referenceNeck, let latest = latestEstimate else { return .zero }
         var current = latest.value
+        var interval = 1.0 / 30
         if let previous = previousEstimate, latest.time > previous.time {
-            let fraction = min(max((ProcessInfo.processInfo.systemUptime - latest.time) / (latest.time - previous.time), 0), 1)
+            interval = latest.time - previous.time
+            let fraction = min(max((ProcessInfo.processInfo.systemUptime - latest.time) / interval, 0), 1)
             current = previous.value + (latest.value - previous.value) * fraction
+        }
+        if !holding {
+            current = leadCompensated(current, speed: smoother.speed, lead: lastLatency + min(interval, 0.1))
         }
         let offset = current - referenceNeck
         let length = simd_length(offset)
