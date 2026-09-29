@@ -149,7 +149,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             let position = camera.headPosition(face: face.boundingBox)
             spread.add(position, at: time)
             latestAngles = SIMD3(face.yaw?.doubleValue ?? .nan, face.pitch?.doubleValue ?? .nan, face.roll?.doubleValue ?? .nan)
-            trackNeck(face: face.boundingBox, head: head, time: time)
+            trackNeck(face: measuredBox(face), head: head, time: time)
         }
         let phase = currentPhase
         let observer = observer
@@ -172,10 +172,12 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let position = camera.headPosition(face: box)
         let degree = 180 / Double.pi
         let features = landmarkColumns(face)
-        record(String(format: "%.4f,%@,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.1f,%.1f,%.1f,%.3f,%@,%@", time, phase,
+        let outline = faceOutline(face)
+        record(String(format: "%.4f,%@,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.1f,%.1f,%.1f,%.3f,%@,%@,%.5f,%.1f", time, phase,
                       box.midX, box.midY, box.width, box.height, position.x, position.y, position.z,
                       (face.yaw?.doubleValue ?? .nan) * degree, (face.pitch?.doubleValue ?? .nan) * degree,
-                      (face.roll?.doubleValue ?? .nan) * degree, face.confidence, features, headColumns))
+                      (face.roll?.doubleValue ?? .nan) * degree, face.confidence, features, headColumns,
+                      outline?.width ?? .nan, (outline?.roll ?? .nan) * degree))
     }
 
     private func trackNeck(face: CGRect, head: simd_quatd, time: Double) {
@@ -225,6 +227,21 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         return length > Self.maxOffset ? offset * (Self.maxOffset / length) : offset
     }
 
+    private func faceOutline(_ face: VNFaceObservation) -> FaceOutline? {
+        let box = face.boundingBox
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [CGPoint] {
+            (region?.normalizedPoints ?? []).map { CGPoint(x: box.minX + $0.x * box.width, y: box.minY + $0.y * box.height) }
+        }
+        return FaceOutline(leftEye: points(face.landmarks?.leftEye), rightEye: points(face.landmarks?.rightEye),
+                           contour: points(face.landmarks?.faceContour), aspect: camera.aspect)
+    }
+
+    private func measuredBox(_ face: VNFaceObservation) -> CGRect {
+        let box = face.boundingBox
+        guard let outline = faceOutline(face) else { return box }
+        return outline.equivalentBox(center: CGPoint(x: box.midX, y: box.midY), aspect: camera.aspect)
+    }
+
     private func landmarkPoints(_ face: VNFaceObservation) -> [CGPoint] {
         let box = face.boundingBox
         return (face.landmarks?.allPoints?.normalizedPoints ?? []).map {
@@ -272,7 +289,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             FileManager.default.createFile(atPath: url.path,
-                                           contents: "time,phase,cx,cy,w,h,x,y,z,yaw,pitch,roll,confidence,eyes,contour,nosex,nosey,eyex,eyey,qw,qx,qy,qz\n".data(using: .utf8))
+                                           contents: "time,phase,cx,cy,w,h,x,y,z,yaw,pitch,roll,confidence,eyes,contour,nosex,nosey,eyex,eyey,qw,qx,qy,qz,outline,outlineroll\n".data(using: .utf8))
             file = try FileHandle(forWritingTo: url)
             file?.seekToEndOfFile()
             log("camera recording: \(url.lastPathComponent)")
