@@ -31,6 +31,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var lastFaceTime = 0.0
     private static let referenceSettleSeconds = 0.5
     private static let maxOffset = 0.5
+    private static let maxDepthJump = 0.12
+    private static let depthTrustYaw = 25 * Double.pi / 180
     private let orientation: @Sendable () -> simd_quatd
 
     init(orientation: @escaping @Sendable () -> simd_quatd) {
@@ -158,7 +160,13 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
         guard let referenceTurn, let referenceSince else { return }
         let yaw = remainder(turn.yaw - referenceTurn.yaw, 2 * .pi)
-        let neck = estimator.neckPosition(face: face, yaw: yaw, pitch: turn.pitch - referenceTurn.pitch)
+        var neck = estimator.neckPosition(face: face, yaw: yaw, pitch: turn.pitch - referenceTurn.pitch)
+        if let previous = smoother.value, time - lastFaceTime < 0.1 {
+            guard abs(neck.z / previous.z - 1) < Self.maxDepthJump else { return }
+            if abs(yaw) > Self.depthTrustYaw {
+                neck.z = previous.z
+            }
+        }
         smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.2) : 0.033)
         lastFaceTime = time
         if time - referenceSince < Self.referenceSettleSeconds {

@@ -5,19 +5,23 @@ import simd
 /// Как видимое лицо зависит от поворота головы: при повороте рамка лица сужается, а её центр
 /// уходит по дуге вокруг шеи. Числа по умолчанию подобраны по замеру камерой MacBook в очках RayNeo.
 public struct FaceTurnModel: Sendable {
-    /// Доля ширины рамки, которая не зависит от поворота: ширина ≈ `sizeFloor + (1 − sizeFloor)·cos(yaw)`.
+    /// Доля ширины рамки, которая не зависит от поворота: ширина ≈ `sizeFloor + (1 − sizeFloor)·cos(yaw) + sizeTilt·sin(yaw)`.
     public var sizeFloor: Double
+    /// Несимметричная часть: камера стоит не прямо напротив лица, поэтому поворот в одну сторону
+    /// сужает рамку сильнее, чем в другую.
+    public var sizeTilt: Double
     /// Расстояние от оси поворота головы (шеи) до центра лица, метры.
     public var pivotRadius: Double
 
-    public init(sizeFloor: Double = 0.30, pivotRadius: Double = 0.10) {
+    public init(sizeFloor: Double = 0.30, sizeTilt: Double = -0.10, pivotRadius: Double = 0.10) {
         self.sizeFloor = sizeFloor
+        self.sizeTilt = sizeTilt
         self.pivotRadius = pivotRadius
     }
 
     /// Во сколько раз рамка лица уже, чем при взгляде в камеру, при повороте головы на `yaw` радиан.
     public func sizeFactor(yaw: Double) -> Double {
-        sizeFloor + (1 - sizeFloor) * cos(yaw)
+        sizeFloor + (1 - sizeFloor) * cos(yaw) + sizeTilt * sin(yaw)
     }
 }
 
@@ -48,6 +52,32 @@ public struct HeadPositionEstimator: Sendable {
                                   width: face.width / factor, height: face.height / factor)
         let facePosition = camera.headPosition(face: straightened)
         return facePosition - SIMD3(turn.pivotRadius * sin(yaw), turn.pivotRadius * sin(pitch), 0)
+    }
+}
+
+/// Плавное приближение к цели с ограничением скорости: убирает ступеньки от редких измерений
+/// и не даёт картинке прыгнуть, когда измерение резко меняется.
+public struct RateLimitedFollower: Sendable {
+    /// Постоянная времени приближения, секунды.
+    public var timeConstant: Double
+    /// Наибольшая скорость движения, единицы в секунду.
+    public var maxSpeed: Double
+    /// Текущее значение.
+    public private(set) var value = SIMD3<Double>(repeating: 0)
+
+    public init(timeConstant: Double, maxSpeed: Double) {
+        self.timeConstant = timeConstant
+        self.maxSpeed = maxSpeed
+    }
+
+    /// Сдвигает значение к цели за время `dt` секунд и возвращает новое значение.
+    public mutating func follow(_ target: SIMD3<Double>, dt: Double) -> SIMD3<Double> {
+        var step = (target - value) * (1 - exp(-dt / timeConstant))
+        let limit = maxSpeed * dt
+        let length = simd_length(step)
+        if length > limit { step *= limit / length }
+        value += step
+        return value
     }
 }
 

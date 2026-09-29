@@ -62,3 +62,29 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     let cameraOnTheLeft = worldOffset(fromCamera: SIMD3(0, 0, 0.1), cameraYaw: 90 * degree)
     #expect(simd_length(cameraOnTheLeft - SIMD3(0.1, 0, 0)) < 1e-9)
 }
+
+@Test func followerMovesSmoothlyAndNeverJumps() {
+    var follower = RateLimitedFollower(timeConstant: 0.08, maxSpeed: 0.6)
+    let dt = 1.0 / 120
+    var previous = follower.value
+    for _ in 0..<120 {
+        let value = follower.follow(SIMD3(0.3, 0, 0), dt: dt)
+        #expect(simd_length(value - previous) <= 0.6 * dt + 1e-12)
+        previous = value
+    }
+    #expect(abs(previous.x - 0.3) < 0.01)
+}
+
+@Test func followerSmoothsThirtyHertzSteps() {
+    var follower = RateLimitedFollower(timeConstant: 0.08, maxSpeed: 0.6)
+    var target = SIMD3<Double>(repeating: 0)
+    var largestStep = 0.0
+    var previous = follower.value
+    for frame in 0..<240 {
+        if frame % 4 == 0 { target.x += 0.004 }
+        let value = follower.follow(target, dt: 1.0 / 120)
+        largestStep = max(largestStep, value.x - previous.x)
+        previous = value
+    }
+    #expect(largestStep < 0.004 / 2)
+}
