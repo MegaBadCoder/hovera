@@ -70,3 +70,14 @@ public struct RollingSpread: Sendable {
         return (squares / Double(samples.count - 1)).squareRoot()
     }
 }
+
+/// Лицо обрезано краем кадра: рамка Vision подходит к краю ближе чем на `margin`.
+///
+/// По обрезанному лицу Vision дорисовывает глаза и контур наугад, и размер с центром лица врут.
+///
+/// - Parameters:
+///   - box: рамка лица в долях кадра, начало внизу слева.
+///   - margin: запас до края в долях кадра.
+public func isFaceCropped(_ box: CGRect, margin: Double = 0.03) -> Bool {
+    Double(box.minX) < margin || Double(box.minY) < margin || Double(box.maxX) > 1 - margin || Double(box.maxY) > 1 - margin
+}

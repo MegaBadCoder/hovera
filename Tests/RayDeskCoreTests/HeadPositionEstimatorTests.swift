@@ -101,3 +101,47 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     #expect(turn.sizeFactor(yaw: 0, pitch: -20 * degree) > 1.15)
     #expect(turn.sizeFactor(yaw: 0, pitch: 20 * degree) < 0.9)
 }
+
+@Test func faceTouchingTheFrameEdgeIsCropped() {
+    #expect(!isFaceCropped(box(centerX: 0.5, width: 0.13)))
+    #expect(isFaceCropped(CGRect(x: 0.40, y: 0.75, width: 0.14, height: 0.25)))
+    #expect(isFaceCropped(CGRect(x: 0.90, y: 0.40, width: 0.14, height: 0.25)))
+    #expect(isFaceCropped(CGRect(x: 0.40, y: 0.01, width: 0.14, height: 0.25)))
+}
+
+@Test func learnerRemembersWhereTheCameraIs() {
+    var learner = CameraReferenceLearner()
+    var reference: CameraReferenceLearner.Reference?
+    for frame in 0..<40 where reference == nil {
+        let wobble = frame.isMultiple(of: 2) ? 1.0 : -1.0
+        reference = learner.add(neck: SIMD3(0.01, 0.02, 0.7 + 0.005 * wobble), yaw: 26 * degree + wobble * degree,
+                                pitch: -18 * degree, time: Double(frame) / 30)
+    }
+    let found = try! #require(reference)
+    #expect(abs(found.cameraYaw - 26 * degree) < 0.1 * degree)
+    #expect(abs(found.pitch + 18 * degree) < 1e-9)
+    #expect(abs(found.neck.z - 0.7) < 0.001)
+}
+
+@Test func learnerRestartsWhenTheHeadMoves() {
+    var learner = CameraReferenceLearner()
+    for frame in 0..<25 {
+        #expect(learner.add(neck: .zero, yaw: 0, pitch: 0, time: Double(frame) / 30) == nil)
+    }
+    #expect(learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: 26.0 / 30) == nil)
+    for frame in 27..<50 {
+        #expect(learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: Double(frame) / 30) == nil)
+    }
+    let reference = learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: 57.0 / 30)
+    #expect(abs((reference?.cameraYaw ?? 0) - 10 * degree) < 1e-9)
+}
+
+@Test func learnerHandlesTheCameraBehindTheWrapAround() {
+    var learner = CameraReferenceLearner()
+    var reference: CameraReferenceLearner.Reference?
+    for frame in 0..<40 where reference == nil {
+        let yaw = frame.isMultiple(of: 2) ? 179 * degree : -179 * degree
+        reference = learner.add(neck: .zero, yaw: yaw, pitch: 0, time: Double(frame) / 30)
+    }
+    #expect(abs(abs(try! #require(reference).cameraYaw) - .pi) < 0.01)
+}

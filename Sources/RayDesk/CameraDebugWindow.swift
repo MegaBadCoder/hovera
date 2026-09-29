@@ -66,7 +66,11 @@ final class CameraDebugWindow {
         }
         let rect = preview.layerRectConverted(fromMetadataOutputRect: CGRect(x: face.minX, y: 1 - face.maxY, width: face.width, height: face.height))
         boxLayer.path = CGPath(rect: rect, transform: nil)
-        boxLayer.strokeColor = (observation.accepted ? NSColor.systemGreen : NSColor.systemRed).cgColor
+        boxLayer.strokeColor = switch observation.verdict {
+        case .accepted: NSColor.systemGreen.cgColor
+        case .learning: NSColor.systemYellow.cgColor
+        default: NSColor.systemRed.cgColor
+        }
         let dots = CGMutablePath()
         for point in observation.landmarks {
             let p = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: point.x, y: 1 - point.y))
@@ -75,8 +79,19 @@ final class CameraDebugWindow {
         pointsLayer.path = dots
         let neck = observation.neckOffset * 100
         let degree = 180 / Double.pi
-        textLayer.string = String(format: " шея: x %+.1f  y %+.1f  z %+.1f см\n поворот головы: %+.0f°  наклон %+.0f°  рамка %.3f%@",
+        textLayer.string = String(format: " шея: x %+.1f  y %+.1f  z %+.1f см\n от камеры: поворот %+.0f°  наклон %+.0f°  рамка %.3f%@",
                                   neck.x, neck.y, neck.z, observation.turn.x * degree, observation.turn.y * degree, face.width,
-                                  observation.accepted ? "" : "  · кадр отброшен")
+                                  verdictText(observation.verdict))
+    }
+
+    private func verdictText(_ verdict: CameraFrameVerdict) -> String {
+        switch verdict {
+        case .accepted, .noFace: ""
+        case .learning: "  · смотрите в камеру, запоминаю"
+        case .cropped: "  · лицо обрезано краем кадра"
+        case .turned: "  · голова отвёрнута от камеры"
+        case .tilted: "  · голова сильно наклонена"
+        case .fast: "  · быстрый поворот"
+        }
     }
 }

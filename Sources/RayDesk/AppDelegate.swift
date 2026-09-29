@@ -543,11 +543,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func recenterWorld() {
         guard let renderer else { return }
+        let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
-            cameraHead.resetReference(after: 0.5)
+            cameraHead.worldYawChanged(by: -yaw)
         }
     }
 
@@ -607,7 +608,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let enable = { [weak self] in
             guard let self, let renderer = self.renderer else { return }
             cameraHead.resetReference(after: 4)
-            let cameraYaw = macAnchor?.pose.yaw ?? 0
             var referenceHead: simd_quatd?
             var generation = -1
             renderer.headOffset = { [cameraHead, weak self] head in
@@ -617,12 +617,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 var offset = cameraHead.neckOffset()
                 offset.z *= self?.wallDepthStrength ?? 0.25
-                let neck = worldOffset(fromCamera: offset, cameraYaw: cameraYaw)
+                let neck = worldOffset(fromCamera: offset, cameraYaw: cameraHead.cameraYaw ?? 0)
                 guard let referenceHead else { return neck }
                 return neck + eyeArcOffset(head: head, reference: referenceHead)
             }
             sender.state = .on
-            say("Дополнительная калибровка камерой включена. Сядьте удобно и смотрите на средний экран, через пару секунд я запомню положение.")
+            say("Дополнительная калибровка камерой включена. Сядьте удобно и посмотрите в камеру ноутбука, через пару секунд я запомню, где она.")
             log("wall mode on")
         }
         if cameraHead.isRunning {

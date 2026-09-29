@@ -128,3 +128,60 @@ public func worldOffset(fromCamera offset: SIMD3<Double>, cameraYaw: Double = 0)
     let facingCamera = SIMD3(-offset.x, offset.y, offset.z)
     return simd_quatd(angle: cameraYaw, axis: SIMD3(0, 1, 0)).act(facingCamera)
 }
+
+/// Запоминает опорное положение, пока пользователь спокойно смотрит в камеру: куда в этот момент
+/// повёрнуты очки (там и стоит камера), их наклон и положение шеи.
+public struct CameraReferenceLearner: Sendable {
+    /// Что запомнено.
+    public struct Reference: Equatable, Sendable {
+        /// Поворот очков на камеру, радианы, плюс — влево.
+        public var cameraYaw: Double
+        /// Наклон очков при взгляде в камеру, радианы, плюс — вверх.
+        public var pitch: Double
+        /// Среднее положение шеи в осях камеры, метры.
+        public var neck: SIMD3<Double>
+    }
+
+    /// Сколько секунд голова должна стоять спокойно.
+    public var window: Double
+    /// Наибольший разброс поворота и наклона очков за окно, радианы.
+    public var maxSpread: Double
+    /// Наименьшее число кадров в окне.
+    public var minSamples: Int
+    private var samples: [(neck: SIMD3<Double>, yaw: Double, pitch: Double, time: Double)] = []
+
+    public init(window: Double = 1, maxSpread: Double = 5 * .pi / 180, minSamples: Int = 10) {
+        self.window = window
+        self.maxSpread = maxSpread
+        self.minSamples = minSamples
+    }
+
+    /// Добавляет кадр; если голова шевельнулась сильнее `maxSpread`, окно начинается заново с этого кадра.
+    ///
+    /// - Parameters:
+    ///   - neck: положение шеи в осях камеры, метры.
+    ///   - yaw: поворот очков в мире, радианы.
+    ///   - pitch: наклон очков, радианы.
+    ///   - time: время кадра, секунды, по возрастанию.
+    /// - Returns: опора, когда окно набрано; до этого `nil`.
+    public mutating func add(neck: SIMD3<Double>, yaw: Double, pitch: Double, time: Double) -> Reference? {
+        let unwrapped = samples.first.map { $0.yaw + remainder(yaw - $0.yaw, 2 * .pi) } ?? yaw
+        samples.append((neck, unwrapped, pitch, time))
+        let yaws = samples.map(\.yaw)
+        let pitches = samples.map(\.pitch)
+        if yaws.max()! - yaws.min()! > maxSpread || pitches.max()! - pitches.min()! > maxSpread {
+            samples = [(neck, unwrapped, pitch, time)]
+            return nil
+        }
+        guard time - samples[0].time >= window, samples.count >= minSamples else { return nil }
+        let count = Double(samples.count)
+        let meanYaw = yaws.reduce(0, +) / count
+        return Reference(cameraYaw: remainder(meanYaw, 2 * .pi), pitch: pitches.reduce(0, +) / count,
+                         neck: samples.map(\.neck).reduce(.zero, +) / count)
+    }
+
+    /// Забывает набранные кадры.
+    public mutating func reset() {
+        samples = []
+    }
+}
