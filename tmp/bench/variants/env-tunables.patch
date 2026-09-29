@@ -1,0 +1,65 @@
+diff --git a/Sources/RayDeskCore/OrientationFilter.swift b/Sources/RayDeskCore/OrientationFilter.swift
+index 76c523b..595c1ae 100644
+--- a/Sources/RayDeskCore/OrientationFilter.swift
++++ b/Sources/RayDeskCore/OrientationFilter.swift
+@@ -21,6 +21,7 @@ public final class OrientationFilter: @unchecked Sendable {
+     private var lastCompassError = 0.0
+     private var fieldDiffersFromCalibration = false
+     private var biasLearner = StillnessBiasLearner()
++    private var headSpeed = 0.0
+     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
+     private var historyNext = 0
+     private var historyCount = 0
+@@ -136,8 +137,11 @@ public final class OrientationFilter: @unchecked Sendable {
+         if compass == nil {
+             biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
+             w -= biasLearner.bias
++        } else if ProcessInfo.processInfo.environment["C_SEEDBIAS"] != nil {
++            w -= biasLearner.bias
+         }
+         omega = w
++        headSpeed += (length(w) - headSpeed) * min(1, dt / Compass.headSpeedSmoothing)
+         accumulatedTravel.total += length(w) * dt
+         accumulatedTravel.yaw += q.act(w).y * dt
+         if abs(accelNorm - 1) < TiltCorrection.maxAccelDeviation, length(w) < TiltCorrection.maxTurnRate {
+@@ -150,7 +154,7 @@ public final class OrientationFilter: @unchecked Sendable {
+         if angle > 1e-9 {
+             q = simd_normalize(q * simd_quatd(angle: angle, axis: normalize(w)))
+         }
+-        if let compass, let magnetometer {
++        if let compass, let magnetometer, ProcessInfo.processInfo.environment["NOCOMPASSPULL"] == nil {
+             observeCompass(magnetometer, calibration: compass, dt: dt)
+         }
+         history[historyNext] = (clock(), q)
+@@ -224,12 +228,16 @@ public final class OrientationFilter: @unchecked Sendable {
+         let sector = SIMD2(Int((look.yaw / Compass.sectorSize).rounded()), Int((look.pitch / Compass.sectorSize).rounded()))
+         if magneticReferences.isEmpty { referenceField = local }
+         guard let reference = magneticReferences[sector] else {
+-            magneticReferences[sector] = heading
++            let anchor = Double(ProcessInfo.processInfo.environment["C_ANCHOR"] ?? "1e9")! * Double.pi / 180
++            if headSpeed < anchor { magneticReferences[sector] = heading }
+             return
+         }
+         let error = atan2(sin(heading - reference), cos(heading - reference))
++        let outlier = Double(ProcessInfo.processInfo.environment["C_OUTLIER"] ?? "1e9")! * Double.pi / 180
++        if abs(error) > outlier { return }
+         lastCompassError = error
+-        let rate = max(-Compass.maxCorrectionRate, min(Compass.maxCorrectionRate, Compass.proportionalGain * error))
++        let limit = min(Compass.maxCorrectionRate, Compass.stillCorrectionRate + Compass.motionCorrectionShare * max(0, headSpeed - Compass.maskingSpeed))
++        let rate = max(-limit, min(limit, Compass.proportionalGain * error))
+         q = simd_normalize(simd_quatd(angle: -rate * dt, axis: SIMD3(0, 1, 0)) * q)
+     }
+ 
+@@ -315,7 +323,11 @@ private enum Compass {
+     static let minHorizontalShare = 0.2
+     static let proportionalGain = 1.0 / 4
+     static let sectorSize = 15 * Double.pi / 180
+-    static let maxCorrectionRate = 0.5 * Double.pi / 180
++    static let stillCorrectionRate = Double(ProcessInfo.processInfo.environment["C_STILL"] ?? "0.5")! * Double.pi / 180
++    static let motionCorrectionShare = Double(ProcessInfo.processInfo.environment["C_SHARE"] ?? "0")!
++    static let maxCorrectionRate = Double(ProcessInfo.processInfo.environment["C_CAP"] ?? "0.5")! * Double.pi / 180
++    static let headSpeedSmoothing = Double(ProcessInfo.processInfo.environment["C_SMOOTH"] ?? "0.1")!
++    static let maskingSpeed = Double(ProcessInfo.processInfo.environment["C_DEAD"] ?? "0")! * Double.pi / 180
+     static let changedFieldStrength = 0.15
+     static let changedFieldDip = 10 * Double.pi / 180
+     static let restoredFieldStrength = 0.08

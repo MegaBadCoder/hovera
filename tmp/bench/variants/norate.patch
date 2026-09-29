@@ -1,0 +1,13 @@
+diff --git a/Sources/RayDeskCore/OrientationFilter.swift b/Sources/RayDeskCore/OrientationFilter.swift
+index 76c523b..64e2391 100644
+--- a/Sources/RayDeskCore/OrientationFilter.swift
++++ b/Sources/RayDeskCore/OrientationFilter.swift
+@@ -315,7 +315,7 @@ private enum Compass {
+     static let minHorizontalShare = 0.2
+     static let proportionalGain = 1.0 / 4
+     static let sectorSize = 15 * Double.pi / 180
+-    static let maxCorrectionRate = 0.5 * Double.pi / 180
++    static let maxCorrectionRate = Double.infinity
+     static let changedFieldStrength = 0.15
+     static let changedFieldDip = 10 * Double.pi / 180
+     static let restoredFieldStrength = 0.08
