@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
+    private var cameraDebugWindow: CameraDebugWindow?
     private lazy var cameraHead = CameraHeadTracker { [filter] in filter.orientation(predictAhead: 0) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -500,6 +501,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func toggleCameraDebug(_ sender: NSMenuItem) {
+        if let window = cameraDebugWindow, window.isVisible {
+            window.close()
+            cameraHead.observe(nil)
+            sender.state = .off
+            log("camera debug window off")
+            return
+        }
+        let open = { [weak self] in
+            guard let self else { return }
+            let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].virtualScreen.displayID
+            let screen = NSScreen.screens.first { $0.displayID == display }
+            let window = CameraDebugWindow(session: cameraHead.captureSession, on: screen)
+            cameraDebugWindow = window
+            cameraHead.observe { [weak window] observation in window?.update(observation) }
+            window.show()
+            sender.state = .on
+            log("camera debug window on")
+        }
+        if cameraHead.isRunning {
+            open()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            open()
+        }
+    }
+
     private var wallDepthStrength: Double {
         UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.5
     }
@@ -898,6 +933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
         menu.addItem(menuItem("Экраны как на стене (камера, эксперимент)", #selector(toggleWallMode(_:))))
+        menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
         let depth = NSMenuItem(title: "Стена: сила вперёд-назад", action: nil, keyEquivalent: "")
         let strengths = NSMenu()
         for percent in [25, 50, 75, 100] {

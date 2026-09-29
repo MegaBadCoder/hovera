@@ -3,6 +3,14 @@ import Vision
 import RayDeskCore
 import simd
 
+struct CameraObservation {
+    var face: CGRect?
+    var landmarks: [CGPoint]
+    var neckOffset: SIMD3<Double>
+    var turn: SIMD2<Double>
+    var accepted: Bool
+}
+
 struct CameraHeadReading {
     var position: SIMD3<Double>?
     var jitter: SIMD3<Double>?
@@ -29,6 +37,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var referenceNeck: SIMD3<Double>?
     private var referenceSince: Double?
     private var lastFaceTime = 0.0
+    private var lastTurn = SIMD2<Double>(repeating: 0)
+    private var lastAccepted = false
+    private var observer: (@MainActor (CameraObservation) -> Void)?
     private static let referenceSettleSeconds = 0.5
     private static let maxOffset = 0.5
     private static let maxDepthJump = 0.12
@@ -37,6 +48,13 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
     init(orientation: @escaping @Sendable () -> simd_quatd) {
         self.orientation = orientation
+    }
+
+    var captureSession: AVCaptureSession { session }
+
+    /// Получает на главном потоке каждое распознавание: рамку, точки лица и сдвиг шеи.
+    func observe(_ handler: (@MainActor (CameraObservation) -> Void)?) {
+        lock.withLock { observer = handler }
     }
 
     var phase: String {
@@ -134,7 +152,16 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             trackNeck(face: face.boundingBox, head: head, time: time)
         }
         let phase = currentPhase
+        let observer = observer
+        let turn = lastTurn
+        let accepted = lastAccepted
         lock.unlock()
+
+        if let observer {
+            let observation = CameraObservation(face: face?.boundingBox, landmarks: face.map(landmarkPoints) ?? [],
+                                                neckOffset: neckOffset(), turn: turn, accepted: face != nil && accepted)
+            Task { @MainActor in observer(observation) }
+        }
 
         let headColumns = String(format: "%.5f,%.5f,%.5f,%.5f", head.real, head.imag.x, head.imag.y, head.imag.z)
         guard let face else {
@@ -160,9 +187,14 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
         guard let referenceTurn, let referenceSince else { return }
         let yaw = remainder(turn.yaw - referenceTurn.yaw, 2 * .pi)
+        lastTurn = SIMD2(yaw, turn.pitch - referenceTurn.pitch)
+        lastAccepted = true
         var neck = estimator.neckPosition(face: face, yaw: yaw, pitch: turn.pitch - referenceTurn.pitch)
         if let previous = smoother.value, time - lastFaceTime < 0.1 {
-            guard abs(neck.z / previous.z - 1) < Self.maxDepthJump else { return }
+            guard abs(neck.z / previous.z - 1) < Self.maxDepthJump else {
+                lastAccepted = false
+                return
+            }
             if abs(yaw) > Self.depthTrustYaw {
                 neck.z = previous.z
             }
@@ -191,6 +223,13 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let offset = current - referenceNeck
         let length = simd_length(offset)
         return length > Self.maxOffset ? offset * (Self.maxOffset / length) : offset
+    }
+
+    private func landmarkPoints(_ face: VNFaceObservation) -> [CGPoint] {
+        let box = face.boundingBox
+        return (face.landmarks?.allPoints?.normalizedPoints ?? []).map {
+            CGPoint(x: box.minX + $0.x * box.width, y: box.minY + $0.y * box.height)
+        }
     }
 
     private func landmarkColumns(_ face: VNFaceObservation) -> String {
