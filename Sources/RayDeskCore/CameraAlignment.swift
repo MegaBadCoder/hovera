@@ -217,8 +217,12 @@ public struct CameraYawCorrector: Sendable {
     /// При неподвижной голове расхождение меньше этого считается шумом модели лица, радианы.
     public var stillDeadband = 1.5 * Double.pi / 180
     /// При неподвижной голове: во сколько раз в секунду сокращается расхождение сверх зоны и предел скорости, рад/с.
-    public var stillGain = 0.2
+    public var stillGain = 0.4
     public var stillMaxRate = 0.5 * Double.pi / 180
+    /// При неподвижной голове расхождение больше этого уже заметно глазом и исправляется быстрее, радианы.
+    public var stillFastFrom = 3 * Double.pi / 180
+    /// На сколько рад/с растёт предел скорости в покое на каждый радиан расхождения сверх `stillFastFrom`.
+    public var stillFastShare = 0.3
     /// Как быстро учится постоянная скорость уплывания, доля расхождения в секунду за секунду.
     public var rateGain = 0.005
     /// Скорость уплывания учится только на расхождениях меньше этого, радианы: крупные — это переходы после поворотов.
@@ -270,8 +274,10 @@ public struct CameraYawCorrector: Sendable {
         }
         let still = abs(headSpeed) < stillSpeed
         let error = still ? (smoothed > 0 ? 1.0 : -1.0) * max(0, abs(smoothed) - stillDeadband) : smoothed
-        let limit = still ? stillMaxRate : min(maxRate + motionShare * abs(headSpeed), maxMotionRate)
-        let rotation = -(driftRate + max(-limit, min(limit, (still ? stillGain : gain) * error))) * dt
+        let limit = still ? stillMaxRate + stillFastShare * max(0, abs(smoothed) - stillFastFrom)
+            : min(maxRate + motionShare * abs(headSpeed), maxMotionRate)
+        let correction = max(-limit, min(limit, (still ? stillGain : gain) * error))
+        let rotation = -(abs(smoothed) > stillFastFrom ? correction : driftRate + correction) * dt
         drift = smoothed + rotation
         return rotation
     }

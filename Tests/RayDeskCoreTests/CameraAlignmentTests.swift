@@ -112,8 +112,23 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         worldShift += step
     }
     #expect(abs(drift + worldShift) < corrector.stillDeadband + 0.2 * degree)
-    #expect(fastest <= corrector.maxRate + 0.25 * degree)
+    #expect(fastest <= corrector.stillMaxRate + corrector.stillFastShare * (drift - corrector.stillFastFrom) + 0.25 * degree)
     #expect(abs(corrector.driftRate) < 0.1 * degree)
+}
+
+@Test func largeHeadingErrorComesBackWithinSecondsWhileSmallOneStaysGentle() {
+    func settle(_ error: Double, seconds: Double) -> (left: Double, fastest: Double) {
+        var corrector = CameraYawCorrector()
+        var shift = 0.0, fastest = 0.0
+        for _ in 0..<Int(seconds * 30) {
+            let step = corrector.step(headYaw: error + shift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30, headSpeed: 1 * degree)
+            fastest = max(fastest, abs(step) * 30)
+            shift += step
+        }
+        return (abs(error + shift), fastest)
+    }
+    #expect(settle(6 * degree, seconds: 8).left < 3.2 * degree)
+    #expect(settle(2.5 * degree, seconds: 8).fastest <= 0.5 * degree + 1e-9)
 }
 
 @Test func headTurnedFarFromTheCameraIsNotUsedForHeading() {
