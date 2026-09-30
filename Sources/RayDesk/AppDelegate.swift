@@ -656,7 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var wallDepthStrength: Double {
-        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.25
+        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? (glassesTracking ? 1 : 0.25)
     }
 
     @objc private func chooseWallDepth(_ sender: NSMenuItem) {
