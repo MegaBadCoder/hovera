@@ -304,7 +304,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
         trackNeck(cropped: false, head: head, speed: speed, time: captured, arrival: arrival,
                   cameraTurn: faceTurn ?? frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
-            frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch) }
+            frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch, roll: head.sideTilt) }
         }
         var headingStep = 0.0
         if let faceTurn, let cameraDirection, lastVerdict == .accepted {

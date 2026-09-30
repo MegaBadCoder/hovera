@@ -68,18 +68,35 @@ public struct HeadPositionEstimator: Sendable {
 /// если бы камера и дуга глаз по гироскопу считали шею в разных местах, при кивке глаза «уезжали» бы на 4 см.
 public let glassesFromNeck = (forward: 0.10, up: 0.07)
 
-/// Положение шеи в осях камеры по положению очков: очки при повороте и наклоне головы ходят по дуге вокруг шеи.
+/// На сколько метров ниже очков ось, вокруг которой голова наклоняется к плечу: боковой наклон идёт
+/// по всей шее, поэтому ось ниже, чем у кивка. Подобрано по записям: при наклонах к плечу на 12–60°
+/// медианная ошибка шеи 9–23 мм вместо 46–52 мм без учёта наклона.
+public let sideBendRadius = 0.15
+
+/// Положение шеи в осях камеры по положению очков: очки при повороте, кивке и наклоне к плечу ходят
+/// по дуге вокруг шеи.
 ///
 /// - Parameters:
 ///   - glasses: середина выученной формы очков в осях камеры, метры; x — вправо по кадру (влево
 ///     от пользователя), y — вверх, z — от камеры.
 ///   - yaw: поворот головы относительно направления на камеру, радианы, плюс — влево от пользователя.
 ///   - pitch: наклон головы относительно опорного, радианы, плюс — вверх.
+///   - roll: наклон головы к плечу относительно вертикали, радианы, плюс — к левому плечу пользователя.
 /// - Returns: метры, в тех же осях.
-public func neckPosition(fromGlasses glasses: SIMD3<Double>, yaw: Double, pitch: Double) -> SIMD3<Double> {
+public func neckPosition(fromGlasses glasses: SIMD3<Double>, yaw: Double, pitch: Double, roll: Double = 0) -> SIMD3<Double> {
     let forward = SIMD3(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
     let up = SIMD3(-sin(yaw) * sin(pitch), cos(pitch), cos(yaw) * sin(pitch))
-    return glasses - glassesFromNeck.forward * forward - glassesFromNeck.up * up
+    let side = SIMD3(cos(yaw), 0, sin(yaw))
+    let bend = sideBendRadius * ((cos(roll) - 1) * up + sin(roll) * side)
+    return glasses - glassesFromNeck.forward * forward - glassesFromNeck.up * up - bend
+}
+
+extension simd_quatd {
+    /// Наклон головы к плечу относительно вертикали, радианы, плюс — к левому плечу; не зависит от курса.
+    public var sideTilt: Double {
+        let right = act(SIMD3(1, 0, 0)), up = act(SIMD3(0, 1, 0))
+        return atan2(right.y, up.y)
+    }
 }
 
 /// Насколько занижена глубина по точкам лица MediaPipe при повороте головы влево-вправо: ось вглубь
