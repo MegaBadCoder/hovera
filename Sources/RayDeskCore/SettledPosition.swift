@@ -5,7 +5,7 @@ import simd
 /// Пока голова поворачивается или кивает, положение стоит на месте: сдвиг глаз от поворота
 /// даёт гироскоп, а камера в движении ошибается. Когда голова успокоилась на `settleTime`,
 /// положение сравнивается со средним за это время; если оно ушло дальше `band` хотя бы по
-/// одной оси, положение плавно переезжает туда с постоянной времени `glideTime` и снова
+/// одной оси и замеры согласны между собой, положение плавно переезжает туда с постоянной времени `glideTime` и снова
 /// замирает, подойдя ближе `settledShare` от `band`. Шум глубины меньше `band` до экранов не доходит.
 public struct SettledPosition: Sendable {
     /// Насколько по осям должно сместиться положение, чтобы экраны за ним поехали, метры.
@@ -18,6 +18,9 @@ public struct SettledPosition: Sendable {
     public var glideTime = 0.4
     /// Доля `band`, подойдя ближе которой переезд заканчивается.
     public var settledShare = 0.15
+    /// Насколько, в долях `band`, замеры за время покоя могут расходиться со своим средним;
+    /// при большем разбросе голова на самом деле не стоит, и положение не трогается.
+    public static let maxSpread = 0.6
 
     /// Текущее положение для отрисовки; `nil` до первого замера.
     public private(set) var value: SIMD3<Double>?
@@ -49,6 +52,8 @@ public struct SettledPosition: Sendable {
         samples.removeAll { $0.time < time - settleTime }
         guard let stillSince, time - stillSince >= settleTime else { return current }
         let target = samples.map(\.position).reduce(.zero, +) / Double(samples.count)
+        let spread = samples.map { (abs($0.position - target) / band).max() }.max() ?? 0
+        guard spread < Self.maxSpread else { return current }
         let excess = (abs(target - current) / band).max()
         if excess > 1 { gliding = true }
         if gliding {

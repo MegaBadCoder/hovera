@@ -51,3 +51,14 @@ private let degree = Double.pi / 180
     settled.reset(to: SIMD3(0, 0.05, 0))
     #expect(settled.value == SIMD3(0, 0.05, 0))
 }
+
+@Test func shortPausesInAHeadShakeDoNotMoveTheScreens() {
+    var settled = SettledPosition()
+    _ = settled.add(.zero, time: 0, headSpeed: 0)
+    var value = SIMD3<Double>.zero
+    for frame in 1...90 {
+        let wrong = frame % 2 == 0 ? SIMD3(0.0, 0.0, 0.09) : SIMD3(0.0, 0.0, -0.02)
+        value = settled.add(wrong, time: Double(frame) / 30, headSpeed: 5 * degree)
+    }
+    #expect(value == .zero)
+}
