@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             glassesVision.start()
             cameraHead.useGlasses(glassesVision)
         }
+        filter.restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
         imu = GlassesIMU(filter: filter)
         if UserDefaults.standard.bool(forKey: "recordIMU") {
             imu?.recorder = IMURecorder()
