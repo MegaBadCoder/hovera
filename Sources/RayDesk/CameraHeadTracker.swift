@@ -89,6 +89,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let glassesResume = SIMD2(25 * Double.pi / 180, 30 * Double.pi / 180)
     private var headingCorrector = CameraYawCorrector()
     private var lastHeadingFrame: Double?
+    private var lastFaceHeading = -Double.infinity
+    private static let coastSeconds = 30.0
     private var headingCorrection = 0.0
     /// Доворачивает мир вокруг вертикали на заданный угол, радианы; так камера поправляет уплывание курса.
     var turnWorld: ((Double) -> Void)?
@@ -303,7 +305,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                                 headSpeed: speed)
             headingCorrection += headingStep
             lastHeadingFrame = captured
-        } else if cameraDirection != nil, let last = lastHeadingFrame {
+            lastFaceHeading = captured
+        } else if cameraDirection != nil, let last = lastHeadingFrame, captured - lastFaceHeading < Self.coastSeconds {
             headingStep = headingCorrector.coast(dt: min(captured - last, 0.2))
             headingCorrection += headingStep
             lastHeadingFrame = captured
