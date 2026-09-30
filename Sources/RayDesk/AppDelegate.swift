@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var glassesView: MTKView?
     private var frameLink: CADisplayLink?
+    private var lastRenderedFrame = CACurrentMediaTime()
+    private var renderStalled = false
     private var renderer: Renderer?
     private var isCalibrating = false
     private var statusTicks = 0
@@ -79,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.fitWindowToGlasses()
+            self?.restartFrameLink()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
@@ -156,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func renderFrame() {
+        lastRenderedFrame = CACurrentMediaTime()
         glassesView?.draw()
     }
 
@@ -221,12 +225,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.enableSetNeedsDisplay = false
         window.contentView = view
         glassesView = view
-        let link = screen.displayLink(target: self, selector: #selector(renderFrame))
-        link.add(to: .main, forMode: .common)
-        frameLink = link
         window.orderFrontRegardless()
         self.window = window
         self.renderer = renderer
+        restartFrameLink()
+    }
+
+    private func restartFrameLink() {
+        guard let screen = glassesScreen() else { return }
+        frameLink?.invalidate()
+        let link = screen.displayLink(target: self, selector: #selector(renderFrame))
+        link.add(to: .main, forMode: .common)
+        frameLink = link
+        lastRenderedFrame = CACurrentMediaTime()
+    }
+
+    private func watchRendering() {
+        guard window != nil, glassesScreen() != nil else { return }
+        let silent = CACurrentMediaTime() - lastRenderedFrame
+        guard silent > 1 else {
+            if renderStalled { log("render resumed") }
+            renderStalled = false
+            return
+        }
+        if !renderStalled { log(String(format: "render stalled for %.1f s, restarting the display link", silent)) }
+        renderStalled = true
+        fitWindowToGlasses()
+        restartFrameLink()
     }
 
     private func fitWindowToGlasses() {
@@ -1199,6 +1224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
+        watchRendering()
         logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
