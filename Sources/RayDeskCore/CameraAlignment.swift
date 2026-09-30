@@ -13,6 +13,10 @@ public struct CameraAlignment: Sendable {
     public private(set) var residual = Double.nan
     /// Сколько пар накоплено.
     public var pairCount: Int { pairs.count }
+    /// Связь взята из прошлого запуска и ещё не выучена заново по этому.
+    public private(set) var usesPrior = false
+    private var prior: simd_double3x3?
+    private var priorYaw = 0.0
     private var anchor: (face: simd_quatd, imu: simd_quatd)?
     private var pairs: [(camera: SIMD3<Double>, world: SIMD3<Double>)] = []
     static let minStep = 15 * Double.pi / 180
@@ -22,6 +26,20 @@ public struct CameraAlignment: Sendable {
     static let maxMismatch = 8 * Double.pi / 180
 
     public init() {}
+
+    /// Начинает со связью из прошлого запуска.
+    ///
+    /// Между запусками мир отсчитывает курс от другого направления, поэтому сохранённая связь верна
+    /// с точностью до поворота мира вокруг вертикали. На повороты головы влево-вправо это не влияет,
+    /// и связь работает сразу; недостающий угол довыучивается по первому кивку. Если пары с ней
+    /// не сходятся (ноутбук передвинули), она отбрасывается и связь учится заново.
+    ///
+    /// - Parameter prior: поворот из осей мира в оси камеры, сохранённый в прошлый раз.
+    public init(prior: simd_double3x3) {
+        self.prior = prior
+        rotation = prior
+        usesPrior = true
+    }
 
     /// Добавляет кадр, где видно лицо.
     ///
@@ -51,6 +69,7 @@ public struct CameraAlignment: Sendable {
         pairs = pairs.map { ($0.camera, turn.act($0.world)) }
         anchor = anchor.map { ($0.face, turn * $0.imu) }
         rotation = rotation.map { $0 * simd_double3x3(turn.inverse) }
+        prior = prior.map { $0 * simd_double3x3(turn.inverse) }
     }
 
     /// Поворот головы в осях камеры сейчас, если в момент `anchorIMU` он был `anchorFace`.
@@ -62,11 +81,43 @@ public struct CameraAlignment: Sendable {
     }
 
     private mutating func solve() {
-        guard pairs.count >= Self.minPairs, Self.spansTwoAxes(pairs.map(\.world)) else { return }
+        guard pairs.count >= Self.minPairs, Self.spansTwoAxes(pairs.map(\.world)) else {
+            solveWithPrior()
+            return
+        }
         let found = bestRotation(from: pairs.map(\.world), to: pairs.map(\.camera))
-        let errors = pairs.map { simd_length_squared(found * $0.world - $0.camera) }
-        residual = sqrt(errors.reduce(0, +) / Double(errors.count))
+        residual = rms(found)
         rotation = residual <= Self.maxResidual ? found : nil
+        if rotation != nil {
+            usesPrior = false
+            prior = nil
+        }
+    }
+
+    private mutating func solveWithPrior() {
+        guard let prior else { return }
+        var a = 0.0, b = 0.0, horizontal = 0.0
+        for pair in pairs {
+            let c = prior.transpose * pair.camera, w = pair.world
+            a += c.x * w.x + c.z * w.z
+            b += c.x * w.z - c.z * w.x
+            horizontal += hypot(w.x, w.z) * hypot(c.x, c.z)
+        }
+        if horizontal > Self.minStep * Self.minStep { priorYaw = atan2(b, a) }
+        let candidate = prior * simd_double3x3(simd_quatd(angle: priorYaw, axis: SIMD3(0, 1, 0)))
+        residual = rms(candidate)
+        if residual <= Self.maxResidual {
+            rotation = candidate
+        } else {
+            self.prior = nil
+            usesPrior = false
+            rotation = nil
+        }
+    }
+
+    private func rms(_ candidate: simd_double3x3) -> Double {
+        let errors = pairs.map { simd_length_squared(candidate * $0.world - $0.camera) }
+        return sqrt(errors.reduce(0, +) / Double(max(errors.count, 1)))
     }
 
     private static func spansTwoAxes(_ vectors: [SIMD3<Double>]) -> Bool {
@@ -145,11 +196,18 @@ public struct CameraYawCorrector: Sendable {
     /// Дальше этого поворота головы от камеры модель лица менее точна, поправки нет, радианы.
     public var maxTurn = 25 * Double.pi / 180
     /// Доля нового кадра в сглаженном расхождении.
-    public var smoothing = 0.1
+    public var smoothing = 0.03
+    /// Медленнее этой скорости голова считается неподвижной, рад/с: тогда доворот мира заметен глазом.
+    public var stillSpeed = 5 * Double.pi / 180
+    /// При неподвижной голове расхождение меньше этого считается шумом модели лица, радианы.
+    public var stillDeadband = 1.5 * Double.pi / 180
+    /// При неподвижной голове: во сколько раз в секунду сокращается расхождение сверх зоны и предел скорости, рад/с.
+    public var stillGain = 0.2
+    public var stillMaxRate = 0.5 * Double.pi / 180
     /// Как быстро учится постоянная скорость уплывания, доля расхождения в секунду за секунду.
-    public var rateGain = 0.03
+    public var rateGain = 0.005
     /// Скорость уплывания учится только на расхождениях меньше этого, радианы: крупные — это переходы после поворотов.
-    public var rateLearningBelow = 3 * Double.pi / 180
+    public var rateLearningBelow = 5 * Double.pi / 180
     /// Предел выученной скорости уплывания, рад/с.
     public var maxDriftRate = 1.5 * Double.pi / 180
     /// Сглаженное расхождение курса по гироскопу с курсом по камере, радианы; `nil` до первого кадра.
@@ -192,9 +250,53 @@ public struct CameraYawCorrector: Sendable {
         if abs(smoothed) < rateLearningBelow {
             driftRate = max(-maxDriftRate, min(maxDriftRate, driftRate + rateGain * smoothed * dt))
         }
-        let limit = maxRate + motionShare * abs(headSpeed)
-        let rotation = -(driftRate + max(-limit, min(limit, gain * smoothed))) * dt
+        let still = abs(headSpeed) < stillSpeed
+        let error = still ? (smoothed > 0 ? 1.0 : -1.0) * max(0, abs(smoothed) - stillDeadband) : smoothed
+        let limit = still ? stillMaxRate : maxRate + motionShare * abs(headSpeed)
+        let rotation = -(driftRate + max(-limit, min(limit, (still ? stillGain : gain) * error))) * dt
         drift = smoothed + rotation
         return rotation
+    }
+}
+
+/// Во сколько раз курс по модели лица больше настоящего поворота головы. Настоящий поворот даёт гироскоп,
+/// его масштаб откалиброван на столе. Модель лица обычно завышает курс на 10–20 %, и от сессии к сессии по-разному.
+public struct FaceYawScale: Sendable {
+    /// Медиана отношений; единица, пока их мало.
+    public private(set) var scale = 1.0
+    /// Сколько отношений накоплено.
+    public var count: Int { ratios.count }
+    private var history: [(time: Double, gyro: Double, face: Double)] = []
+    private var ratios: [Double] = []
+    static let step = 1.0
+    static let minTurn = 8 * Double.pi / 180
+    static let maxTurn = 40 * Double.pi / 180
+    static let maxFaceTurn = 25 * Double.pi / 180
+    static let maxRatios = 200
+    static let minRatios = 30
+    static let range = 0.8...1.4
+
+    public init() {}
+
+    /// Добавляет кадр, где видно лицо.
+    ///
+    /// - Parameters:
+    ///   - time: время кадра, секунды.
+    ///   - gyroYaw: курс головы по гироскопу, радианы.
+    ///   - faceYaw: поворот головы от камеры по модели лица, радианы.
+    public mutating func add(time: Double, gyroYaw: Double, faceYaw: Double) {
+        guard abs(faceYaw) < Self.maxFaceTurn else { return }
+        history.append((time, gyroYaw, faceYaw))
+        while let first = history.first, time - first.time > Self.step {
+            history.removeFirst()
+            let gyro = remainder(gyroYaw - first.gyro, 2 * .pi), face = faceYaw - first.face
+            guard abs(gyro) >= Self.minTurn, abs(gyro) <= Self.maxTurn else { continue }
+            ratios.append(face / gyro)
+            if ratios.count > Self.maxRatios { ratios.removeFirst() }
+            if ratios.count >= Self.minRatios {
+                let median = ratios.sorted()[ratios.count / 2]
+                scale = min(Self.range.upperBound, max(Self.range.lowerBound, median))
+            }
+        }
     }
 }

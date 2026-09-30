@@ -35,6 +35,7 @@ struct CameraHeadReading {
     var headingDrift: Double?
     var headingCorrection: Double
     var headingRate: Double
+    var faceYawScale: Double
 }
 
 final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -88,6 +89,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let glassesHold = SIMD2(30 * Double.pi / 180, 35 * Double.pi / 180)
     private static let glassesResume = SIMD2(25 * Double.pi / 180, 30 * Double.pi / 180)
     private var headingCorrector = CameraYawCorrector()
+    private var faceYawScale = FaceYawScale()
     private var lastHeadingFrame: Double?
     private var lastFaceHeading = -Double.infinity
     private static let coastSeconds = 30.0
@@ -169,7 +171,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                         latency: latencyCount > 0 ? latencySum / Double(latencyCount) : nil,
                                         glassesPerSecond: glasses ? glassesFound : nil, glassesScore: glasses ? glassesScore : nil,
                                         headingDrift: glasses ? headingCorrector.drift : nil, headingCorrection: headingCorrection,
-                                        headingRate: headingCorrector.driftRate)
+                                        headingRate: headingCorrector.driftRate, faceYawScale: faceYawScale.scale)
         headingCorrection = 0
         frames = 0
         faces = 0
@@ -293,16 +295,22 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             glassesFound += 1
             spread.add(glasses, at: Date().timeIntervalSinceReferenceDate)
         }
+        var faceTurn: SIMD2<Double>?
+        if let faceRotation = frame?.faceRotation {
+            var turn = headTurn(fromCameraRotation: simd_double3x3(faceRotation))
+            faceYawScale.add(time: captured, gyroYaw: head.yawPitch.yaw, faceYaw: turn.x)
+            turn.x /= faceYawScale.scale
+            faceTurn = turn
+        }
         trackNeck(cropped: false, head: head, speed: speed, time: captured, arrival: arrival,
-                  cameraTurn: frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
+                  cameraTurn: faceTurn ?? frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
             frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch) }
         }
         var headingStep = 0.0
-        if let faceRotation = frame?.faceRotation, let cameraDirection, lastVerdict == .accepted {
+        if let faceTurn, let cameraDirection, lastVerdict == .accepted {
             let dt = lastHeadingFrame.map { min(captured - $0, 0.2) } ?? 0
             headingStep = headingCorrector.step(headYaw: head.yawPitch.yaw, cameraYaw: cameraDirection,
-                                                faceTurn: headTurn(fromCameraRotation: simd_double3x3(faceRotation)), dt: dt,
-                                                headSpeed: speed)
+                                                faceTurn: faceTurn, dt: dt, headSpeed: speed)
             headingCorrection += headingStep
             lastHeadingFrame = captured
             lastFaceHeading = captured

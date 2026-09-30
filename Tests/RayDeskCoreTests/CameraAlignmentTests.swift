@@ -111,7 +111,7 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         fastest = max(fastest, abs(step) * 30)
         worldShift += step
     }
-    #expect(abs(drift + worldShift) < 0.2 * degree)
+    #expect(abs(drift + worldShift) < corrector.stillDeadband + 0.2 * degree)
     #expect(fastest <= corrector.maxRate + 0.25 * degree)
     #expect(abs(corrector.driftRate) < 0.1 * degree)
 }
@@ -149,4 +149,66 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         worldShift += corrector.coast(dt: dt)
     }
     #expect(abs(gyroError + worldShift - before) < 1 * degree)
+}
+
+private func angleBetween(_ a: simd_double3x3, _ b: simd_double3x3) -> Double {
+    let angle = simd_quatd(a * b.transpose).angle
+    return min(angle, 2 * .pi - angle)
+}
+
+@Test func savedAlignmentWorksForLeftRightTurnsRightAway() throws {
+    let worldShift = simd_quatd(angle: 1.1, axis: SIMD3(0, 1, 0))
+    let alignment = CameraAlignment(prior: worldToCamera)
+    let anchor = head(yaw: 0, pitch: 0), later = head(yaw: 60, pitch: 0)
+    let predicted = try #require(alignment.predict(anchorFace: face(for: anchor), anchorIMU: worldShift * anchor,
+                                                   imu: worldShift * later))
+    #expect(angleBetween(predicted, face(for: later)) < 1e-9)
+}
+
+@Test func savedAlignmentLearnsTheMissingAngleFromANod() throws {
+    let worldShift = simd_quatd(angle: 1.1, axis: SIMD3(0, 1, 0))
+    var alignment = CameraAlignment(prior: worldToCamera)
+    for (yaw, pitch) in [(0.0, 0.0), (0, 20), (0, -5)] {
+        let imu = head(yaw: yaw, pitch: pitch)
+        alignment.add(face: face(for: imu), imu: worldShift * imu)
+    }
+    #expect(alignment.usesPrior)
+    let learned = try #require(alignment.rotation)
+    #expect(angleBetween(learned, worldToCamera * simd_double3x3(worldShift.inverse)) < 1e-6)
+}
+
+@Test func savedAlignmentIsDroppedWhenTheCameraMoved() {
+    let moved = simd_double3x3(simd_quatd(angle: 0.5, axis: SIMD3(1, 0, 0))) * worldToCamera
+    var alignment = CameraAlignment(prior: moved)
+    for (yaw, pitch) in [(0.0, 0.0), (0, 20), (25, 0)] {
+        let imu = head(yaw: yaw, pitch: pitch)
+        alignment.add(face: face(for: imu), imu: imu)
+    }
+    #expect(!alignment.usesPrior)
+    #expect(alignment.rotation == nil)
+}
+
+@Test func faceYawScaleIsLearnedAgainstTheGyro() {
+    var scale = FaceYawScale()
+    var time = 0.0
+    for _ in 0..<60 {
+        for yaw in Array(stride(from: -20.0, through: 20, by: 1)) + Array(stride(from: 20.0, through: -20, by: -1)) {
+            scale.add(time: time, gyroYaw: yaw * degree + 0.3, faceYaw: 1.15 * yaw * degree)
+            time += 1.0 / 30
+        }
+    }
+    #expect(abs(scale.scale - 1.15) < 0.01)
+}
+
+@Test func stillHeadIsNotSwayedByFaceModelNoise() {
+    var corrector = CameraYawCorrector()
+    var generator = SeededGenerator(seed: 11)
+    var travelled = 0.0, shift = 0.0
+    for _ in 0..<(30 * 20) {
+        let noise = Double.random(in: -1...1, using: &generator) * degree
+        let step = corrector.step(headYaw: shift, cameraYaw: 0, faceTurn: SIMD2(noise, 0), dt: 1.0 / 30, headSpeed: 1 * degree)
+        travelled += abs(step)
+        shift += step
+    }
+    #expect(travelled < 0.5 * degree)
 }

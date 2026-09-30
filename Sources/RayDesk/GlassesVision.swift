@@ -51,6 +51,8 @@ final class GlassesVision: @unchecked Sendable {
     private var tracker = GlassesTracker()
     private var classifier: SkinClassifier?
     private var alignment = CameraAlignment()
+    private var savedAlignmentPairs = 0
+    private static let alignmentKey = "cameraAlignment.v1"
     private var anchor: (face: simd_double3x3, imu: simd_quatd)?
     private static let faceBlend = 0.15
     private static let depthBiasBlend = 0.05
@@ -69,6 +71,10 @@ final class GlassesVision: @unchecked Sendable {
     func start(ready: (() -> Void)? = nil) {
         lock.withLock {
             if mesh == nil {
+                if let saved = UserDefaults.standard.array(forKey: Self.alignmentKey) as? [Double], saved.count == 4 {
+                    alignment = CameraAlignment(prior: simd_double3x3(simd_quatd(ix: saved[1], iy: saved[2], iz: saved[3], r: saved[0])))
+                    log("glasses vision: gyro-camera alignment restored from the last launch")
+                }
                 mesh = FaceMesh()
                 log(mesh == nil ? "glasses vision: face model not found" : "glasses vision: face model ready (CoreML)")
                 if let data = try? Data(contentsOf: Self.shapeURL),
@@ -156,7 +162,7 @@ final class GlassesVision: @unchecked Sendable {
             guard var learned = shape, let classifier else { return frame }
             let fit = learned.fit(landmarks: landmarks, previous: lastFit)
             lastFit = fit
-            alignment.add(face: fit.rotation, imu: head)
+            learnAlignment(face: fit.rotation, imu: head)
             let oval = faceOvalMask(landmarks: small, width: image.width, height: image.height)
             let box = glassesSearchBox(landmarks: small, width: image.width, height: image.height)
             let bridge = small[FaceMeshPoint.noseBridge]
@@ -170,7 +176,7 @@ final class GlassesVision: @unchecked Sendable {
         guard let shape, let classifier, !kept.isEmpty else { return frame }
         let fit = shape.fit(landmarks: landmarks, previous: lastFit)
         lastFit = fit
-        alignment.add(face: fit.rotation, imu: head)
+        learnAlignment(face: fit.rotation, imu: head)
         var rotation = fit.rotation
         frame.rotationSource = "лицо"
         if let anchor, let predicted = alignment.predict(anchorFace: anchor.face, anchorIMU: anchor.imu, imu: head) {
@@ -191,6 +197,14 @@ final class GlassesVision: @unchecked Sendable {
         let byFace = GlassesTracker.Result(center: projected.reduce(.zero, +) / Double(projected.count), scale: fit.scale,
                                            score: score ?? 0, projected: projected)
         return place(byFace, shape: shape, width: width, height: height, focal: focal, frame: frame)
+    }
+
+    private func learnAlignment(face: simd_double3x3, imu: simd_quatd) {
+        alignment.add(face: face, imu: imu)
+        guard let rotation = alignment.rotation, !alignment.usesPrior, alignment.pairCount != savedAlignmentPairs else { return }
+        savedAlignmentPairs = alignment.pairCount
+        let q = simd_quatd(rotation)
+        UserDefaults.standard.set([q.real, q.imag.x, q.imag.y, q.imag.z], forKey: Self.alignmentKey)
     }
 
     private func describeAlignment(_ frame: inout GlassesFrame) {
