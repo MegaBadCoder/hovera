@@ -81,6 +81,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var glassesFound = 0
     private var glassesScore: Double?
     private static let glassesMaxSpeed = 90 * Double.pi / 180
+    private static let glassesHold = SIMD2(30 * Double.pi / 180, 35 * Double.pi / 180)
+    private static let glassesResume = SIMD2(25 * Double.pi / 180, 30 * Double.pi / 180)
     private var headingCorrector = CameraYawCorrector()
     private var lastHeadingFrame: Double?
     private var headingCorrection = 0.0
@@ -347,7 +349,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         if let cameraTurn {
             yaw = cameraTurn.x.isFinite ? cameraTurn.x : yaw
             pitch = cameraTurn.y.isFinite ? cameraTurn.y : pitch
-            holding = false
+            let limit = holding ? Self.glassesResume : Self.glassesHold
+            holding = !learning && (abs(yaw) > limit.x || abs(pitch) > limit.y)
         } else {
             holding = !learning && (holding ? abs(yaw) > Self.resumeYaw : abs(yaw) > Self.holdYaw)
         }
