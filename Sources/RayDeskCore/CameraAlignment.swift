@@ -146,14 +146,32 @@ public struct CameraYawCorrector: Sendable {
     public var maxTurn = 25 * Double.pi / 180
     /// Доля нового кадра в сглаженном расхождении.
     public var smoothing = 0.1
+    /// Как быстро учится постоянная скорость уплывания, доля расхождения в секунду за секунду.
+    public var rateGain = 0.03
+    /// Скорость уплывания учится только на расхождениях меньше этого, радианы: крупные — это переходы после поворотов.
+    public var rateLearningBelow = 3 * Double.pi / 180
+    /// Предел выученной скорости уплывания, рад/с.
+    public var maxDriftRate = 1.5 * Double.pi / 180
     /// Сглаженное расхождение курса по гироскопу с курсом по камере, радианы; `nil` до первого кадра.
     public private(set) var drift: Double?
+    /// Выученная постоянная скорость уплывания курса по гироскопу, рад/с, плюс — влево.
+    public private(set) var driftRate = 0.0
 
     public init() {}
 
-    /// Забывает накопленное расхождение.
+    /// Забывает накопленное расхождение; выученная скорость уплывания остаётся.
     public mutating func reset() {
         drift = nil
+    }
+
+    /// Кадр без лица: мир доворачивается только на выученную скорость уплывания.
+    ///
+    /// - Parameter dt: время с прошлого кадра, секунды.
+    /// - Returns: на сколько довернуть мир вокруг вертикали, радианы.
+    public mutating func coast(dt: Double) -> Double {
+        guard dt > 0 else { return 0 }
+        drift = drift.map { $0 - driftRate * dt }
+        return -driftRate * dt
     }
 
     /// Один кадр камеры.
@@ -171,8 +189,11 @@ public struct CameraYawCorrector: Sendable {
         guard abs(faceTurn.x) < maxTurn, abs(faceTurn.y) < maxTurn, dt > 0 else { return 0 }
         let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
         let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
+        if abs(smoothed) < rateLearningBelow {
+            driftRate = max(-maxDriftRate, min(maxDriftRate, driftRate + rateGain * smoothed * dt))
+        }
         let limit = maxRate + motionShare * abs(headSpeed)
-        let rotation = -max(-limit, min(limit, gain * smoothed)) * dt
+        let rotation = -(driftRate + max(-limit, min(limit, gain * smoothed))) * dt
         drift = smoothed + rotation
         return rotation
     }

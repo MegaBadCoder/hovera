@@ -6,6 +6,18 @@ private let degree = Double.pi / 180
 private let worldToCamera = simd_double3x3(simd_quatd(angle: 2.3, axis: simd_normalize(SIMD3(0.2, -0.9, 0.4))))
 private let startFace = simd_double3x3(simd_quatd(angle: 0.3, axis: simd_normalize(SIMD3(1, 0.5, 0))))
 
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+}
+
 private func head(yaw: Double, pitch: Double) -> simd_quatd {
     yawPitchQuat(yaw: yaw * degree, pitch: pitch * degree)
 }
@@ -74,7 +86,7 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
 
 @Test func alignmentToleratesAFewDegreesOfFaceModelNoise() {
     var alignment = CameraAlignment()
-    var generator = SystemRandomNumberGenerator()
+    var generator = SeededGenerator(seed: 7)
     for _ in 0..<4 {
         for (yaw, pitch) in sweep {
             let imu = head(yaw: yaw, pitch: pitch)
@@ -100,7 +112,8 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         worldShift += step
     }
     #expect(abs(drift + worldShift) < 0.2 * degree)
-    #expect(fastest <= corrector.maxRate + 1e-12)
+    #expect(fastest <= corrector.maxRate + 0.25 * degree)
+    #expect(abs(corrector.driftRate) < 0.1 * degree)
 }
 
 @Test func headTurnedFarFromTheCameraIsNotUsedForHeading() {
@@ -116,6 +129,24 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         movingShift += moving.step(headYaw: 4 * degree + movingShift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30,
                                    headSpeed: 60 * degree)
     }
-    #expect(abs(stillShift) <= 1 * degree + 1e-9)
+    #expect(abs(stillShift) <= 1.05 * degree)
     #expect(abs(4 * degree + movingShift) < 1.5 * degree)
+}
+
+@Test func steadyGyroDriftIsLearnedAndHeldWhileTheFaceIsAway() {
+    var corrector = CameraYawCorrector()
+    let rate = 0.4 * degree
+    var gyroError = 0.0, worldShift = 0.0
+    let dt = 1.0 / 30
+    for _ in 0..<(30 * 180) {
+        gyroError += rate * dt
+        worldShift += corrector.step(headYaw: gyroError + worldShift, cameraYaw: 0, faceTurn: .zero, dt: dt)
+    }
+    #expect(abs(corrector.driftRate - rate) < 0.1 * degree)
+    let before = gyroError + worldShift
+    for _ in 0..<(30 * 10) {
+        gyroError += rate * dt
+        worldShift += corrector.coast(dt: dt)
+    }
+    #expect(abs(gyroError + worldShift - before) < 1 * degree)
 }

@@ -839,9 +839,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
         if let glasses = reading.glassesPerSecond {
-            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°",
+            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°, уплывание гироскопа %.2f°/с",
                        glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100,
-                       (reading.headingDrift ?? .nan) * 180 / .pi, reading.headingCorrection * 180 / .pi))
+                       (reading.headingDrift ?? .nan) * 180 / .pi, reading.headingCorrection * 180 / .pi,
+                       reading.headingRate * 180 / .pi))
         }
         guard let position = reading.position else {
             log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")

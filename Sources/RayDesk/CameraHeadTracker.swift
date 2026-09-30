@@ -34,6 +34,7 @@ struct CameraHeadReading {
     var glassesScore: Double?
     var headingDrift: Double?
     var headingCorrection: Double
+    var headingRate: Double
 }
 
 final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -165,7 +166,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                         facesPerSecond: faces, angles: glasses ? nil : latestAngles,
                                         latency: latencyCount > 0 ? latencySum / Double(latencyCount) : nil,
                                         glassesPerSecond: glasses ? glassesFound : nil, glassesScore: glasses ? glassesScore : nil,
-                                        headingDrift: glasses ? headingCorrector.drift : nil, headingCorrection: headingCorrection)
+                                        headingDrift: glasses ? headingCorrector.drift : nil, headingCorrection: headingCorrection,
+                                        headingRate: headingCorrector.driftRate)
         headingCorrection = 0
         frames = 0
         faces = 0
@@ -299,6 +301,10 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             headingStep = headingCorrector.step(headYaw: head.yawPitch.yaw, cameraYaw: cameraDirection,
                                                 faceTurn: headTurn(fromCameraRotation: simd_double3x3(faceRotation)), dt: dt,
                                                 headSpeed: speed)
+            headingCorrection += headingStep
+            lastHeadingFrame = captured
+        } else if cameraDirection != nil, let last = lastHeadingFrame {
+            headingStep = headingCorrector.coast(dt: min(captured - last, 0.2))
             headingCorrection += headingStep
             lastHeadingFrame = captured
         } else {
