@@ -210,3 +210,14 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     trueYaw = run(filter, seconds: 10, gyroBias: .zero, field: disturbed, initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 6)
 }
+
+@Test func rotatingTheWorldKeepsTheCompassFromPullingBack() {
+    let filter = OrientationFilter()
+    filter.magnetometerCalibration = calibration
+    let trueYaw = run(filter, seconds: 10, gyroBias: .zero)
+    filter.rotateWorldYaw(by: 8 * degree)
+    let rotated = yawError(filter, trueYaw: trueYaw)
+    _ = run(filter, seconds: 20, gyroBias: .zero, initialYaw: trueYaw)
+    #expect(abs(rotated / degree - 8) < 0.1)
+    #expect(abs(yawError(filter, trueYaw: trueYaw) - rotated) / degree < 0.5)
+}

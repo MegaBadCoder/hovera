@@ -131,3 +131,44 @@ public func headTurn(fromCameraRotation rotation: simd_double3x3) -> SIMD2<Doubl
     let forward = rotation * SIMD3(0, 0, -1)
     return SIMD2(atan2(forward.x, -forward.z), atan2(-forward.y, hypot(forward.x, forward.z)))
 }
+
+/// Поправка уплывания курса по камере: камера стоит на месте и видит настоящий поворот головы, поэтому
+/// «направление на камеру + поворот головы по камере» — это курс, каким он должен быть по гироскопу.
+/// Мир доворачивается к нему плавно, не быстрее `maxRate`.
+public struct CameraYawCorrector: Sendable {
+    /// Во сколько раз в секунду сокращается расхождение.
+    public var gain = 0.5
+    /// Наибольшая скорость доворота, рад/с.
+    public var maxRate = 1 * Double.pi / 180
+    /// Дальше этого поворота головы от камеры модель лица менее точна, поправки нет, радианы.
+    public var maxTurn = 25 * Double.pi / 180
+    /// Доля нового кадра в сглаженном расхождении.
+    public var smoothing = 0.1
+    /// Сглаженное расхождение курса по гироскопу с курсом по камере, радианы; `nil` до первого кадра.
+    public private(set) var drift: Double?
+
+    public init() {}
+
+    /// Забывает накопленное расхождение.
+    public mutating func reset() {
+        drift = nil
+    }
+
+    /// Один кадр камеры.
+    ///
+    /// - Parameters:
+    ///   - headYaw: курс головы по гироскопу в момент кадра, радианы, плюс — влево.
+    ///   - cameraYaw: где камера в мире, радианы.
+    ///   - faceTurn: поворот головы от камеры по модели лица, радианы: x — влево, y — вверх.
+    ///   - dt: время с прошлого кадра, секунды.
+    /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево); ноль, если голова
+    ///   отвёрнута от камеры сильнее `maxTurn`.
+    public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double) -> Double {
+        guard abs(faceTurn.x) < maxTurn, abs(faceTurn.y) < maxTurn, dt > 0 else { return 0 }
+        let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
+        let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
+        let rotation = -max(-maxRate, min(maxRate, gain * smoothed)) * dt
+        drift = smoothed + rotation
+        return rotation
+    }
+}

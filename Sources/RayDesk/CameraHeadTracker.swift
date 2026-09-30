@@ -32,6 +32,8 @@ struct CameraHeadReading {
     var latency: Double?
     var glassesPerSecond: Int?
     var glassesScore: Double?
+    var headingDrift: Double?
+    var headingCorrection: Double
 }
 
 final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -51,6 +53,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var deadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.015))
     private var recentNecks: [SIMD3<Double>] = []
     private var lastRawZ: Double?
+    private var lastRaw: (time: Double, value: SIMD3<Double>)?
+    private var jumpsInRow = 0
+    private static let maxHeadSpeed = 1.5
     private var rejectedInRow = 0
     private var lastLatency = 0.08
     private var generation = 0
@@ -76,6 +81,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var glassesFound = 0
     private var glassesScore: Double?
     private static let glassesMaxSpeed = 90 * Double.pi / 180
+    private var headingCorrector = CameraYawCorrector()
+    private var lastHeadingFrame: Double?
+    private var headingCorrection = 0.0
+    /// Доворачивает мир вокруг вертикали на заданный угол, радианы; так камера поправляет уплывание курса.
+    var turnWorld: ((Double) -> Void)?
     private var glassesFile: FileHandle?
     private var glassesRows: [String] = []
     private static let maxOffset = 0.5
@@ -149,7 +159,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let reading = CameraHeadReading(position: spread.mean, jitter: spread.deviation, framesPerSecond: frames,
                                         facesPerSecond: faces, angles: glasses ? nil : latestAngles,
                                         latency: latencyCount > 0 ? latencySum / Double(latencyCount) : nil,
-                                        glassesPerSecond: glasses ? glassesFound : nil, glassesScore: glasses ? glassesScore : nil)
+                                        glassesPerSecond: glasses ? glassesFound : nil, glassesScore: glasses ? glassesScore : nil,
+                                        headingDrift: glasses ? headingCorrector.drift : nil, headingCorrection: headingCorrection)
+        headingCorrection = 0
         frames = 0
         faces = 0
         glassesFound = 0
@@ -276,10 +288,26 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                   cameraTurn: frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
             frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch) }
         }
+        var headingStep = 0.0
+        if let faceRotation = frame?.faceRotation, let cameraDirection, lastVerdict == .accepted {
+            let dt = lastHeadingFrame.map { min(captured - $0, 0.2) } ?? 0
+            headingStep = headingCorrector.step(headYaw: head.yawPitch.yaw, cameraYaw: cameraDirection,
+                                                faceTurn: headTurn(fromCameraRotation: simd_double3x3(faceRotation)), dt: dt)
+            headingCorrection += headingStep
+            lastHeadingFrame = captured
+        } else {
+            lastHeadingFrame = nil
+        }
         let observer = observer
         let turn = lastTurn
         let verdict = lastVerdict
+        let vision = glassesVision
+        let turnWorld = turnWorld
         lock.unlock()
+        if headingStep != 0 {
+            turnWorld?(headingStep)
+            vision?.worldYawChanged(by: headingStep)
+        }
         recordGlasses(frame, verdict: verdict, captured: captured, head: head, speed: speed)
         if let observer {
             let points = frame?.landmarks ?? []
@@ -341,11 +369,19 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             lastFaceTime = time
             recentNecks.removeAll()
             lastRawZ = nil
+            lastRaw = nil
             if learning {
                 learner.reset()
                 glassesLearner.reset()
             }
             return
+        }
+        if let lastRaw, simd_distance(raw, lastRaw.value) > Self.maxHeadSpeed * max(time - lastRaw.time, 1.0 / 30), jumpsInRow < 3 {
+            raw = lastRaw.value
+            jumpsInRow += 1
+        } else {
+            lastRaw = (time, raw)
+            jumpsInRow = 0
         }
         if let lastRawZ, abs(raw.z / lastRawZ - 1) > Self.maxDepthJump, rejectedInRow < 3 {
             raw.z = lastRawZ
@@ -392,6 +428,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             holding = false
             learner.reset()
             glassesLearner.reset()
+            headingCorrector.reset()
+            lastHeadingFrame = nil
             referenceWindowStart = ProcessInfo.processInfo.systemUptime + delay
         }
     }

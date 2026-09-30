@@ -88,3 +88,22 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
     let error = simd_quatd(learned * worldToCamera.transpose).angle
     #expect(min(error, 2 * .pi - error) < 3 * degree)
 }
+
+@Test func cameraPullsADriftedHeadingBackGently() {
+    var corrector = CameraYawCorrector()
+    var worldShift = 0.0
+    let drift = 10 * degree
+    var fastest = 0.0
+    for _ in 0..<(30 * 60) {
+        let step = corrector.step(headYaw: 0.2 + drift + worldShift, cameraYaw: 0.05, faceTurn: SIMD2(0.15, 0), dt: 1.0 / 30)
+        fastest = max(fastest, abs(step) * 30)
+        worldShift += step
+    }
+    #expect(abs(drift + worldShift) < 0.2 * degree)
+    #expect(fastest <= corrector.maxRate + 1e-12)
+}
+
+@Test func headTurnedFarFromTheCameraIsNotUsedForHeading() {
+    var corrector = CameraYawCorrector()
+    #expect(corrector.step(headYaw: 1, cameraYaw: 0, faceTurn: SIMD2(40 * degree, 0), dt: 0.033) == 0)
+}

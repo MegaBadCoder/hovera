@@ -175,14 +175,19 @@ final class GlassesVision: @unchecked Sendable {
             frame.rotationSource = "гироскоп + лицо"
         }
         anchor = (rotation, head)
-        frame.turn = headTurn(fromCameraRotation: rotation)
+        frame.turn = headTurn(fromCameraRotation: fit.rotation)
         frame.faceRotation = simd_quatd(fit.rotation)
         frame.faceDepth = shape.referenceDepth / fit.scale
         describeAlignment(&frame)
         let oval = faceOvalMask(landmarks: small, width: image.width, height: image.height)
-        return place(tracker.track(image: image, scale: scale, rotation: rotation, start: fit, kept: kept, probes: probes,
-                                   classifier: classifier, probeArea: oval),
-                     shape: shape, width: width, height: height, focal: focal, frame: frame)
+        tracker.seed(fit)
+        let score = tracker.track(image: image, scale: scale, rotation: fit.rotation, start: fit, kept: kept, probes: probes,
+                                  classifier: classifier, probeArea: oval)?.score
+        tracker.seed(fit)
+        let projected = kept.map { point -> SIMD2<Double> in let p = fit.apply(point); return SIMD2(p.x, p.y) }
+        let byFace = GlassesTracker.Result(center: projected.reduce(.zero, +) / Double(projected.count), scale: fit.scale,
+                                           score: score ?? 0, projected: projected)
+        return place(byFace, shape: shape, width: width, height: height, focal: focal, frame: frame)
     }
 
     private func describeAlignment(_ frame: inout GlassesFrame) {

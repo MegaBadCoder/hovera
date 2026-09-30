@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadGyroBias()
         loadGyroScale()
         loadMacAnchor()
+        cameraHead.turnWorld = { [filter] angle in filter.rotateWorldYaw(by: angle) }
         if UserDefaults.standard.bool(forKey: "glassesTracking") {
             glassesVision.start()
             cameraHead.useGlasses(glassesVision)
@@ -838,8 +839,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
         if let glasses = reading.glassesPerSecond {
-            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%%",
-                       glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100))
+            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°",
+                       glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100,
+                       (reading.headingDrift ?? .nan) * 180 / .pi, reading.headingCorrection * 180 / .pi))
         }
         guard let position = reading.position else {
             log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")

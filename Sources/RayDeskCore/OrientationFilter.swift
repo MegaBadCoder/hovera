@@ -318,6 +318,17 @@ public final class OrientationFilter: @unchecked Sendable {
 
     /// Поворачивает мир вокруг вертикали так, чтобы текущий yaw стал равен `target` радиан
     /// (плюс — влево); pitch и roll сохраняются. Компас принимает новое направление за верное.
+    /// Доворачивает мир вокруг вертикали на `angle` радиан (плюс — влево), не сбрасывая опоры компаса:
+    /// они поворачиваются вместе с миром, поэтому компас не тянет курс обратно.
+    public func rotateWorldYaw(by angle: Double) {
+        lock.lock()
+        q = simd_normalize(simd_quatd(angle: angle, axis: SIMD3(0, 1, 0)) * q)
+        for (sector, heading) in magneticReferences {
+            magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
+        }
+        lock.unlock()
+    }
+
     public func alignYaw(to target: Double) {
         lock.lock()
         let yp = q.yawPitch

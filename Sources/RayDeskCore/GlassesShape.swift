@@ -406,6 +406,14 @@ public struct GlassesTracker: Sendable {
         ready = false
     }
 
+    /// Ставит трекер туда, где форму видит модель лица, без поиска: пока лицо видно, трекер только
+    /// следует за ним, чтобы при потере лица продолжить с того же места.
+    public mutating func seed(_ fit: SimilarityFit) {
+        scale = fit.scale
+        shift = SIMD2(fit.translation.x, fit.translation.y)
+        ready = true
+    }
+
     /// Результат одного кадра.
     public struct Result: Sendable {
         /// Середина формы в пикселях полного кадра.
@@ -416,6 +424,13 @@ public struct GlassesTracker: Sendable {
         public var score: Double
         /// Точки формы в пикселях полного кадра.
         public var projected: [SIMD2<Double>]
+
+        public init(center: SIMD2<Double>, scale: Double, score: Double, projected: [SIMD2<Double>]) {
+            self.center = center
+            self.scale = scale
+            self.score = score
+            self.projected = projected
+        }
     }
 
     /// Ищет очки в кадре.
