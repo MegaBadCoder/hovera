@@ -170,3 +170,10 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     #expect(abs(corrected - 0.8 * (1 + turnDepthStretch * (1 - cos(52 * Double.pi / 180)))) < 1e-12)
     #expect(corrected > 0.85)
 }
+
+@Test func lookingDownAtTheKeyboardPushesTheMeasuredFaceBack() {
+    let down = depthCorrectedForTurn(0.8, turn: SIMD2(0, -35 * Double.pi / 180))
+    let up = depthCorrectedForTurn(0.8, turn: SIMD2(0, 20 * Double.pi / 180))
+    #expect(down > 0.9)
+    #expect(abs(up / 0.8 - 1) < 0.03)
+}

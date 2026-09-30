@@ -51,6 +51,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var estimator = HeadPositionEstimator(camera: FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9))
     private var smoother = OneEuroPositionFilter(minCutoff: SIMD3(1, 1, 0.05), beta: SIMD3(2, 2, 0.3))
     private var deadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.015))
+    private var glassesSmoother = OneEuroPositionFilter(minCutoff: SIMD3(1, 1, 0.3), beta: SIMD3(2, 2, 0.5))
+    private var glassesDeadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.005))
+    private var smoothingGlasses = false
     private var recentNecks: [SIMD3<Double>] = []
     private var lastRawZ: Double?
     private var lastRaw: (time: Double, value: SIMD3<Double>)?
@@ -397,10 +400,19 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         recentNecks.append(raw)
         if recentNecks.count > 3 { recentNecks.removeFirst() }
         let neck = median(recentNecks)
-        smoother.add(neck, dt: lastFaceTime > 0 ? min(time - lastFaceTime, 0.05) : 0.033)
+        smoothingGlasses = cameraTurn != nil
+        let dt = lastFaceTime > 0 ? min(time - lastFaceTime, 0.05) : 0.033
         lastFaceTime = time
-        guard let smoothed = smoother.value else { return }
-        let value = deadband.follow(smoothed)
+        let value: SIMD3<Double>
+        if smoothingGlasses {
+            glassesSmoother.add(neck, dt: dt)
+            guard let smoothed = glassesSmoother.value else { return }
+            value = glassesDeadband.follow(smoothed)
+        } else {
+            smoother.add(neck, dt: dt)
+            guard let smoothed = smoother.value else { return }
+            value = deadband.follow(smoothed)
+        }
         previousEstimate = wasAccepted ? latestEstimate : nil
         latestEstimate = (arrival, value)
         if learning, let start = referenceWindowStart, time >= start,
@@ -508,7 +520,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             current = previous.value + (latest.value - previous.value) * fraction
         }
         if !holding {
-            current = leadCompensated(current, speed: smoother.speed, lead: lastLatency + min(interval, 0.1))
+            let speed = smoothingGlasses ? glassesSmoother.speed * SIMD3(1, 1, 0) : smoother.speed
+            current = leadCompensated(current, speed: speed, lead: lastLatency + min(interval, 0.1))
         }
         let offset = current - referenceNeck
         let length = simd_length(offset)
