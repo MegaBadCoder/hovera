@@ -203,8 +203,13 @@ public struct CameraYawCorrector: Sendable {
     public var maxRate = 1 * Double.pi / 180
     /// Какую долю скорости поворота головы можно добавить к довороту: пока голова движется, поворот мира не заметен.
     public var motionShare = 0.15
-    /// Дальше этого поворота головы от камеры модель лица менее точна, поправки нет, радианы.
-    public var maxTurn = 25 * Double.pi / 180
+    /// Предел скорости доворота, пока голова движется, рад/с.
+    public var maxMotionRate = 2 * Double.pi / 180
+    /// Дальше этого поворота головы от камеры модель лица менее точна, расхождение не меряется, радианы.
+    public var maxTurn = 15 * Double.pi / 180
+    /// Быстрее этой скорости головы кадр запаздывает и модель лица ошибается в угле, расхождение
+    /// не меряется, а только исправляется уже измеренное, рад/с.
+    public var measureSpeed = 10 * Double.pi / 180
     /// Доля нового кадра в сглаженном расхождении.
     public var smoothing = 0.03
     /// Медленнее этой скорости голова считается неподвижной, рад/с: тогда доворот мира заметен глазом.
@@ -250,19 +255,22 @@ public struct CameraYawCorrector: Sendable {
     ///   - faceTurn: поворот головы от камеры по модели лица, радианы: x — влево, y — вверх.
     ///   - dt: время с прошлого кадра, секунды.
     ///   - headSpeed: скорость поворота головы, рад/с.
-    /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево); ноль, если голова
-    ///   отвёрнута от камеры сильнее `maxTurn`.
+    /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево). Кадры, где голова
+    ///   отвёрнута сильнее `maxTurn` или движется быстрее `measureSpeed`, расхождение не меняют: по ним
+    ///   мир доворачивается только на уже измеренное.
     public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double,
                               headSpeed: Double = 0) -> Double {
-        guard abs(faceTurn.x) < maxTurn, abs(faceTurn.y) < maxTurn, dt > 0 else { return 0 }
+        guard dt > 0 else { return 0 }
+        let measurable = abs(faceTurn.x) < maxTurn && abs(faceTurn.y) < maxTurn && abs(headSpeed) < measureSpeed
         let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
-        let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
-        if abs(smoothed) < rateLearningBelow {
+        guard let smoothed = measurable ? drift.map({ $0 + remainder(measured - $0, 2 * .pi) * smoothing }) ?? measured : drift
+        else { return 0 }
+        if measurable, abs(smoothed) < rateLearningBelow {
             driftRate = max(-maxDriftRate, min(maxDriftRate, driftRate + rateGain * smoothed * dt))
         }
         let still = abs(headSpeed) < stillSpeed
         let error = still ? (smoothed > 0 ? 1.0 : -1.0) * max(0, abs(smoothed) - stillDeadband) : smoothed
-        let limit = still ? stillMaxRate : maxRate + motionShare * abs(headSpeed)
+        let limit = still ? stillMaxRate : min(maxRate + motionShare * abs(headSpeed), maxMotionRate)
         let rotation = -(driftRate + max(-limit, min(limit, (still ? stillGain : gain) * error))) * dt
         drift = smoothed + rotation
         return rotation

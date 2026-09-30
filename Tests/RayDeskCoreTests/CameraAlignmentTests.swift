@@ -123,14 +123,30 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
 
 @Test func headingIsFixedFasterWhileTheHeadIsTurning() {
     var still = CameraYawCorrector(), moving = CameraYawCorrector()
-    var stillShift = 0.0, movingShift = 0.0
+    var stillShift = still.step(headYaw: 4 * degree, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+    var movingShift = moving.step(headYaw: 4 * degree, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
     for _ in 0..<30 {
         stillShift += still.step(headYaw: 4 * degree + stillShift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
         movingShift += moving.step(headYaw: 4 * degree + movingShift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30,
                                    headSpeed: 60 * degree)
     }
     #expect(abs(stillShift) <= 1.05 * degree)
-    #expect(abs(4 * degree + movingShift) < 1.5 * degree)
+    #expect(abs(movingShift) > 1.5 * degree)
+    #expect(abs(movingShift) <= moving.maxMotionRate * 31 / 30 + 0.05 * degree)
+}
+
+@Test func headSwingsDoNotRotateTheWorldWhenTheCameraLags() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    let dt = 1.0 / 30
+    for frame in 0..<(30 * 20) {
+        let time = Double(frame) * dt
+        let yaw = 25 * degree * sin(2 * .pi * time / 2)
+        let speed = abs(25 * degree * 2 * .pi / 2 * cos(2 * .pi * time / 2))
+        let lagged = 25 * degree * sin(2 * .pi * (time - 0.08) / 2) * 1.1
+        shift += corrector.step(headYaw: yaw + shift, cameraYaw: 0, faceTurn: SIMD2(lagged, 0), dt: dt, headSpeed: speed)
+    }
+    #expect(abs(shift) < 1.5 * degree)
 }
 
 @Test func steadyGyroDriftIsLearnedAndHeldWhileTheFaceIsAway() {
