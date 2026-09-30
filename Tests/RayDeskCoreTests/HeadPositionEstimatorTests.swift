@@ -145,3 +145,28 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     }
     #expect(abs(abs(try! #require(reference).cameraYaw) - .pi) < 0.01)
 }
+
+@Test func glassesStraightAtTheCameraSitInFrontOfTheNeck() {
+    let glasses = SIMD3<Double>(0.01, 0.02, 0.55)
+    let neck = neckPosition(fromGlasses: glasses, yaw: 0, pitch: 0)
+    #expect(simd_length(neck - SIMD3(0.01, 0.02, 0.55 + glassesFromNeck)) < 1e-12)
+}
+
+@Test func turningAndTiltingTheHeadDoesNotMoveTheNeckFoundByGlasses() {
+    let neck = SIMD3<Double>(-0.03, 0.01, 0.62)
+    for (yaw, pitch) in [(0.4, 0.0), (-0.7, 0.2), (0.3, -0.35)] {
+        let glasses = neck + SIMD3(glassesFromNeck * sin(yaw) * cos(pitch), glassesFromNeck * sin(pitch),
+                                   -glassesFromNeck * cos(yaw) * cos(pitch))
+        #expect(simd_length(neckPosition(fromGlasses: glasses, yaw: yaw, pitch: pitch) - neck) < 1e-12)
+    }
+}
+
+@Test func depthIsNotCorrectedWhenFacingTheCamera() {
+    #expect(depthCorrectedForTurn(0.8, turn: .zero) == 0.8)
+}
+
+@Test func turnedHeadIsPushedBackByTheMeasuredStretch() {
+    let corrected = depthCorrectedForTurn(0.8, turn: SIMD2(52 * Double.pi / 180, 0))
+    #expect(abs(corrected - 0.8 * (1 + turnDepthStretch * (1 - cos(52 * Double.pi / 180)))) < 1e-12)
+    #expect(corrected > 0.85)
+}

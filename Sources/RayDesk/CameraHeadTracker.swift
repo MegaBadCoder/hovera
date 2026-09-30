@@ -19,6 +19,8 @@ struct CameraObservation {
     var neckOffset: SIMD3<Double>
     var turn: SIMD2<Double>
     var verdict: CameraFrameVerdict
+    var glassesPoints: [CGPoint] = []
+    var glassesNote: String?
 }
 
 struct CameraHeadReading {
@@ -28,6 +30,8 @@ struct CameraHeadReading {
     var facesPerSecond: Int
     var angles: SIMD3<Double>?
     var latency: Double?
+    var glassesPerSecond: Int?
+    var glassesScore: Double?
 }
 
 final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -58,6 +62,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var cameraDirection: Double?
     private var referenceWindowStart: Double?
     private var learner = CameraReferenceLearner()
+    private var glassesLearner = CameraReferenceLearner(window: 0.3, maxSpread: 25 * Double.pi / 180, minSamples: 8)
     private var latestEstimate: (time: Double, value: SIMD3<Double>)?
     private var previousEstimate: (time: Double, value: SIMD3<Double>)?
     private var latencySum = 0.0
@@ -67,6 +72,12 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var lastAccepted = false
     private var lastVerdict = CameraFrameVerdict.noFace
     private var observer: (@MainActor (CameraObservation) -> Void)?
+    private var glassesVision: GlassesVision?
+    private var glassesFound = 0
+    private var glassesScore: Double?
+    private static let glassesMaxSpeed = 90 * Double.pi / 180
+    private var glassesFile: FileHandle?
+    private var glassesRows: [String] = []
     private static let maxOffset = 0.5
     private static let maxDepthJump = 0.12
     private static let holdYaw = 20 * Double.pi / 180
@@ -82,6 +93,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     }
 
     var captureSession: AVCaptureSession { session }
+
+    /// Берёт положение головы по очкам со страницы `vision` вместо рамки лица Vision; `nil` возвращает Vision.
+    func useGlasses(_ vision: GlassesVision?) {
+        lock.withLock { glassesVision = vision }
+    }
 
     /// Получает на главном потоке каждое распознавание: рамку, точки лица и сдвиг шеи.
     func observe(_ handler: (@MainActor (CameraObservation) -> Void)?) {
@@ -129,11 +145,14 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     func takeReading() -> CameraHeadReading {
         lock.lock()
         defer { lock.unlock() }
+        let glasses = glassesVision != nil
         let reading = CameraHeadReading(position: spread.mean, jitter: spread.deviation, framesPerSecond: frames,
-                                        facesPerSecond: faces, angles: latestAngles,
-                                        latency: latencyCount > 0 ? latencySum / Double(latencyCount) : nil)
+                                        facesPerSecond: faces, angles: glasses ? nil : latestAngles,
+                                        latency: latencyCount > 0 ? latencySum / Double(latencyCount) : nil,
+                                        glassesPerSecond: glasses ? glassesFound : nil, glassesScore: glasses ? glassesScore : nil)
         frames = 0
         faces = 0
+        glassesFound = 0
         latencySum = 0
         latencyCount = 0
         return reading
@@ -147,6 +166,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         output.setSampleBufferDelegate(self, queue: queue)
         session.beginConfiguration()
         session.sessionPreset = .high
@@ -165,6 +185,10 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let captured = captureUptime(sampleBuffer)
         let (head, speed) = orientation(captured)
+        if let vision = lock.withLock({ glassesVision }) {
+            sendToGlasses(vision, pixels: pixels, captured: captured, head: head, speed: speed)
+            return
+        }
         let handler = VNImageRequestHandler(cvPixelBuffer: pixels, options: [:])
         let rectangles = VNDetectFaceRectanglesRequest()
         try? handler.perform([rectangles])
@@ -188,8 +212,10 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             let position = camera.headPosition(face: face.boundingBox)
             spread.add(position, at: time)
             latestAngles = SIMD3(face.yaw?.doubleValue ?? .nan, face.pitch?.doubleValue ?? .nan, face.roll?.doubleValue ?? .nan)
-            trackNeck(face: measuredBox(face), cropped: isFaceCropped(face.boundingBox), head: head, speed: speed,
-                      time: captured, arrival: arrival)
+            let box = measuredBox(face)
+            trackNeck(cropped: isFaceCropped(face.boundingBox), head: head, speed: speed, time: captured, arrival: arrival) {
+                [estimator] yaw, pitch in estimator.neckPosition(face: box, yaw: yaw, pitch: pitch)
+            }
         }
         let phase = currentPhase
         let observer = observer
@@ -229,7 +255,55 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         return seconds
     }
 
-    private func trackNeck(face: CGRect, cropped: Bool, head: simd_quatd, speed: Double, time: Double, arrival: Double) {
+    private func sendToGlasses(_ vision: GlassesVision, pixels: CVPixelBuffer, captured: Double, head: simd_quatd, speed: Double) {
+        lock.withLock { frames += 1 }
+        receiveGlasses(vision.track(pixels: pixels, head: head), captured: captured, head: head, speed: speed)
+    }
+
+    private func receiveGlasses(_ frame: GlassesFrame?, captured: Double, head: simd_quatd, speed: Double) {
+        let arrival = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        latencySum += arrival - captured
+        latencyCount += 1
+        lastLatency = arrival - captured
+        if frame?.face == true { faces += 1 }
+        glassesScore = frame?.score
+        if let glasses = frame?.glasses {
+            glassesFound += 1
+            spread.add(glasses, at: Date().timeIntervalSinceReferenceDate)
+        }
+        trackNeck(cropped: false, head: head, speed: speed, time: captured, arrival: arrival,
+                  cameraTurn: frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
+            frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch) }
+        }
+        let observer = observer
+        let turn = lastTurn
+        let verdict = lastVerdict
+        lock.unlock()
+        recordGlasses(frame, verdict: verdict, captured: captured, head: head, speed: speed)
+        if let observer {
+            let points = frame?.landmarks ?? []
+            var face: CGRect?
+            if let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+               let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() {
+                face = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            }
+            let note: String = if frame?.face != true { "лицо не найдено" }
+                else if let frame, frame.shapePoints == 0 && frame.learnedFrames == 0 { "форма очков не выучена: меню → «Выучить форму очков»" }
+                else if let frame, frame.glasses == nil && frame.shapePoints == 0 { "учу форму очков: кадров \(frame.learnedFrames)" }
+                else if let score = frame?.score { String(format: "очки найдены, совпадение формы %.0f%%", score * 100) }
+                else { "очки не найдены" }
+            let axes = frame?.alignmentReady == true ? "оси гироскопа и камеры связаны"
+                : "оси гироскопа и камеры учатся: покрутите головой влево-вправо и вверх-вниз"
+            let fullNote = frame?.rotationSource.isEmpty == false ? "\(note) · поворот: \(frame!.rotationSource) · \(axes)" : note
+            let observation = CameraObservation(face: face, landmarks: points, neckOffset: neckOffset(), turn: turn,
+                                                verdict: verdict, glassesPoints: frame?.glassesPoints ?? [], glassesNote: fullNote)
+            Task { @MainActor in observer(observation) }
+        }
+    }
+
+    private func trackNeck(cropped: Bool, head: simd_quatd, speed: Double, time: Double, arrival: Double,
+                           cameraTurn: SIMD2<Double>? = nil, measure: (Double, Double) -> SIMD3<Double>?) {
         let before = currentOffset()
         let wasAccepted = lastAccepted
         defer {
@@ -240,25 +314,39 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
         let turn = head.yawPitch
         let learning = cameraDirection == nil
-        let yaw = cameraDirection.map { remainder(turn.yaw - $0, 2 * .pi) } ?? 0
-        let pitch = referencePitch.map { turn.pitch - $0 } ?? 0
+        var yaw = cameraDirection.map { remainder(turn.yaw - $0, 2 * .pi) } ?? 0
+        var pitch = referencePitch.map { turn.pitch - $0 } ?? 0
+        if let cameraTurn {
+            yaw = cameraTurn.x.isFinite ? cameraTurn.x : yaw
+            pitch = cameraTurn.y.isFinite ? cameraTurn.y : pitch
+            holding = false
+        } else {
+            holding = !learning && (holding ? abs(yaw) > Self.resumeYaw : abs(yaw) > Self.holdYaw)
+        }
         lastTurn = SIMD2(yaw, pitch)
-        holding = !learning && (holding ? abs(yaw) > Self.resumeYaw : abs(yaw) > Self.holdYaw)
+        let maxSpeed = cameraTurn == nil ? Self.maxTrackedSpeed : Self.glassesMaxSpeed
         lastVerdict = if cropped { .cropped }
-            else if speed >= (learning ? Self.referenceSpeed : Self.maxTrackedSpeed) { .fast }
+            else if speed >= (learning && cameraTurn == nil ? Self.referenceSpeed : maxSpeed) { .fast }
             else if holding { .turned }
-            else if abs(pitch) >= Self.holdPitch { .tilted }
+            else if cameraTurn == nil && abs(pitch) >= Self.holdPitch { .tilted }
             else if learning { .learning }
             else { .accepted }
         lastAccepted = lastVerdict == .accepted || lastVerdict == .learning
-        guard lastAccepted else {
+        let measured = lastAccepted ? measure(yaw, pitch) : nil
+        if lastAccepted && measured == nil {
+            lastVerdict = .noFace
+            lastAccepted = false
+        }
+        guard lastAccepted, var raw = measured else {
             lastFaceTime = time
             recentNecks.removeAll()
             lastRawZ = nil
-            if learning { learner.reset() }
+            if learning {
+                learner.reset()
+                glassesLearner.reset()
+            }
             return
         }
-        var raw = estimator.neckPosition(face: face, yaw: yaw, pitch: pitch)
         if let lastRawZ, abs(raw.z / lastRawZ - 1) > Self.maxDepthJump, rejectedInRow < 3 {
             raw.z = lastRawZ
             rejectedInRow += 1
@@ -276,9 +364,10 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         previousEstimate = wasAccepted ? latestEstimate : nil
         latestEstimate = (arrival, value)
         if learning, let start = referenceWindowStart, time >= start,
-           let reference = learner.add(neck: value, yaw: turn.yaw, pitch: turn.pitch, time: time) {
-            cameraDirection = reference.cameraYaw
-            referencePitch = reference.pitch
+           let reference = cameraTurn == nil ? learner.add(neck: value, yaw: turn.yaw, pitch: turn.pitch, time: time)
+                : glassesLearner.add(neck: value, yaw: turn.yaw, pitch: turn.pitch, time: time) {
+            cameraDirection = remainder(reference.cameraYaw - (cameraTurn?.x.isFinite == true ? yaw : 0), 2 * .pi)
+            referencePitch = reference.pitch - (cameraTurn?.y.isFinite == true ? pitch : 0)
             referenceNeck = reference.neck
             log(String(format: "camera: reference captured, camera at yaw %.1f° pitch %.1f°",
                        reference.cameraYaw * 180 / .pi, reference.pitch * 180 / .pi))
@@ -302,17 +391,48 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             cameraDirection = nil
             holding = false
             learner.reset()
+            glassesLearner.reset()
             referenceWindowStart = ProcessInfo.processInfo.systemUptime + delay
+        }
+    }
+
+    private func recordGlasses(_ frame: GlassesFrame?, verdict: CameraFrameVerdict, captured: Double, head: simd_quatd, speed: Double) {
+        if glassesFile == nil {
+            let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
+            let url = directory.appendingPathComponent("glasses-\(Int(Date().timeIntervalSinceReferenceDate)).csv")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: "time,captured,face,x,y,z,score,turnyaw,turnpitch,source,aligned,neckx,necky,neckz,verdict,speed,qw,qx,qy,qz,facedepth,fqw,fqx,fqy,fqz,pairs,residual\n".data(using: .utf8))
+            glassesFile = try? FileHandle(forWritingTo: url)
+            glassesFile?.seekToEndOfFile()
+            log("glasses recording: \(url.lastPathComponent)")
+        }
+        let neck = neckOffset()
+        let (glasses, turn) = (frame?.glasses, frame?.turn)
+        glassesRows.append(String(format: "%.4f,%.4f,%d,%.4f,%.4f,%.4f,%.3f,%.2f,%.2f,%@,%d,%.4f,%.4f,%.4f,%@,%.1f,%.5f,%.5f,%.5f,%.5f",
+                                  Date().timeIntervalSinceReferenceDate, captured, frame?.face == true ? 1 : 0,
+                                  glasses?.x ?? .nan, glasses?.y ?? .nan, glasses?.z ?? .nan, frame?.score ?? .nan,
+                                  (turn?.x ?? .nan) * 180 / .pi, (turn?.y ?? .nan) * 180 / .pi, frame?.rotationSource ?? "",
+                                  frame?.alignmentReady == true ? 1 : 0, neck.x, neck.y, neck.z, "\(verdict)", speed * 180 / .pi,
+                                  head.real, head.imag.x, head.imag.y, head.imag.z)
+                           + String(format: ",%.4f,%.5f,%.5f,%.5f,%.5f,%d,%.2f", frame?.faceDepth ?? .nan,
+                                    frame?.faceRotation?.real ?? .nan, frame?.faceRotation?.imag.x ?? .nan,
+                                    frame?.faceRotation?.imag.y ?? .nan, frame?.faceRotation?.imag.z ?? .nan,
+                                    frame?.alignmentPairs ?? 0, (frame?.alignmentResidual ?? .nan) * 180 / .pi))
+        if glassesRows.count >= 30 {
+            glassesFile?.write((glassesRows.joined(separator: "\n") + "\n").data(using: .utf8)!)
+            glassesRows.removeAll(keepingCapacity: true)
         }
     }
 
     /// Мир повернули на `yawChange` радиан (плюс — влево): направление на камеру поворачивается вместе
     /// с ним, положение шеи остаётся прежним.
     func worldYawChanged(by yawChange: Double) {
-        lock.withLock {
+        let vision = lock.withLock {
             cameraDirection = cameraDirection.map { remainder($0 + yawChange, 2 * .pi) }
             generation += 1
+            return glassesVision
         }
+        vision?.worldYawChanged(by: yawChange)
     }
 
     /// Где камера в мире, радианы, плюс — влево; `nil`, пока опора не запомнена.

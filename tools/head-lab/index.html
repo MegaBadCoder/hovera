@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Head Lab</title>
+<style>
+:root {
+  --bg: #111418;
+  --panel: #1a1f25;
+  --line: #2a313a;
+  --text: #e6e9ed;
+  --muted: #8b95a1;
+  --mp: #4ea1ff;
+  --glasses: #ff9d3b;
+  --iris: #5fd38d;
+  --warn: #ff6b6b;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+#status { color: var(--muted); }
+#status.bad { color: var(--warn); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 12px 16px; }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; position: relative; }
+.pane h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+#view { width: 100%; display: block; background: #000; }
+#scene { width: 100%; aspect-ratio: 16 / 9; display: block; }
+.plots canvas { width: 100%; height: 140px; display: block; }
+.legend { display: flex; gap: 14px; padding: 6px 10px; color: var(--muted); flex-wrap: wrap; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 3px; margin-right: 6px; vertical-align: middle; background: var(--c); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+td, th { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--line); }
+td:first-child, th:first-child { text-align: left; color: var(--muted); font-weight: 400; }
+th { color: var(--muted); font-weight: 400; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; padding: 10px; align-items: center; }
+.controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.controls input[type=number] { width: 64px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
+button { background: #26303b; color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 5px 10px; cursor: pointer; font: inherit; }
+button:hover { background: #2f3b48; }
+button.on { background: #7a2630; border-color: #a33a46; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>Head Lab</h1>
+  <span id="status">Загрузка модели…</span>
+</header>
+<main>
+  <section class="pane">
+    <h2>Камера (зеркально): точки модели лица; пятно «не кожа» и окно поиска — по галочке</h2>
+    <canvas id="view"></canvas>
+    <div class="controls">
+      <label><input type="checkbox" id="showMesh" checked> точки лица</label>
+      <label><input type="checkbox" id="findDark"> искать очки по отличию от кожи</label>
+      <label><input type="checkbox" id="showMask" checked> маска пятна</label>
+      <label><input type="checkbox" id="showShape" checked> выученная форма</label>
+      <label>отличие от цвета кожи <input type="range" id="chroma" min="3" max="40" step="0.5" value="12"> <span id="chromaValue">12</span></label>
+    </div>
+  </section>
+  <section class="pane">
+    <h2>Сцена: MacBook в начале координат, облако точек лица в сантиметрах, очки по модели лица, след головы</h2>
+    <div id="scene"></div>
+    <div class="legend">
+      <span style="--c: var(--mp)">модель лица</span>
+      <span style="--c: var(--glasses)">очки по модели лица</span>
+      <span style="--c: #ff5fa2">пятно «не кожа»</span>
+      <span style="--c: #c8ced6">MacBook</span>
+      <span style="--c: #ffd166">накопленная форма очков</span>
+    </div>
+    <div class="controls">
+      <button id="shapeToggle">Копить форму очков</button>
+      <button id="shapeReset">Сбросить форму</button>
+      <label>доля попаданий <input type="range" id="shapeShare" min="0.4" max="0.95" step="0.05" value="0.7"> <span id="shapeShareValue">0,70</span></label>
+      <span id="shapeInfo" style="color: var(--muted)"></span>
+    </div>
+  </section>
+  <section class="pane plots">
+    <h2>Глубина до головы, см, последние 15 с</h2>
+    <canvas id="plotDepth"></canvas>
+    <div class="legend">
+      <span style="--c: var(--mp)">модель лица</span>
+      <span style="--c: #b18cff">форма очков по модели лица</span>
+      <span style="--c: var(--glasses)">по очкам, без модели лица</span>
+      <span style="--c: var(--iris)">радужка (без тёмных линз)</span>
+    </div>
+    <h2>Сдвиг вбок, см</h2>
+    <canvas id="plotX"></canvas>
+  </section>
+  <section class="pane">
+    <h2>Числа</h2>
+    <table>
+      <thead><tr><th></th><th>значение</th><th>дрожь за 1 с (СКО)</th></tr></thead>
+      <tbody id="numbers"></tbody>
+    </table>
+    <div class="controls">
+      <label>обзор камеры по горизонтали, ° <input type="number" id="fov" value="70" min="40" max="120" step="1"></label>
+      <label>ширина очков, см <input type="number" id="glassesWidth" value="15" min="8" max="25" step="0.1"></label>
+      <button id="fitWidth">Ширина очков по модели лица</button>
+    </div>
+    <div class="controls">
+      <button id="record">Запись</button>
+      <button id="save">Сохранить CSV</button>
+      <button id="clearTrail">Сбросить след</button>
+      <span id="recordInfo" style="color: var(--muted)"></span>
+    </div>
+  </section>
+</main>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs";
+
+const MODEL_VERTICAL_FOV = 63 * Math.PI / 180;
+const IRIS_DIAMETER_CM = 1.17;
+const MASK_WIDTH = 320;
+const HISTORY_SECONDS = 15;
+const JITTER_SECONDS = 1;
+const TRAIL_LENGTH = 300;
+const REFERENCE_DATE_OFFSET = 978307200;
+const SKIN_SAMPLES = [151, 4, 164, 199, 187, 411];
+const SEARCH_TOP = [70, 300, 105, 334];
+const SEARCH_SIDES = [127, 356];
+const SEARCH_BOTTOM = 5;
+const NOSE_BRIDGE = 168;
+const FACE_SIDES = [127, 356];
+const GLASSES_OVERHANG = 1.08;
+const DEEP_SHADOW = 0.3;
+const ANCHOR_RADIUS = 6;
+const SHAPE_STORAGE_KEY = "headLab.glassesShape.v1";
+const TRACK_MARGIN = 0.25;
+const TRACK_PROBE_GAP = 0.04;
+const TRACK_STRIDE = 2;
+const TRACK_LOST = 0.6;
+const RIGID_POINTS = [1, 2, 4, 5, 6, 9, 10, 151, 168, 195, 197, 67, 109, 338, 297, 103, 332, 54, 284, 127, 356, 234, 454, 93, 323, 116, 345, 123, 352, 50, 280, 33, 133, 362, 263];
+const SHAPE_CELLS_ACROSS = 100;
+const SHAPE_DEPTHS = [-0.02, 0.02, 0.06, 0.1, 0.14, 0.18, 0.22, 0.26, 0.3];
+const SHAPE_SURFACE_RADIUS = 0.05;
+const SHAPE_MIN_HITS = 6;
+const SHAPE_EXTENT = { side: 0.62, up: 0.25, down: 0.22 };
+const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+
+const $ = id => document.getElementById(id);
+const statusLine = $("status");
+const view = $("view");
+const viewCtx = view.getContext("2d");
+const video = document.createElement("video");
+video.playsInline = true;
+video.muted = true;
+video.crossOrigin = "anonymous";
+let source = video;
+const sourceSize = () => source instanceof HTMLImageElement ? [source.naturalWidth, source.naturalHeight] : [source.videoWidth, source.videoHeight];
+const grab = document.createElement("canvas");
+const grabCtx = grab.getContext("2d", { willReadFrequently: true });
+const maskCanvas = document.createElement("canvas");
+const maskCtx = maskCanvas.getContext("2d");
+const ovalCanvas = document.createElement("canvas");
+const ovalCtx = ovalCanvas.getContext("2d", { willReadFrequently: true });
+
+const state = {
+  landmarks: null,
+  matrix: null,
+  glasses: null,
+  searchBox: null,
+  skin: null,
+  oval: null,
+  history: [],
+  trail: [],
+  recording: false,
+  rows: [],
+  frames: 0,
+  fpsStart: performance.now(),
+  fps: 0,
+};
+
+$("chroma").addEventListener("input", e => { $("chromaValue").textContent = String(e.target.value).replace(".", ","); });
+
+function setStatus(text, bad = false) {
+  statusLine.textContent = text;
+  statusLine.classList.toggle("bad", bad);
+}
+
+function focalPixels(width) {
+  const fov = Number($("fov").value) * Math.PI / 180;
+  return (width / 2) / Math.tan(fov / 2);
+}
+
+function modelFocalPixels(height) {
+  return (height / 2) / Math.tan(MODEL_VERTICAL_FOV / 2);
+}
+
+function poseFromMatrix(matrix, width, height) {
+  const m = new THREE.Matrix4().fromArray(matrix.data);
+  const position = new THREE.Vector3();
+  const rotation = new THREE.Quaternion();
+  m.decompose(position, rotation, new THREE.Vector3());
+  const depthScale = focalPixels(width) / modelFocalPixels(height);
+  const euler = new THREE.Euler().setFromQuaternion(rotation, "YXZ");
+  return {
+    depth: -position.z * depthScale,
+    x: position.x,
+    y: position.y,
+    yaw: euler.y,
+    pitch: -euler.x,
+    roll: euler.z,
+    rotation,
+  };
+}
+
+function irisDepth(landmarks, width, height) {
+  const f = focalPixels(width);
+  const span = (a, b) => Math.hypot((landmarks[a].x - landmarks[b].x) * width, (landmarks[a].y - landmarks[b].y) * height);
+  const diameters = [span(469, 471), span(470, 472), span(474, 476), span(475, 477)];
+  const mean = diameters.reduce((s, d) => s + d, 0) / diameters.length;
+  return mean > 1 ? f * IRIS_DIAMETER_CM / mean : NaN;
+}
+
+function colorAt(data, width, x, y) {
+  const i = (y * width + x) * 4;
+  const r = data[i], g = data[i + 1], b = data[i + 2];
+  return {
+    y: 0.299 * r + 0.587 * g + 0.114 * b,
+    cb: -0.1687 * r - 0.3313 * g + 0.5 * b,
+    cr: 0.5 * r - 0.4187 * g - 0.0813 * b,
+  };
+}
+
+function skinColor(data, width, height, landmarks) {
+  const samples = [];
+  for (const index of SKIN_SAMPLES) {
+    const cx = Math.round(landmarks[index].x * width);
+    const cy = Math.round(landmarks[index].y * height);
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const x = cx + dx, y = cy + dy;
+      if (x >= 0 && y >= 0 && x < width && y < height) samples.push(colorAt(data, width, x, y));
+    }
+  }
+  if (!samples.length) return null;
+  const median = key => samples.map(s => s[key]).sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+  return { y: median("y"), cb: median("cb"), cr: median("cr") };
+}
+
+function searchBoxFromFace(landmarks, width, height) {
+  const xs = SEARCH_SIDES.map(i => landmarks[i].x * width);
+  const left = Math.min(...xs), right = Math.max(...xs);
+  const span = right - left;
+  const top = Math.min(...SEARCH_TOP.map(i => landmarks[i].y * height)) - 0.35 * span;
+  const bottom = landmarks[SEARCH_BOTTOM].y * height;
+  return { x0: left - 0.03 * span, x1: right + 0.03 * span, y0: top, y1: bottom };
+}
+
+function searchBoxFromGlasses(glasses) {
+  const w = glasses.box.x1 - glasses.box.x0, h = glasses.box.y1 - glasses.box.y0;
+  return { x0: glasses.box.x0 - 0.3 * w, x1: glasses.box.x1 + 0.3 * w, y0: glasses.box.y0 - 0.5 * h, y1: glasses.box.y1 + 0.5 * h };
+}
+
+function clampBox(box, width, height) {
+  return {
+    x0: Math.max(0, Math.floor(box.x0)), y0: Math.max(0, Math.floor(box.y0)),
+    x1: Math.min(width - 1, Math.ceil(box.x1)), y1: Math.min(height - 1, Math.ceil(box.y1)),
+  };
+}
+
+function faceOvalMask(landmarks, width, height) {
+  if (ovalCanvas.width !== width || ovalCanvas.height !== height) { ovalCanvas.width = width; ovalCanvas.height = height; }
+  ovalCtx.clearRect(0, 0, width, height);
+  ovalCtx.beginPath();
+  FACE_OVAL.forEach((index, i) => {
+    const x = landmarks[index].x * width, y = landmarks[index].y * height;
+    if (i === 0) ovalCtx.moveTo(x, y); else ovalCtx.lineTo(x, y);
+  });
+  ovalCtx.closePath();
+  ovalCtx.fillStyle = "#fff";
+  ovalCtx.fill();
+  return ovalCtx.getImageData(0, 0, width, height).data;
+}
+
+function findGlasses(data, width, height, box, skin, anchor, oval) {
+  const chroma = Number($("chroma").value);
+  const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+  if (bw < 4 || bh < 4) return null;
+  const dark = new Uint8Array(bw * bh);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const c = colorAt(data, width, box.x0 + x, box.y0 + y);
+    const notSkin = Math.hypot(c.cb - skin.cb, c.cr - skin.cr) > chroma || c.y < DEEP_SHADOW * skin.y;
+    const inside = oval[((box.y0 + y) * width + box.x0 + x) * 4 + 3] > 127;
+    dark[y * bw + x] = notSkin && inside ? 1 : 0;
+  }
+  const label = new Int32Array(bw * bh);
+  const components = [];
+  const stack = [];
+  for (let start = 0; start < dark.length; start++) {
+    if (!dark[start] || label[start]) continue;
+    const id = components.length + 1;
+    const pixels = [];
+    label[start] = id;
+    stack.push(start);
+    while (stack.length) {
+      const p = stack.pop();
+      pixels.push(p);
+      const x = p % bw, y = (p - x) / bw;
+      if (x > 0 && dark[p - 1] && !label[p - 1]) { label[p - 1] = id; stack.push(p - 1); }
+      if (x < bw - 1 && dark[p + 1] && !label[p + 1]) { label[p + 1] = id; stack.push(p + 1); }
+      if (y > 0 && dark[p - bw] && !label[p - bw]) { label[p - bw] = id; stack.push(p - bw); }
+      if (y < bh - 1 && dark[p + bw] && !label[p + bw]) { label[p + bw] = id; stack.push(p + bw); }
+    }
+    components.push(pixels);
+  }
+  if (!components.length) return null;
+  const ax = Math.round(anchor.x - box.x0), ay = Math.round(anchor.y - box.y0);
+  let chosen = 0;
+  for (let r = 0; r <= ANCHOR_RADIUS && !chosen; r++) {
+    for (let dy = -r; dy <= r && !chosen; dy++) for (let dx = -r; dx <= r && !chosen; dx++) {
+      const x = ax + dx, y = ay + dy;
+      if (x >= 0 && y >= 0 && x < bw && y < bh) chosen = label[y * bw + x];
+    }
+  }
+  if (!chosen) return null;
+  const kept = components[chosen - 1];
+  if (kept.length < 12) return null;
+  let sx = 0, sy = 0;
+  for (const p of kept) { sx += p % bw; sy += Math.floor(p / bw); }
+  const cx = sx / kept.length, cy = sy / kept.length;
+  let xx = 0, yy = 0, xy = 0;
+  for (const p of kept) {
+    const dx = p % bw - cx, dy = Math.floor(p / bw) - cy;
+    xx += dx * dx; yy += dy * dy; xy += dx * dy;
+  }
+  const angle = 0.5 * Math.atan2(2 * xy, xx - yy);
+  const ux = Math.cos(angle), uy = Math.sin(angle);
+  const along = kept.map(p => (p % bw - cx) * ux + (Math.floor(p / bw) - cy) * uy).sort((a, b) => a - b);
+  const across = kept.map(p => -(p % bw - cx) * uy + (Math.floor(p / bw) - cy) * ux).sort((a, b) => a - b);
+  const pick = (list, q) => list[Math.min(list.length - 1, Math.floor(q * list.length))];
+  const mask = new Uint8Array(bw * bh);
+  for (const p of kept) mask[p] = 1;
+  let minX = bw, maxX = 0, minY = bh, maxY = 0;
+  for (const p of kept) {
+    const x = p % bw, y = Math.floor(p / bw);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  return {
+    center: { x: box.x0 + cx, y: box.y0 + cy },
+    width: pick(along, 0.99) - pick(along, 0.01),
+    height: pick(across, 0.98) - pick(across, 0.02),
+    angle,
+    area: kept.length,
+    box: { x0: box.x0 + minX, x1: box.x0 + maxX, y0: box.y0 + minY, y1: box.y0 + maxY },
+    mask, maskBox: box, maskWidth: bw, maskHeight: bh,
+  };
+}
+
+function glassesPose(glasses, scale, videoWidth, videoHeight, yaw) {
+  const f = focalPixels(videoWidth);
+  const widthPixels = glasses.width * scale;
+  const faceOnWidth = Number.isFinite(yaw) ? widthPixels / Math.max(0.3, Math.cos(yaw)) : widthPixels;
+  const depth = f * Number($("glassesWidth").value) / faceOnWidth;
+  const u = glasses.center.x * scale - videoWidth / 2;
+  const v = glasses.center.y * scale - videoHeight / 2;
+  return { depth, x: u * depth / f, y: -v * depth / f, widthPixels };
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+$("scene").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14181d);
+const camera3d = new THREE.PerspectiveCamera(45, 16 / 9, 1, 1000);
+camera3d.position.set(75, 35, 30);
+const controls = new OrbitControls(camera3d, renderer.domElement);
+controls.target.set(0, -5, -35);
+controls.update();
+
+const grid = new THREE.GridHelper(200, 20, 0x2c343e, 0x222930);
+grid.position.set(0, -21, -40);
+scene.add(grid);
+
+const laptop = new THREE.Group();
+const edges = (w, h, d) => new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)), new THREE.LineBasicMaterial({ color: 0xc8ced6 }));
+const screen = edges(30, 19.5, 0.5);
+screen.position.set(0, -10.5, 0);
+const base = edges(30, 1, 21);
+base.position.set(0, -20.8, -10.5);
+const lens = new THREE.Mesh(new THREE.SphereGeometry(0.6), new THREE.MeshBasicMaterial({ color: 0x5fd38d }));
+laptop.add(screen, base, lens);
+scene.add(laptop);
+
+const cloudGeometry = new THREE.BufferGeometry();
+cloudGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(478 * 3), 3));
+const cloud = new THREE.Points(cloudGeometry, new THREE.PointsMaterial({ color: 0x4ea1ff, size: 0.35 }));
+cloud.visible = false;
+scene.add(cloud);
+
+const gazeGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const gaze = new THREE.Line(gazeGeometry, new THREE.LineBasicMaterial({ color: 0x4ea1ff }));
+gaze.visible = false;
+scene.add(gaze);
+
+const headAxes = new THREE.AxesHelper(6);
+headAxes.visible = false;
+scene.add(headAxes);
+
+const glassesMarker = new THREE.Mesh(new THREE.BoxGeometry(15, 4.5, 0.6), new THREE.MeshBasicMaterial({ color: 0xff9d3b, wireframe: true }));
+glassesMarker.visible = false;
+scene.add(glassesMarker);
+
+const darkMarker = new THREE.Mesh(new THREE.SphereGeometry(1.2), new THREE.MeshBasicMaterial({ color: 0xff5fa2, wireframe: true }));
+darkMarker.visible = false;
+scene.add(darkMarker);
+
+const trailGeometry = new THREE.BufferGeometry();
+trailGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_LENGTH * 3), 3));
+const trail = new THREE.Line(trailGeometry, new THREE.LineBasicMaterial({ color: 0x4ea1ff, transparent: true, opacity: 0.5 }));
+scene.add(trail);
+
+const shape = { active: false, reference: null, centers: null, hits: null, misses: null, frames: 0, fit: null };
+const shapeGeometry = new THREE.BufferGeometry();
+const shapeCloud = new THREE.Points(shapeGeometry, new THREE.PointsMaterial({ vertexColors: true, size: 0.25 }));
+shapeCloud.visible = false;
+scene.add(shapeCloud);
+
+function landmarkPixels(landmarks, indices, width, height) {
+  return indices.map(i => [landmarks[i].x * width, landmarks[i].y * height, landmarks[i].z * width]);
+}
+
+function similarity(from, to, previous) {
+  const n = from.length;
+  const mean = list => [0, 1, 2].map(k => list.reduce((a, p) => a + p[k], 0) / n);
+  const mf = mean(from), mt = mean(to);
+  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  let normFrom = 0, normTo = 0;
+  for (let i = 0; i < n; i++) {
+    const a = [from[i][0] - mf[0], from[i][1] - mf[1], from[i][2] - mf[2]];
+    const b = [to[i][0] - mt[0], to[i][1] - mt[1], to[i][2] - mt[2]];
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) S[r][c] += a[r] * b[c];
+    normFrom += a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+    normTo += b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+  }
+  const [[xx, xy, xz], [yx, yy, yz], [zx, zy, zz]] = S;
+  const N = [
+    [xx + yy + zz, yz - zy, zx - xz, xy - yx],
+    [yz - zy, xx - yy - zz, xy + yx, zx + xz],
+    [zx - xz, xy + yx, -xx + yy - zz, yz + zy],
+    [xy - yx, zx + xz, yz + zy, -xx - yy + zz],
+  ];
+  const shift = Math.sqrt(N.flat().reduce((a, v) => a + v * v, 0));
+  let v = previous ? previous.slice() : [1, 0, 0, 0];
+  for (let iteration = 0; iteration < 60; iteration++) {
+    const next = N.map((row, r) => row.reduce((a, value, c) => a + value * v[c], 0) + shift * v[r]);
+    const length = Math.hypot(...next);
+    v = next.map(x => x / length);
+  }
+  const [w, x, y, z] = v;
+  const R = [
+    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+  ];
+  const scale = Math.sqrt(normTo / normFrom);
+  const t = [0, 1, 2].map(r => mt[r] - scale * (R[r][0] * mf[0] + R[r][1] * mf[1] + R[r][2] * mf[2]));
+  let error = 0;
+  for (let i = 0; i < n; i++) {
+    const p = from[i];
+    for (let r = 0; r < 3; r++) {
+      const mapped = scale * (R[r][0] * p[0] + R[r][1] * p[1] + R[r][2] * p[2]) + t[r];
+      error += (mapped - to[i][r]) ** 2;
+    }
+  }
+  return { q: v, R, scale, t, residual: Math.sqrt(error / n) };
+}
+
+function startShape(landmarks, width, height, depth) {
+  const all = landmarkPixels(landmarks, [...Array(468).keys()], width, height);
+  const bridge = all[NOSE_BRIDGE];
+  const left = all[FACE_SIDES[0]], right = all[FACE_SIDES[1]];
+  const faceWidth = Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
+  const step = faceWidth / SHAPE_CELLS_ACROSS;
+  const e = SHAPE_EXTENT;
+  const x0 = bridge[0] - e.side * faceWidth, y0 = bridge[1] - e.up * faceWidth;
+  const nx = Math.ceil(2 * e.side * SHAPE_CELLS_ACROSS), ny = Math.ceil((e.up + e.down) * SHAPE_CELLS_ACROSS);
+  const cells = nx * ny, depths = SHAPE_DEPTHS.length;
+  const radius = SHAPE_SURFACE_RADIUS * faceWidth;
+  const centers = new Float32Array(cells * depths * 3);
+  let i = 0;
+  for (let iy = 0; iy < ny; iy++) for (let ix = 0; ix < nx; ix++) {
+    const x = x0 + (ix + 0.5) * step, y = y0 + (iy + 0.5) * step;
+    let front = Infinity, nearest = Infinity, nearestZ = 0;
+    for (const p of all) {
+      const d = Math.hypot(p[0] - x, p[1] - y);
+      if (d < radius && p[2] < front) front = p[2];
+      if (d < nearest) { nearest = d; nearestZ = p[2]; }
+    }
+    const surface = Number.isFinite(front) ? front : nearestZ;
+    for (const standoff of SHAPE_DEPTHS) {
+      centers[i++] = x;
+      centers[i++] = y;
+      centers[i++] = surface - standoff * faceWidth;
+    }
+  }
+  shape.reference = landmarkPixels(landmarks, RIGID_POINTS, width, height);
+  shape.faceWidth = faceWidth;
+  shape.centers = centers;
+  shape.cells = cells;
+  shape.hits = new Uint16Array(cells * depths);
+  shape.misses = new Uint16Array(cells * depths);
+  shape.refDepth = depth;
+  shape.frames = 0;
+  allocateShapeBuffers(cells);
+}
+
+function allocateShapeBuffers(cells) {
+  shape.projected = new Float32Array(cells * 2);
+  shape.keptRef = new Float32Array(cells * 3);
+  shape.keptCount = 0;
+  shape.projectedCount = 0;
+  shape.fit = null;
+  tracker.ready = false;
+  shapeGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(cells * 3), 3));
+  shapeGeometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(cells * 3), 3));
+}
+
+function encodeArray(array) {
+  const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+
+function decodeArray(text, Type) {
+  const bytes = Uint8Array.from(atob(text), c => c.charCodeAt(0));
+  return new Type(bytes.buffer);
+}
+
+function saveShape() {
+  if (!shape.centers) return;
+  try {
+    localStorage.setItem(SHAPE_STORAGE_KEY, JSON.stringify({
+      reference: shape.reference, faceWidth: shape.faceWidth, cells: shape.cells, refDepth: shape.refDepth, frames: shape.frames,
+      depths: SHAPE_DEPTHS, centers: encodeArray(shape.centers), hits: encodeArray(shape.hits), misses: encodeArray(shape.misses),
+    }));
+  } catch {}
+}
+
+function loadShape() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SHAPE_STORAGE_KEY) ?? "null");
+    if (!saved || saved.depths?.join() !== SHAPE_DEPTHS.join()) return;
+    shape.reference = saved.reference;
+    shape.faceWidth = saved.faceWidth;
+    shape.cells = saved.cells;
+    shape.refDepth = saved.refDepth;
+    shape.frames = saved.frames;
+    shape.centers = decodeArray(saved.centers, Float32Array);
+    shape.hits = decodeArray(saved.hits, Uint16Array);
+    shape.misses = decodeArray(saved.misses, Uint16Array);
+    allocateShapeBuffers(shape.cells);
+  } catch {}
+}
+
+function fitShape(landmarks, width, height) {
+  shape.fit = similarity(shape.reference, landmarkPixels(landmarks, RIGID_POINTS, width, height), shape.fit?.q);
+  return shape.fit;
+}
+
+function accumulateShape(fit, glasses, oval, scale, gw) {
+  const { R, t } = fit, k = fit.scale;
+  const box = glasses.maskBox, bw = glasses.maskWidth, mask = glasses.mask;
+  const c = shape.centers;
+  for (let i = 0, n = shape.hits.length; i < n; i++) {
+    const x = c[i * 3], y = c[i * 3 + 1], z = c[i * 3 + 2];
+    const gx = Math.floor((k * (R[0][0] * x + R[0][1] * y + R[0][2] * z) + t[0]) / scale);
+    const gy = Math.floor((k * (R[1][0] * x + R[1][1] * y + R[1][2] * z) + t[1]) / scale);
+    if (gx < box.x0 || gx > box.x1 || gy < box.y0 || gy > box.y1) continue;
+    if (oval[(gy * gw + gx) * 4 + 3] <= 127) continue;
+    if (mask[(gy - box.y0) * bw + (gx - box.x0)]) { if (shape.hits[i] < 65535) shape.hits[i]++; }
+    else if (shape.misses[i] < 65535) shape.misses[i]++;
+  }
+  shape.frames++;
+}
+
+function bestDepth(cell, share) {
+  const depths = SHAPE_DEPTHS.length;
+  let best = -1, bestShare = share, bestHits = 0;
+  for (let d = 0; d < depths; d++) {
+    const h = shape.hits[cell * depths + d], m = shape.misses[cell * depths + d];
+    if (h < SHAPE_MIN_HITS) continue;
+    const r = h / (h + m);
+    if (r > bestShare || (r === bestShare && h > bestHits)) { best = d; bestShare = r; bestHits = h; }
+  }
+  return best;
+}
+
+function showShape(fit, pose, width, height) {
+  if (!shape.centers || !fit || !pose) { shapeCloud.visible = false; if (shape.centers) shape.projectedCount = 0; return 0; }
+  const f = focalPixels(width);
+  const share = Number($("shapeShare").value);
+  const { R, t } = fit, k = fit.scale;
+  const c = shape.centers;
+  const out = shapeGeometry.attributes.position.array;
+  const colors = shapeGeometry.attributes.color.array;
+  const depths = SHAPE_DEPTHS.length;
+  let kept = 0;
+  for (let cell = 0; cell < shape.cells; cell++) {
+    const d = bestDepth(cell, share);
+    if (d < 0) continue;
+    const i = cell * depths + d;
+    const x = c[i * 3], y = c[i * 3 + 1], z = c[i * 3 + 2];
+    shape.keptRef[kept * 3] = x;
+    shape.keptRef[kept * 3 + 1] = y;
+    shape.keptRef[kept * 3 + 2] = z;
+    const px = k * (R[0][0] * x + R[0][1] * y + R[0][2] * z) + t[0];
+    const py = k * (R[1][0] * x + R[1][1] * y + R[1][2] * z) + t[1];
+    const pz = k * (R[2][0] * x + R[2][1] * y + R[2][2] * z) + t[2];
+    const depth = pose.depth + pz * pose.depth / f;
+    shape.projected[kept * 2] = px / width;
+    shape.projected[kept * 2 + 1] = py / height;
+    out[kept * 3] = (px - width / 2) * depth / f;
+    out[kept * 3 + 1] = -(py - height / 2) * depth / f;
+    out[kept * 3 + 2] = -depth;
+    const outward = d / (depths - 1);
+    colors[kept * 3] = 1;
+    colors[kept * 3 + 1] = 0.85 - 0.6 * outward;
+    colors[kept * 3 + 2] = 0.4 - 0.3 * outward;
+    kept++;
+  }
+  shape.projectedCount = kept;
+  shape.keptCount = kept;
+  shapeGeometry.setDrawRange(0, kept);
+  shapeGeometry.attributes.position.needsUpdate = true;
+  shapeGeometry.attributes.color.needsUpdate = true;
+  shapeGeometry.computeBoundingSphere();
+  shapeCloud.visible = kept > 0;
+  return kept;
+}
+
+function shapeOverlap(glasses, gw, gh) {
+  if (!shape.projectedCount || !glasses) return NaN;
+  const box = glasses.maskBox, bw = glasses.maskWidth, bh = glasses.maskHeight;
+  const template = new Uint8Array(bw * bh);
+  for (let i = 0; i < shape.projectedCount; i++) {
+    const gx = Math.floor(shape.projected[i * 2] * gw) - box.x0;
+    const gy = Math.floor(shape.projected[i * 2 + 1] * gh) - box.y0;
+    if (gx >= 0 && gy >= 0 && gx < bw && gy < bh) template[gy * bw + gx] = 1;
+  }
+  let both = 0, either = 0;
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] && glasses.mask[i]) both++;
+    if (template[i] || glasses.mask[i]) either++;
+  }
+  return either ? both / either : NaN;
+}
+
+const tracker = { ready: false, s: 1, tx: 0, ty: 0, R: null, iou: NaN, projected: null, projectedCount: 0, view: null };
+
+function shapeProbes() {
+  const n = shape.keptCount, ref = shape.keptRef;
+  const step = shape.faceWidth / SHAPE_CELLS_ACROSS, gap = TRACK_PROBE_GAP * shape.faceWidth;
+  const columns = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = Math.round(ref[i * 3] / step);
+    const column = columns.get(key);
+    if (!column) { columns.set(key, { top: i, bottom: i, count: 1 }); continue; }
+    column.count++;
+    if (ref[i * 3 + 1] < ref[column.top * 3 + 1]) column.top = i;
+    if (ref[i * 3 + 1] > ref[column.bottom * 3 + 1]) column.bottom = i;
+  }
+  const probes = [];
+  for (const column of columns.values()) {
+    if (column.count < 3) continue;
+    probes.push(ref[column.top * 3], ref[column.top * 3 + 1] - gap, ref[column.top * 3 + 2]);
+    probes.push(ref[column.bottom * 3], ref[column.bottom * 3 + 1] + gap, ref[column.bottom * 3 + 2]);
+  }
+  return Float32Array.from(probes);
+}
+
+function rotateXY(points, count, R, stride) {
+  const x = new Float32Array(count), y = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    const px = points[i * 3 * stride], py = points[i * 3 * stride + 1], pz = points[i * 3 * stride + 2];
+    x[i] = R[0][0] * px + R[0][1] * py + R[0][2] * pz;
+    y[i] = R[1][0] * px + R[1][1] * py + R[1][2] * pz;
+  }
+  return { n: count, x, y };
+}
+
+function trackGlasses(data, gw, gh, scale, fit) {
+  const n = shape.keptCount ?? 0;
+  if (!n || !state.skin) { tracker.ready = false; return null; }
+  const R = fit ? fit.R : tracker.R;
+  if (!R) return null;
+  tracker.R = R;
+  if (!tracker.ready) {
+    if (!fit) return null;
+    tracker.s = fit.scale; tracker.tx = fit.t[0]; tracker.ty = fit.t[1];
+    tracker.ready = true;
+  }
+  const inside = rotateXY(shape.keptRef, Math.floor(n / TRACK_STRIDE), R, TRACK_STRIDE);
+  const probeRef = shapeProbes();
+  const outside = rotateXY(probeRef, probeRef.length / 3, R, 1);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < outside.n; i++) {
+    const gx = (tracker.s * outside.x[i] + tracker.tx) / scale, gy = (tracker.s * outside.y[i] + tracker.ty) / scale;
+    if (gx < minX) minX = gx; if (gx > maxX) maxX = gx;
+    if (gy < minY) minY = gy; if (gy > maxY) maxY = gy;
+  }
+  const margin = TRACK_MARGIN * (maxX - minX);
+  const box = clampBox({ x0: minX - margin, x1: maxX + margin, y0: minY - margin, y1: maxY + margin }, gw, gh);
+  const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+  if (bw < 8 || bh < 4) { tracker.ready = false; return null; }
+  const chroma = Number($("chroma").value);
+  const skin = state.skin;
+  const notSkin = new Uint8Array(bw * bh);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const c = colorAt(data, gw, box.x0 + x, box.y0 + y);
+    notSkin[y * bw + x] = Math.hypot(c.cb - skin.cb, c.cr - skin.cr) > chroma || c.y < DEEP_SHADOW * skin.y ? 1 : 0;
+  }
+  const share = (points, candidate, want) => {
+    let seen = 0, good = 0;
+    for (let i = 0; i < points.n; i++) {
+      const gx = Math.floor((candidate.s * points.x[i] + candidate.tx) / scale) - box.x0;
+      const gy = Math.floor((candidate.s * points.y[i] + candidate.ty) / scale) - box.y0;
+      if (gx < 0 || gy < 0 || gx >= bw || gy >= bh) continue;
+      seen++;
+      if (notSkin[gy * bw + gx] === want) good++;
+    }
+    return seen ? good / seen : 0;
+  };
+  const score = candidate => (share(inside, candidate, 1) + share(outside, candidate, 0)) / 2;
+  let best = { s: tracker.s, tx: tracker.tx, ty: tracker.ty };
+  let bestScore = score(best);
+  let dt = 2 * scale, ds = 0.02 * best.s;
+  for (let round = 0; round < 3; round++) {
+    for (let iteration = 0; iteration < 12; iteration++) {
+      let moved = false;
+      for (const [a, b, c] of [[dt, 0, 0], [-dt, 0, 0], [0, dt, 0], [0, -dt, 0], [0, 0, ds], [0, 0, -ds]]) {
+        const candidate = { s: best.s + c, tx: best.tx + a, ty: best.ty + b };
+        const value = score(candidate);
+        if (value > bestScore + 1e-4) { best = candidate; bestScore = value; moved = true; }
+      }
+      if (!moved) break;
+    }
+    dt /= 2; ds /= 2;
+  }
+  tracker.s = best.s; tracker.tx = best.tx; tracker.ty = best.ty; tracker.iou = bestScore;
+  const all = rotateXY(shape.keptRef, n, R, 1);
+  if (!tracker.projected || tracker.projected.length < n * 2) tracker.projected = new Float32Array(n * 2);
+  let su = 0, sv = 0;
+  for (let i = 0; i < n; i++) {
+    const u = best.s * all.x[i] + best.tx, v = best.s * all.y[i] + best.ty;
+    su += u; sv += v;
+    tracker.projected[i * 2] = u;
+    tracker.projected[i * 2 + 1] = v;
+  }
+  tracker.projectedCount = n;
+  if (bestScore < TRACK_LOST) tracker.ready = false;
+  return { u: su / n, v: sv / n, depth: shape.refDepth / best.s, iou: bestScore };
+}
+
+function faceShapePosition(fit) {
+  const n = shape.keptCount ?? 0;
+  if (!n || !fit) return null;
+  const { R, t } = fit, k = fit.scale, ref = shape.keptRef;
+  let su = 0, sv = 0;
+  for (let i = 0; i < n; i++) {
+    const x = ref[i * 3], y = ref[i * 3 + 1], z = ref[i * 3 + 2];
+    su += k * (R[0][0] * x + R[0][1] * y + R[0][2] * z) + t[0];
+    sv += k * (R[1][0] * x + R[1][1] * y + R[1][2] * z) + t[1];
+  }
+  return { u: su / n, v: sv / n, depth: shape.refDepth / k };
+}
+
+function toMetric(point, width, height) {
+  const f = focalPixels(width);
+  return { depth: point.depth, x: (point.u - width / 2) * point.depth / f, y: -(point.v - height / 2) * point.depth / f };
+}
+
+window.headLab = { shape, state, tracker };
+
+function bestShare() {
+  let best = 0;
+  for (let i = 0; i < shape.hits.length; i++) {
+    const h = shape.hits[i];
+    if (h >= SHAPE_MIN_HITS) best = Math.max(best, h / (h + shape.misses[i]));
+  }
+  return best;
+}
+
+$("shapeShare").addEventListener("input", e => { $("shapeShareValue").textContent = Number(e.target.value).toFixed(2).replace(".", ","); });
+$("shapeToggle").addEventListener("click", e => {
+  shape.active = !shape.active;
+  e.target.classList.toggle("on", shape.active);
+  e.target.textContent = shape.active ? "Стоп накопления" : "Копить форму очков";
+  if (shape.active) $("findDark").checked = true; else saveShape();
+});
+$("shapeReset").addEventListener("click", () => {
+  try { localStorage.removeItem(SHAPE_STORAGE_KEY); } catch {}
+  shape.reference = null;
+  shape.centers = null;
+  shape.fit = null;
+  shapeCloud.visible = false;
+  $("shapeInfo").textContent = "";
+});
+
+function resize3d() {
+  const box = $("scene").getBoundingClientRect();
+  renderer.setSize(box.width, box.width * 9 / 16, false);
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "auto";
+  camera3d.aspect = 16 / 9;
+  camera3d.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize3d);
+resize3d();
+
+function updateScene(landmarks, pose, gp, width, height) {
+  if (landmarks && pose) {
+    const f = focalPixels(width);
+    const positions = cloudGeometry.attributes.position.array;
+    for (let i = 0; i < 478 && i < landmarks.length; i++) {
+      const l = landmarks[i];
+      const depth = pose.depth + l.z * width * pose.depth / f;
+      positions[i * 3] = (l.x * width - width / 2) * depth / f;
+      positions[i * 3 + 1] = -(l.y * height - height / 2) * depth / f;
+      positions[i * 3 + 2] = -depth;
+    }
+    cloudGeometry.attributes.position.needsUpdate = true;
+    cloudGeometry.computeBoundingSphere();
+    cloud.visible = true;
+    const nose = new THREE.Vector3(positions[3], positions[4], positions[5]);
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(pose.rotation).multiplyScalar(45);
+    gazeGeometry.setFromPoints([nose, nose.clone().add(forward)]);
+    gaze.visible = true;
+    headAxes.position.set(pose.x, pose.y, -pose.depth);
+    headAxes.quaternion.copy(pose.rotation);
+    headAxes.visible = true;
+    const point = i => new THREE.Vector3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    const faceWidth = point(FACE_SIDES[0]).distanceTo(point(FACE_SIDES[1]));
+    glassesMarker.scale.set(faceWidth * GLASSES_OVERHANG / 15, 1, 1);
+    glassesMarker.position.copy(point(NOSE_BRIDGE));
+    glassesMarker.quaternion.copy(pose.rotation);
+    glassesMarker.visible = true;
+    state.trail.push([pose.x, pose.y, -pose.depth]);
+    if (state.trail.length > TRAIL_LENGTH) state.trail.shift();
+    const t = trailGeometry.attributes.position.array;
+    state.trail.forEach((p, i) => { t[i * 3] = p[0]; t[i * 3 + 1] = p[1]; t[i * 3 + 2] = p[2]; });
+    trailGeometry.setDrawRange(0, state.trail.length);
+    trailGeometry.attributes.position.needsUpdate = true;
+    trailGeometry.computeBoundingSphere();
+  } else {
+    cloud.visible = false;
+    gaze.visible = false;
+    headAxes.visible = false;
+    glassesMarker.visible = false;
+  }
+  if (gp) {
+    darkMarker.position.set(gp.x, gp.y, -gp.depth);
+    darkMarker.visible = true;
+  } else {
+    darkMarker.visible = false;
+  }
+}
+
+function drawView(landmarks, glasses, scale, width, height) {
+  const w = view.clientWidth * devicePixelRatio;
+  const h = w * height / width;
+  if (view.width !== Math.round(w)) { view.width = Math.round(w); view.height = Math.round(h); }
+  const k = view.width / width;
+  viewCtx.setTransform(-1, 0, 0, 1, view.width, 0);
+  viewCtx.drawImage(source, 0, 0, view.width, view.height);
+  if (landmarks && $("showMesh").checked) {
+    viewCtx.fillStyle = "rgba(78,161,255,0.8)";
+    for (const l of landmarks) viewCtx.fillRect(l.x * view.width - 1, l.y * view.height - 1, 2, 2);
+  }
+  if (shape.projectedCount && $("showShape").checked) {
+    viewCtx.fillStyle = "rgba(255,209,102,0.9)";
+    for (let i = 0; i < shape.projectedCount; i++) {
+      viewCtx.fillRect(shape.projected[i * 2] * view.width - 1, shape.projected[i * 2 + 1] * view.height - 1, 2, 2);
+    }
+  }
+  if (tracker.projectedCount) {
+    viewCtx.fillStyle = "rgba(80,220,255,0.9)";
+    for (let i = 0; i < tracker.projectedCount; i += 2) {
+      viewCtx.fillRect(tracker.projected[i * 2] * k - 1, tracker.projected[i * 2 + 1] * k - 1, 2, 2);
+    }
+  }
+  if (state.searchBox && $("findDark").checked) {
+    const b = state.searchBox;
+    viewCtx.strokeStyle = "rgba(255,255,255,0.35)";
+    viewCtx.lineWidth = 1;
+    viewCtx.strokeRect(b.x0 * scale * k, b.y0 * scale * k, (b.x1 - b.x0) * scale * k, (b.y1 - b.y0) * scale * k);
+  }
+  if (glasses) {
+    if ($("showMask").checked) {
+      maskCanvas.width = glasses.maskWidth;
+      maskCanvas.height = glasses.maskHeight;
+      const image = maskCtx.createImageData(glasses.maskWidth, glasses.maskHeight);
+      for (let i = 0; i < glasses.mask.length; i++) if (glasses.mask[i]) {
+        image.data[i * 4] = 255; image.data[i * 4 + 1] = 157; image.data[i * 4 + 2] = 59; image.data[i * 4 + 3] = 150;
+      }
+      maskCtx.putImageData(image, 0, 0);
+      viewCtx.imageSmoothingEnabled = false;
+      viewCtx.drawImage(maskCanvas, glasses.maskBox.x0 * scale * k, glasses.maskBox.y0 * scale * k, glasses.maskWidth * scale * k, glasses.maskHeight * scale * k);
+      viewCtx.imageSmoothingEnabled = true;
+    }
+    const cx = glasses.center.x * scale * k, cy = glasses.center.y * scale * k;
+    const half = glasses.width / 2 * scale * k;
+    viewCtx.strokeStyle = "#ff9d3b";
+    viewCtx.lineWidth = 2;
+    viewCtx.beginPath();
+    viewCtx.moveTo(cx - Math.cos(glasses.angle) * half, cy - Math.sin(glasses.angle) * half);
+    viewCtx.lineTo(cx + Math.cos(glasses.angle) * half, cy + Math.sin(glasses.angle) * half);
+    viewCtx.stroke();
+  }
+  viewCtx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function drawPlot(canvas, now, series) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.clientWidth * devicePixelRatio, h = canvas.clientHeight * devicePixelRatio;
+  if (canvas.width !== Math.round(w)) { canvas.width = Math.round(w); canvas.height = Math.round(h); }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const samples = state.history.filter(s => now - s.t <= HISTORY_SECONDS);
+  const values = samples.flatMap(s => series.map(d => s[d.key])).filter(Number.isFinite);
+  if (values.length < 2) return;
+  let lo = Math.min(...values), hi = Math.max(...values);
+  if (hi - lo < 4) { const mid = (hi + lo) / 2; lo = mid - 2; hi = mid + 2; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const X = t => canvas.width * (1 - (now - t) / HISTORY_SECONDS);
+  const Y = v => canvas.height * (1 - (v - lo) / (hi - lo));
+  ctx.strokeStyle = "#2a313a";
+  ctx.fillStyle = "#8b95a1";
+  ctx.font = `${11 * devicePixelRatio}px -apple-system, sans-serif`;
+  ctx.lineWidth = 1;
+  const step = Math.pow(10, Math.floor(Math.log10((hi - lo) / 2)));
+  const nice = (hi - lo) / step > 8 ? step * 2 : step;
+  for (let v = Math.ceil(lo / nice) * nice; v <= hi; v += nice) {
+    ctx.beginPath(); ctx.moveTo(0, Y(v)); ctx.lineTo(canvas.width, Y(v)); ctx.stroke();
+    ctx.fillText(v.toFixed(nice < 1 ? 1 : 0), 4 * devicePixelRatio, Y(v) - 3 * devicePixelRatio);
+  }
+  ctx.lineWidth = 1.5 * devicePixelRatio;
+  for (const d of series) {
+    ctx.strokeStyle = d.color;
+    ctx.beginPath();
+    let drawing = false;
+    for (const s of samples) {
+      const v = s[d.key];
+      if (!Number.isFinite(v)) { drawing = false; continue; }
+      if (drawing) ctx.lineTo(X(s.t), Y(v)); else { ctx.moveTo(X(s.t), Y(v)); drawing = true; }
+    }
+    ctx.stroke();
+  }
+}
+
+function jitter(key, now) {
+  const values = state.history.filter(s => now - s.t <= JITTER_SECONDS).map(s => s[key]).filter(Number.isFinite);
+  if (values.length < 5) return NaN;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  return Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length);
+}
+
+const fmt = (v, digits = 1) => Number.isFinite(v) ? v.toFixed(digits).replace(".", ",") : "—";
+const deg = v => v * 180 / Math.PI;
+
+function updateNumbers(sample, now) {
+  const rows = [
+    ["Глубина, модель лица", fmt(sample.depthFace) + " см", fmt(jitter("depthFace", now), 2)],
+    ["Глубина, форма очков по модели лица", fmt(sample.depthFaceShape) + " см", fmt(jitter("depthFaceShape", now), 2)],
+    ["Глубина, по очкам (без модели лица)", fmt(sample.depthGlasses) + " см", fmt(jitter("depthGlasses", now), 2)],
+    ["Глубина, радужка", fmt(sample.depthIris) + " см", fmt(jitter("depthIris", now), 2)],
+    ["Вбок / вверх, модель лица", `${fmt(sample.xFace)} / ${fmt(sample.yFace)} см`, fmt(jitter("xFace", now), 2)],
+    ["Вбок / вверх, форма по модели лица", `${fmt(sample.xFaceShape)} / ${fmt(sample.yFaceShape)} см`, fmt(jitter("xFaceShape", now), 2)],
+    ["Вбок / вверх, по очкам", `${fmt(sample.xGlasses)} / ${fmt(sample.yGlasses)} см`, fmt(jitter("xGlasses", now), 2)],
+    ["Подгонка очков: внутри не кожа, над и под — кожа", Number.isFinite(sample.trackIoU) ? `${Math.round(sample.trackIoU * 100)} %` : "—", ""],
+    ["Поворот / наклон / к плечу", `${fmt(deg(sample.yaw))}° / ${fmt(deg(sample.pitch))}° / ${fmt(deg(sample.roll))}°`, fmt(jitter("yawDeg", now), 2)],
+    ["Пятно очков: ширина, наклон", `${fmt(sample.glassesPixels, 0)} пикс, ${fmt(deg(sample.glassesAngle))}°`, ""],
+    ["Совпадение формы очков с пятном", Number.isFinite(sample.shapeOverlap) ? `${Math.round(sample.shapeOverlap * 100)} %` : "—", ""],
+    ["Кадров в секунду", fmt(state.fps, 0), ""],
+  ];
+  $("numbers").innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("");
+}
+
+$("fitWidth").addEventListener("click", () => {
+  const now = performance.now() / 1000;
+  const pairs = state.history.filter(s => now - s.t <= 1 && Number.isFinite(s.depthFace) && Number.isFinite(s.depthGlasses));
+  if (!pairs.length) return;
+  const current = Number($("glassesWidth").value);
+  const ratio = pairs.reduce((a, s) => a + s.depthFace / s.depthGlasses, 0) / pairs.length;
+  $("glassesWidth").value = (current * ratio).toFixed(1);
+});
+
+$("record").addEventListener("click", e => {
+  state.recording = !state.recording;
+  e.target.classList.toggle("on", state.recording);
+  e.target.textContent = state.recording ? "Стоп" : "Запись";
+  if (state.recording) state.rows = [];
+});
+
+$("save").addEventListener("click", () => {
+  if (!state.rows.length) return;
+  const header = "time2001,depthFace,xFace,yFace,yaw,pitch,roll,depthGlasses,xGlasses,yGlasses,glassesPixels,glassesAngle,depthIris,shapeOverlap,depthFaceShape,xFaceShape,yFaceShape,trackIoU";
+  const lines = state.rows.map(r => [r.time2001.toFixed(4), r.depthFace, r.xFace, r.yFace, deg(r.yaw), deg(r.pitch), deg(r.roll),
+    r.depthGlasses, r.xGlasses, r.yGlasses, r.glassesPixels, deg(r.glassesAngle), r.depthIris, r.shapeOverlap, r.depthFaceShape, r.xFaceShape, r.yFaceShape, r.trackIoU]
+    .map(v => typeof v === "string" ? v : Number.isFinite(v) ? v.toFixed(3) : "").join(","));
+  const blob = new Blob([header + "\n" + lines.join("\n") + "\n"], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `headlab-${Math.round(Date.now() / 1000 - REFERENCE_DATE_OFFSET)}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+
+$("clearTrail").addEventListener("click", () => { state.trail = []; trailGeometry.setDrawRange(0, 0); });
+
+function processFrame(landmarker) {
+  const [width, height] = sourceSize();
+  const nowMs = performance.now();
+  const now = nowMs / 1000;
+  const result = landmarker.detectForVideo(source, nowMs);
+  const landmarks = result.faceLandmarks?.[0] ?? null;
+  const pose = landmarks && result.facialTransformationMatrixes?.[0] ? poseFromMatrix(result.facialTransformationMatrixes[0], width, height) : null;
+
+  const scale = width / MASK_WIDTH;
+  const gw = MASK_WIDTH, gh = Math.round(height / scale);
+  if (grab.width !== gw) { grab.width = gw; grab.height = gh; }
+  grabCtx.drawImage(source, 0, 0, gw, gh);
+  const data = grabCtx.getImageData(0, 0, gw, gh).data;
+  if (landmarks) {
+    state.skin = skinColor(data, gw, gh, landmarks) ?? state.skin;
+    state.oval = faceOvalMask(landmarks, gw, gh);
+    state.searchBox = clampBox(searchBoxFromFace(landmarks, gw, gh), gw, gh);
+  } else if (state.glasses) {
+    state.searchBox = clampBox(searchBoxFromGlasses(state.glasses), gw, gh);
+  } else {
+    state.searchBox = null;
+  }
+  const anchor = landmarks ? { x: landmarks[NOSE_BRIDGE].x * gw, y: landmarks[NOSE_BRIDGE].y * gh } : state.glasses?.center;
+  state.glasses = anchor && state.oval && $("findDark").checked && state.searchBox && state.skin ? findGlasses(data, gw, gh, state.searchBox, state.skin, anchor, state.oval) : null;
+  const gp = state.glasses ? glassesPose(state.glasses, scale, width, height, pose?.yaw) : null;
+
+  const sample = {
+    t: now,
+    time2001: Date.now() / 1000 - REFERENCE_DATE_OFFSET,
+    depthFace: pose?.depth ?? NaN, xFace: pose?.x ?? NaN, yFace: pose?.y ?? NaN,
+    yaw: pose?.yaw ?? NaN, pitch: pose?.pitch ?? NaN, roll: pose?.roll ?? NaN,
+    yawDeg: pose ? deg(pose.yaw) : NaN,
+    depthGlasses: gp?.depth ?? NaN, xGlasses: gp?.x ?? NaN, yGlasses: gp?.y ?? NaN,
+    glassesPixels: gp?.widthPixels ?? NaN, glassesAngle: state.glasses ? -state.glasses.angle : NaN,
+    depthIris: landmarks && landmarks.length > 477 ? irisDepth(landmarks, width, height) : NaN,
+  };
+  state.history.push(sample);
+  while (state.history.length && now - state.history[0].t > HISTORY_SECONDS) state.history.shift();
+  if (state.recording) {
+    state.rows.push(sample);
+    $("recordInfo").textContent = `записано кадров: ${state.rows.length}`;
+  }
+
+  if (landmarks && pose && shape.active && !shape.centers) startShape(landmarks, width, height, pose.depth);
+  const fit = landmarks && shape.centers ? fitShape(landmarks, width, height) : null;
+  if (fit && pose && !Number.isFinite(shape.refDepth)) shape.refDepth = pose.depth * fit.scale;
+  if (fit && shape.active && state.glasses && state.oval) accumulateShape(fit, state.glasses, state.oval, scale, gw);
+  const kept = showShape(fit, pose, width, height);
+  const overlap = shapeOverlap(state.glasses, gw, gh);
+  sample.shapeOverlap = overlap;
+  const tracked = shape.active ? null : trackGlasses(data, gw, gh, scale, fit);
+  if (!tracked) { tracker.projectedCount = 0; tracker.view = null; }
+  const byFace = shape.active ? null : faceShapePosition(fit);
+  if (tracked) {
+    const m = toMetric(tracked, width, height);
+    sample.depthGlasses = m.depth; sample.xGlasses = m.x; sample.yGlasses = m.y;
+    sample.trackIoU = tracked.iou;
+  }
+  if (byFace) {
+    const m = toMetric(byFace, width, height);
+    sample.depthFaceShape = m.depth; sample.xFaceShape = m.x; sample.yFaceShape = m.y;
+  }
+  if (shape.centers) {
+    $("shapeInfo").textContent = `кадров: ${shape.frames} · точек формы: ${kept}` + (fit ? ` · подгонка головы ±${(fit.residual / shape.faceWidth * 100).toFixed(1).replace(".", ",")}% ширины лица` : "") + (Number.isFinite(overlap) ? ` · совпадение с пятном ${Math.round(overlap * 100)}%` : "") + (kept ? "" : ` · лучшая доля попаданий ${Math.round(bestShare() * 100)}%`);
+  }
+
+  drawView(landmarks, state.glasses, scale, width, height);
+  updateScene(landmarks, pose, gp, width, height);
+  drawPlot($("plotDepth"), now, [
+    { key: "depthFace", color: "#4ea1ff" }, { key: "depthFaceShape", color: "#b18cff" }, { key: "depthGlasses", color: "#ff9d3b" }, { key: "depthIris", color: "#5fd38d" },
+  ]);
+  drawPlot($("plotX"), now, [{ key: "xFace", color: "#4ea1ff" }, { key: "xFaceShape", color: "#b18cff" }, { key: "xGlasses", color: "#ff9d3b" }]);
+  updateNumbers(sample, now);
+
+  state.frames++;
+  if (nowMs - state.fpsStart > 1000) {
+    state.fps = state.frames * 1000 / (nowMs - state.fpsStart);
+    state.frames = 0;
+    state.fpsStart = nowMs;
+  }
+  setStatus(landmarks ? `${width}×${height}, лицо найдено` : `${width}×${height}, лица нет${state.glasses ? ", очки ведутся по прошлому кадру" : ""}`, !landmarks && !state.glasses);
+}
+
+async function start() {
+  const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm");
+  const landmarker = await FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numFaces: 1,
+    outputFacialTransformationMatrixes: true,
+  });
+  const file = new URLSearchParams(location.search).get("src");
+  if (file && /\.(jpe?g|png|webp)$/i.test(file)) {
+    source = new Image();
+    source.crossOrigin = "anonymous";
+    source.src = file;
+    await source.decode();
+  } else if (file) {
+    video.src = file;
+    video.loop = true;
+    await video.play();
+  } else {
+    setStatus("Модель загружена, жду камеру…");
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    await video.play();
+  }
+  let lastTime = -1;
+  let chain = 0;
+  const loop = id => {
+    if (id !== chain) return;
+    const still = source instanceof HTMLImageElement;
+    if (still || (video.currentTime !== lastTime && video.videoWidth)) {
+      lastTime = video.currentTime;
+      processFrame(landmarker);
+    }
+    controls.update();
+    renderer.render(scene, camera3d);
+    schedule(id);
+  };
+  const schedule = id => document.hidden ? setTimeout(() => loop(id), 250) : requestAnimationFrame(() => loop(id));
+  document.addEventListener("visibilitychange", () => schedule(++chain));
+  loop(chain);
+}
+
+loadShape();
+start().catch(error => setStatus(`Ошибка: ${error.message ?? error}`, true));
+</script>
+</body>
+</html>
