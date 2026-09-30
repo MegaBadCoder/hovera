@@ -16,6 +16,7 @@ public final class OrientationFilter: @unchecked Sendable {
     private(set) var sampleCount = 0
     private var compass: MagnetometerCalibration?
     private var magneticReferences: [SIMD2<Int>: Double] = [:]
+    private var pausedCompass = false
     private var localField: (strength: Double, dip: Double)?
     private var referenceField: (strength: Double, dip: Double)?
     private var lastCompassError = 0.0
@@ -46,6 +47,12 @@ public final class OrientationFilter: @unchecked Sendable {
     public var gyroScale: SIMD3<Double> {
         get { lock.withLock { scale } }
         set { lock.withLock { scale = newValue } }
+    }
+
+    /// Компас только следит за полем и не поворачивает мир: пока курс держит камера, она точнее.
+    public var compassPaused: Bool {
+        get { lock.withLock { pausedCompass } }
+        set { lock.withLock { pausedCompass = newValue } }
     }
 
     /// Отменять ли пересчёты нуля гироскопа прошивкой очков (см. `FirmwareZeroRestorer`);
@@ -257,6 +264,7 @@ public final class OrientationFilter: @unchecked Sendable {
         }
         let error = atan2(sin(heading - reference), cos(heading - reference))
         lastCompassError = error
+        guard !pausedCompass else { return }
         let rate = max(-Compass.maxCorrectionRate, min(Compass.maxCorrectionRate, Compass.proportionalGain * error))
         q = simd_normalize(simd_quatd(angle: -rate * dt, axis: SIMD3(0, 1, 0)) * q)
     }

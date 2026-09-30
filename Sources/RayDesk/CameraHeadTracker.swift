@@ -506,6 +506,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         vision?.worldYawChanged(by: yawChange)
     }
 
+    /// Камера сейчас держит курс: опора запомнена и лицо было видно не дольше `coastSeconds` назад.
+    var correctsHeading: Bool {
+        lock.withLock { cameraDirection != nil && ProcessInfo.processInfo.systemUptime - lastFaceHeading < Self.coastSeconds }
+    }
+
     /// Где камера в мире, радианы, плюс — влево; `nil`, пока опора не запомнена.
     var cameraYaw: Double? {
         lock.withLock { cameraDirection }

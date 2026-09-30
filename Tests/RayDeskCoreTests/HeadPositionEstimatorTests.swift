@@ -146,19 +146,29 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     #expect(abs(abs(try! #require(reference).cameraYaw) - .pi) < 0.01)
 }
 
-@Test func glassesStraightAtTheCameraSitInFrontOfTheNeck() {
+@Test func glassesStraightAtTheCameraSitInFrontOfAndAboveTheNeck() {
     let glasses = SIMD3<Double>(0.01, 0.02, 0.55)
     let neck = neckPosition(fromGlasses: glasses, yaw: 0, pitch: 0)
-    #expect(simd_length(neck - SIMD3(0.01, 0.02, 0.55 + glassesFromNeck)) < 1e-12)
+    #expect(simd_length(neck - SIMD3(0.01, 0.02 - glassesFromNeck.up, 0.55 + glassesFromNeck.forward)) < 1e-12)
 }
 
 @Test func turningAndTiltingTheHeadDoesNotMoveTheNeckFoundByGlasses() {
     let neck = SIMD3<Double>(-0.03, 0.01, 0.62)
-    for (yaw, pitch) in [(0.4, 0.0), (-0.7, 0.2), (0.3, -0.35)] {
-        let glasses = neck + SIMD3(glassesFromNeck * sin(yaw) * cos(pitch), glassesFromNeck * sin(pitch),
-                                   -glassesFromNeck * cos(yaw) * cos(pitch))
+    for (yaw, pitch) in [(0.4, 0.0), (-0.7, 0.2), (0.3, -0.35), (0.0, -0.5)] {
+        let head = simd_quatd(angle: -yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: pitch, axis: SIMD3(1, 0, 0))
+        let facing = SIMD3(0.0, glassesFromNeck.up, -glassesFromNeck.forward)
+        let glasses = neck + head.act(facing)
         #expect(simd_length(neckPosition(fromGlasses: glasses, yaw: yaw, pitch: pitch) - neck) < 1e-12)
     }
+}
+
+@Test func glassesAndEyeArcAgreeOnWhereTheNeckIs() {
+    let reference = simd_quatd(angle: 0, axis: SIMD3(0, 1, 0))
+    let nod = simd_quatd(angle: -0.5, axis: SIMD3(1, 0, 0))
+    let eyeMove = eyeArcOffset(head: nod, reference: reference)
+    let glassesBefore = SIMD3(0.0, glassesFromNeck.up, -glassesFromNeck.forward)
+    let glassesMove = nod.act(glassesBefore) - glassesBefore
+    #expect(simd_length(eyeMove - glassesMove) < 0.012)
 }
 
 @Test func depthIsNotCorrectedWhenFacingTheCamera() {
@@ -171,9 +181,9 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     #expect(corrected > 0.85)
 }
 
-@Test func lookingDownAtTheKeyboardPushesTheMeasuredFaceBack() {
+@Test func tiltChangesTheMeasuredDepthOnlySlightly() {
     let down = depthCorrectedForTurn(0.8, turn: SIMD2(0, -35 * Double.pi / 180))
     let up = depthCorrectedForTurn(0.8, turn: SIMD2(0, 20 * Double.pi / 180))
-    #expect(down > 0.9)
-    #expect(abs(up / 0.8 - 1) < 0.03)
+    #expect(abs(down - 0.8 * (1 + 0.10 * sin(35 * Double.pi / 180))) < 1e-12)
+    #expect(abs(up / 0.8 - 1) < 0.04)
 }

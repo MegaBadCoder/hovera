@@ -1245,6 +1245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
         watchRendering()
+        let cameraHoldsHeading = cameraHead.isRunning && cameraHead.correctsHeading
+        if filter.compassPaused != cameraHoldsHeading {
+            filter.compassPaused = cameraHoldsHeading
+            log(cameraHoldsHeading ? "compass paused: the camera holds the heading" : "compass resumed")
+        }
         logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
