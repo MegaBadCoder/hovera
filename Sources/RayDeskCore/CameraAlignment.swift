@@ -9,7 +9,9 @@ import simd
 public struct CameraAlignment: Sendable {
     /// Поворот из осей мира в оси камеры; `nil`, пока пар мало или они не сходятся.
     public private(set) var rotation: simd_double3x3?
-    /// Среднеквадратичное расхождение пар с найденным поворотом: угол поворота, радианы.
+    /// Среднеквадратичное расхождение пар с найденным поворотом, радианы. Модель лица завышает углы,
+    /// поэтому повороты камеры сначала подгоняются общим множителем в пределах `scaleRange`.
+    /// Связь включается при расхождении до `maxResidual` и выключается только выше `dropResidual`.
     public private(set) var residual = Double.nan
     /// Сколько пар накоплено.
     public var pairCount: Int { pairs.count }
@@ -23,7 +25,10 @@ public struct CameraAlignment: Sendable {
     static let maxPairs = 150
     static let minPairs = 6
     static let maxResidual = 8 * Double.pi / 180
+    static let dropResidual = 11 * Double.pi / 180
+    static let scaleRange = 0.8...1.4
     static let maxMismatch = 8 * Double.pi / 180
+    static let mismatchShare = 0.25
 
     public init() {}
 
@@ -57,7 +62,8 @@ public struct CameraAlignment: Sendable {
         let angle = max(simd_length(camera), simd_length(world))
         guard angle >= Self.minStep else { return }
         self.anchor = (faceQuaternion, imu)
-        guard abs(simd_length(camera) - simd_length(world)) <= Self.maxMismatch else { return }
+        guard abs(simd_length(camera) - simd_length(world)) <= Self.maxMismatch + Self.mismatchShare * simd_length(world)
+        else { return }
         pairs.append((camera, world))
         if pairs.count > Self.maxPairs { pairs.removeFirst(pairs.count - Self.maxPairs) }
         solve()
@@ -87,7 +93,7 @@ public struct CameraAlignment: Sendable {
         }
         let found = bestRotation(from: pairs.map(\.world), to: pairs.map(\.camera))
         residual = rms(found)
-        rotation = residual <= Self.maxResidual ? found : nil
+        rotation = residual <= (rotation == nil || usesPrior ? Self.maxResidual : Self.dropResidual) ? found : nil
         if rotation != nil {
             usesPrior = false
             prior = nil
@@ -116,7 +122,11 @@ public struct CameraAlignment: Sendable {
     }
 
     private func rms(_ candidate: simd_double3x3) -> Double {
-        let errors = pairs.map { simd_length_squared(candidate * $0.world - $0.camera) }
+        let rotated = pairs.map { (seen: candidate * $0.world, camera: $0.camera) }
+        let overlap = rotated.map { simd_dot($0.seen, $0.camera) }.reduce(0, +)
+        let size = rotated.map { simd_length_squared($0.seen) }.reduce(0, +)
+        let scale = size > 0 ? min(max(overlap / size, Self.scaleRange.lowerBound), Self.scaleRange.upperBound) : 1
+        let errors = rotated.map { simd_length_squared($0.seen * scale - $0.camera) }
         return sqrt(errors.reduce(0, +) / Double(max(errors.count, 1)))
     }
 

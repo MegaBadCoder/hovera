@@ -53,8 +53,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var estimator = HeadPositionEstimator(camera: FaceCamera(horizontalFieldOfView: CameraHeadTracker.assumedFieldOfView, aspect: 16.0 / 9))
     private var smoother = OneEuroPositionFilter(minCutoff: SIMD3(1, 1, 0.05), beta: SIMD3(2, 2, 0.3))
     private var deadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.015))
-    private var glassesSmoother = OneEuroPositionFilter(minCutoff: SIMD3(1, 1, 0.3), beta: SIMD3(2, 2, 0.5))
-    private var glassesDeadband = SoftDeadband(band: SIMD3(0.0015, 0.0015, 0.005))
+    private var settledNeck = SettledPosition()
     private var smoothingGlasses = false
     private var recentNecks: [SIMD3<Double>] = []
     private var lastRawZ: Double?
@@ -394,6 +393,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             recentNecks.removeAll()
             lastRawZ = nil
             lastRaw = nil
+            settledNeck.interrupt()
             if learning {
                 learner.reset()
                 glassesLearner.reset()
@@ -422,9 +422,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lastFaceTime = time
         let value: SIMD3<Double>
         if smoothingGlasses {
-            glassesSmoother.add(neck, dt: dt)
-            guard let smoothed = glassesSmoother.value else { return }
-            value = glassesDeadband.follow(smoothed)
+            value = settledNeck.add(neck, time: time, headSpeed: speed)
         } else {
             smoother.add(neck, dt: dt)
             guard let smoothed = smoother.value else { return }
@@ -434,10 +432,15 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         latestEstimate = (arrival, value)
         if learning, let start = referenceWindowStart, time >= start,
            let reference = cameraTurn == nil ? learner.add(neck: value, yaw: turn.yaw, pitch: turn.pitch, time: time)
-                : glassesLearner.add(neck: value, yaw: turn.yaw, pitch: turn.pitch, time: time) {
+                : glassesLearner.add(neck: neck, yaw: turn.yaw, pitch: turn.pitch, time: time) {
             cameraDirection = remainder(reference.cameraYaw - (cameraTurn?.x.isFinite == true ? yaw : 0), 2 * .pi)
             referencePitch = reference.pitch - (cameraTurn?.y.isFinite == true ? pitch : 0)
             referenceNeck = reference.neck
+            if cameraTurn != nil {
+                settledNeck.reset(to: reference.neck)
+                previousEstimate = nil
+                latestEstimate = (arrival, reference.neck)
+            }
             log(String(format: "camera: reference captured, camera at yaw %.1f° pitch %.1f°",
                        reference.cameraYaw * 180 / .pi, reference.pitch * 180 / .pi))
         }
@@ -461,6 +464,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             holding = false
             learner.reset()
             glassesLearner.reset()
+            settledNeck.reset()
             headingCorrector.reset()
             lastHeadingFrame = nil
             referenceWindowStart = ProcessInfo.processInfo.systemUptime + delay
@@ -541,9 +545,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             let fraction = min(max((ProcessInfo.processInfo.systemUptime - latest.time) / interval, 0), 1)
             current = previous.value + (latest.value - previous.value) * fraction
         }
-        if !holding {
-            let speed = smoothingGlasses ? glassesSmoother.speed * SIMD3(1, 1, 0) : smoother.speed
-            current = leadCompensated(current, speed: speed, lead: lastLatency + min(interval, 0.1))
+        if !holding && !smoothingGlasses {
+            current = leadCompensated(current, speed: smoother.speed, lead: lastLatency + min(interval, 0.1))
         }
         let offset = current - referenceNeck
         let length = simd_length(offset)

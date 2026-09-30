@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let glassesVision = GlassesVision()
     private let watchdog = MainThreadWatchdog()
     private var glassesTrackingItem: NSMenuItem?
+    private var wallModeItem: NSMenuItem?
     private var learningGlasses = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -230,6 +231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.window = window
         self.renderer = renderer
         restartFrameLink()
+        if UserDefaults.standard.bool(forKey: "wallMode"), let wallModeItem {
+            toggleWallMode(wallModeItem)
+        }
     }
 
     private func restartFrameLink() {
@@ -705,9 +709,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if renderer.headOffset != nil {
             renderer.headOffset = nil
             sender.state = .off
+            UserDefaults.standard.set(false, forKey: "wallMode")
             log("wall mode off")
             return
         }
+        UserDefaults.standard.set(true, forKey: "wallMode")
         let enable = { [weak self] in
             guard let self, let renderer = self.renderer else { return }
             cameraHead.resetReference(after: glassesTracking ? 1 : 4)
@@ -1169,7 +1175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
-        menu.addItem(menuItem("Дополнительная калибровка камерой (эксперимент)", #selector(toggleWallMode(_:))))
+        let wallItem = menuItem("Дополнительная калибровка камерой (эксперимент)", #selector(toggleWallMode(_:)))
+        wallModeItem = wallItem
+        menu.addItem(wallItem)
         let glassesItem = menuItem("Положение головы по очкам (MediaPipe, проба)", #selector(toggleGlassesTracking(_:)))
         glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
         glassesTrackingItem = glassesItem

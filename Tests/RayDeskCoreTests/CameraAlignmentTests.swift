@@ -212,3 +212,16 @@ private func angleBetween(_ a: simd_double3x3, _ b: simd_double3x3) -> Double {
     }
     #expect(travelled < 0.5 * degree)
 }
+
+@Test func overreadFaceTurnsStillLearnTheAlignment() {
+    var alignment = CameraAlignment()
+    for (yaw, pitch) in sweep {
+        let imu = head(yaw: yaw, pitch: pitch)
+        let seen = simd_quatd(face(for: imu) * startFace.transpose)
+        let overread = simd_quatd(angle: seen.angle * 1.15, axis: seen.axis)
+        alignment.add(face: simd_double3x3(overread) * startFace, imu: imu)
+    }
+    let learned = try! #require(alignment.rotation)
+    #expect(angleBetween(learned, worldToCamera) < 2 * degree)
+    #expect(alignment.residual < 1 * degree)
+}
