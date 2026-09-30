@@ -107,3 +107,15 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
     var corrector = CameraYawCorrector()
     #expect(corrector.step(headYaw: 1, cameraYaw: 0, faceTurn: SIMD2(40 * degree, 0), dt: 0.033) == 0)
 }
+
+@Test func headingIsFixedFasterWhileTheHeadIsTurning() {
+    var still = CameraYawCorrector(), moving = CameraYawCorrector()
+    var stillShift = 0.0, movingShift = 0.0
+    for _ in 0..<30 {
+        stillShift += still.step(headYaw: 4 * degree + stillShift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+        movingShift += moving.step(headYaw: 4 * degree + movingShift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30,
+                                   headSpeed: 60 * degree)
+    }
+    #expect(abs(stillShift) <= 1 * degree + 1e-9)
+    #expect(abs(4 * degree + movingShift) < 1.5 * degree)
+}

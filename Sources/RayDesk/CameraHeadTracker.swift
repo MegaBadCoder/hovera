@@ -294,7 +294,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         if let faceRotation = frame?.faceRotation, let cameraDirection, lastVerdict == .accepted {
             let dt = lastHeadingFrame.map { min(captured - $0, 0.2) } ?? 0
             headingStep = headingCorrector.step(headYaw: head.yawPitch.yaw, cameraYaw: cameraDirection,
-                                                faceTurn: headTurn(fromCameraRotation: simd_double3x3(faceRotation)), dt: dt)
+                                                faceTurn: headTurn(fromCameraRotation: simd_double3x3(faceRotation)), dt: dt,
+                                                headSpeed: speed)
             headingCorrection += headingStep
             lastHeadingFrame = captured
         } else {

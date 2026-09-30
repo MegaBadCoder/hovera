@@ -137,9 +137,11 @@ public func headTurn(fromCameraRotation rotation: simd_double3x3) -> SIMD2<Doubl
 /// Мир доворачивается к нему плавно, не быстрее `maxRate`.
 public struct CameraYawCorrector: Sendable {
     /// Во сколько раз в секунду сокращается расхождение.
-    public var gain = 0.5
-    /// Наибольшая скорость доворота, рад/с.
+    public var gain = 2.0
+    /// Наибольшая скорость доворота в покое, рад/с.
     public var maxRate = 1 * Double.pi / 180
+    /// Какую долю скорости поворота головы можно добавить к довороту: пока голова движется, поворот мира не заметен.
+    public var motionShare = 0.15
     /// Дальше этого поворота головы от камеры модель лица менее точна, поправки нет, радианы.
     public var maxTurn = 25 * Double.pi / 180
     /// Доля нового кадра в сглаженном расхождении.
@@ -161,13 +163,16 @@ public struct CameraYawCorrector: Sendable {
     ///   - cameraYaw: где камера в мире, радианы.
     ///   - faceTurn: поворот головы от камеры по модели лица, радианы: x — влево, y — вверх.
     ///   - dt: время с прошлого кадра, секунды.
+    ///   - headSpeed: скорость поворота головы, рад/с.
     /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево); ноль, если голова
     ///   отвёрнута от камеры сильнее `maxTurn`.
-    public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double) -> Double {
+    public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double,
+                              headSpeed: Double = 0) -> Double {
         guard abs(faceTurn.x) < maxTurn, abs(faceTurn.y) < maxTurn, dt > 0 else { return 0 }
         let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
         let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
-        let rotation = -max(-maxRate, min(maxRate, gain * smoothed)) * dt
+        let limit = maxRate + motionShare * abs(headSpeed)
+        let rotation = -max(-limit, min(limit, gain * smoothed)) * dt
         drift = smoothed + rotation
         return rotation
     }
