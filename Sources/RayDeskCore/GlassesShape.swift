@@ -268,6 +268,8 @@ public struct GlassesShape: Codable, Sendable {
     public var faceWidth: Double
     /// Расстояние до лица в опорном кадре, метры.
     public var referenceDepth: Double
+    /// Угол обзора камеры по горизонтали, с которым считалась `referenceDepth`, радианы; `nil` — 70°.
+    public var fieldOfView: Double?
     public var cells: Int
     var centers: [SIMD3<Float>]
     var hits: [UInt16]
@@ -280,7 +282,9 @@ public struct GlassesShape: Codable, Sendable {
     /// - Parameters:
     ///   - landmarks: все точки лица в пикселях полного кадра, z в тех же единицах.
     ///   - depth: расстояние до лица, метры.
-    public init(landmarks: [SIMD3<Double>], depth: Double) {
+    ///   - fieldOfView: угол обзора камеры по горизонтали, с которым посчитано `depth`, радианы.
+    public init(landmarks: [SIMD3<Double>], depth: Double, fieldOfView: Double) {
+        self.fieldOfView = fieldOfView
         let bridge = landmarks[FaceMeshPoint.noseBridge]
         faceWidth = simd_distance(landmarks[FaceMeshPoint.sides.0], landmarks[FaceMeshPoint.sides.1])
         let step = faceWidth / Self.cellsAcross
@@ -313,6 +317,12 @@ public struct GlassesShape: Codable, Sendable {
         hits = [UInt16](repeating: 0, count: centers.count)
         misses = hits
         frames = 0
+    }
+
+    /// Во сколько раз пересчитать глубину, если сейчас задан другой угол обзора камеры, чем при обучении:
+    /// глубина по размеру в кадре пропорциональна фокусному расстоянию.
+    public func depthScale(fieldOfView current: Double) -> Double {
+        tan((fieldOfView ?? 70 * .pi / 180) / 2) / tan(current / 2)
     }
 
     /// Подгоняет опорный кадр к текущим точкам лица.

@@ -56,7 +56,10 @@ final class GlassesVision: @unchecked Sendable {
     private static let depthBiasBlend = 0.05
     private var depthBias = 0.0
     private static let maskWidth = 320
-    private static let fieldOfView = 70 * Double.pi / 180
+    /// Угол обзора камеры по горизонтали, радианы: задаёт масштаб движений вперёд-назад.
+    static var fieldOfView: Double {
+        (UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70) * .pi / 180
+    }
     private static let templeSpan = 0.14
 
     /// Модель загружена и можно слать кадры.
@@ -148,7 +151,7 @@ final class GlassesVision: @unchecked Sendable {
         if learning {
             if shape == nil {
                 let span = simd_distance(landmarks[FaceMeshPoint.sides.0], landmarks[FaceMeshPoint.sides.1])
-                shape = GlassesShape(landmarks: landmarks, depth: focal * Self.templeSpan / span)
+                shape = GlassesShape(landmarks: landmarks, depth: focal * Self.templeSpan / span, fieldOfView: Self.fieldOfView)
             }
             guard var learned = shape, let classifier else { return frame }
             let fit = learned.fit(landmarks: landmarks, previous: lastFit)
@@ -177,7 +180,7 @@ final class GlassesVision: @unchecked Sendable {
         anchor = (rotation, head)
         frame.turn = headTurn(fromCameraRotation: fit.rotation)
         frame.faceRotation = simd_quatd(fit.rotation)
-        frame.faceDepth = shape.referenceDepth / fit.scale
+        frame.faceDepth = shape.referenceDepth / fit.scale * shape.depthScale(fieldOfView: Self.fieldOfView)
         describeAlignment(&frame)
         let oval = faceOvalMask(landmarks: small, width: image.width, height: image.height)
         tracker.seed(fit)
@@ -213,7 +216,7 @@ final class GlassesVision: @unchecked Sendable {
                        frame: GlassesFrame) -> GlassesFrame {
         var frame = frame
         guard let result else { return frame }
-        let glassesDepth = shape.referenceDepth / result.scale
+        let glassesDepth = shape.referenceDepth / result.scale * shape.depthScale(fieldOfView: Self.fieldOfView)
         var depth = glassesDepth + depthBias
         if let faceDepth = frame.faceDepth {
             depthBias += (faceDepth - glassesDepth - depthBias) * Self.depthBiasBlend

@@ -684,6 +684,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? (glassesTracking ? 1 : 0.25)
     }
 
+    @objc private func chooseCameraFieldOfView(_ sender: NSMenuItem) {
+        guard let degrees = sender.representedObject as? Int else { return }
+        UserDefaults.standard.set(Double(degrees), forKey: "cameraFieldOfView")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == degrees ? .on : .off }
+        cameraHead.resetReference(after: 0.3)
+        log("camera field of view \(degrees)°")
+    }
+
     @objc private func chooseWallDepth(_ sender: NSMenuItem) {
         guard let percent = sender.representedObject as? Int else { return }
         UserDefaults.standard.set(Double(percent) / 100, forKey: "wallDepthStrength")
@@ -1167,6 +1175,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(glassesItem)
         menu.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
         menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
+        let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
+        let angles = NSMenu()
+        let currentAngle = UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70
+        for degrees in [60, 70, 80, 90, 100, 110] {
+            let option = menuItem("\(degrees)°", #selector(chooseCameraFieldOfView(_:)))
+            option.representedObject = degrees
+            option.state = Double(degrees) == currentAngle ? .on : .off
+            angles.addItem(option)
+        }
+        fieldOfView.submenu = angles
+        menu.addItem(fieldOfView)
         let depth = NSMenuItem(title: "Калибровка камерой: сила вперёд-назад", action: nil, keyEquivalent: "")
         let strengths = NSMenu()
         for percent in [25, 50, 75, 100] {

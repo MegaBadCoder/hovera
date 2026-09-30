@@ -87,3 +87,14 @@ private func skinClassifier() -> SkinClassifier {
                           classifier: skinClassifier()) == nil)
     #expect(!tracker.ready)
 }
+
+@Test func widerCameraAngleMeansTheFaceIsCloser() throws {
+    var landmarks = [SIMD3<Double>](repeating: .zero, count: 478)
+    for i in landmarks.indices { landmarks[i] = SIMD3(Double(i % 30) * 4, Double(i / 30) * 4, 0) }
+    landmarks[FaceMeshPoint.sides.0] = SIMD3(0, 40, 0)
+    landmarks[FaceMeshPoint.sides.1] = SIMD3(100, 40, 0)
+    let shape = GlassesShape(landmarks: landmarks, depth: 0.7, fieldOfView: 70 * Double.pi / 180)
+    #expect(shape.depthScale(fieldOfView: 70 * Double.pi / 180) == 1)
+    let wider = shape.depthScale(fieldOfView: 90 * Double.pi / 180)
+    #expect(abs(wider - tan(35 * Double.pi / 180)) < 1e-12)
+}
