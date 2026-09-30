@@ -87,3 +87,41 @@ private func skinClassifier() -> SkinClassifier {
                           classifier: skinClassifier()) == nil)
     #expect(!tracker.ready)
 }
+
+@Test func glassesShapeRevealsASmallHeadTurn() throws {
+    var kept: [SIMD3<Double>] = []
+    for x in stride(from: -60.0, through: 60, by: 1) {
+        for y in stride(from: -12.0, through: 12, by: 1) { kept.append(SIMD3(x, y, 0.012 * x * x)) }
+    }
+    var probes: [SIMD3<Double>] = []
+    for x in stride(from: -58.0, through: 58, by: 2) {
+        let depth: Double = 0.012 * x * x
+        for y: Double in [-14, 14, -18, 18] { probes.append(SIMD3(x, y, depth)) }
+    }
+    let trueYaw = 2.5 * Double.pi / 180
+    let truth = simd_double3x3(simd_quatd(angle: trueYaw, axis: SIMD3(0, 1, 0)))
+    let width = 240, height = 120
+    var pixels = [UInt8](repeating: 255, count: width * height * 4)
+    for y in 0..<height {
+        for x in 0..<width {
+            let i = (y * width + x) * 4
+            pixels[i] = skinRGB.0; pixels[i + 1] = skinRGB.1; pixels[i + 2] = skinRGB.2
+        }
+    }
+    let centre = SIMD2(120.0, 60.0)
+    for x in stride(from: -60.0, through: 60, by: 0.25) {
+        for y in stride(from: -12.0, through: 12, by: 0.25) {
+            let q = truth * SIMD3(x, y, 0.012 * x * x)
+            let px = Int((q.x + centre.x).rounded(.down)), py = Int((q.y + centre.y).rounded(.down))
+            guard px >= 0, py >= 0, px < width, py < height else { continue }
+            let i = (py * width + px) * 4
+            pixels[i] = frameRGB.0; pixels[i + 1] = frameRGB.1; pixels[i + 2] = frameRGB.2
+        }
+    }
+    let crop = RGBAImage(width: width, height: height, pixels: pixels)
+    let fit = try #require(GlassesRotationFit(crop: crop, origin: .zero, rotation: matrix_identity_double3x3, scale: 1,
+                                               shift: centre, kept: kept, probes: probes, classifier: skinClassifier()))
+    let found = headTurn(fromCameraRotation: fit.rotation).x
+    let expected = headTurn(fromCameraRotation: truth).x
+    #expect(abs(found - expected) < 0.6 * Double.pi / 180)
+}

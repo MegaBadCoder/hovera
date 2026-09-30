@@ -34,6 +34,9 @@ struct GlassesFrame {
     var faceRotation: simd_quatd?
     /// Глубина по модели лица, метры.
     var faceDepth: Double?
+    /// Эксперимент: поворот головы от камеры по самой форме очков, радианы, и совпадение этой подгонки.
+    var glassesTurn: SIMD2<Double>?
+    var glassesTurnScore: Double?
 }
 
 /// Положение очков по кадру камеры: модель лица, выученная форма очков и трекер по ней.
@@ -187,7 +190,47 @@ final class GlassesVision: @unchecked Sendable {
         let projected = kept.map { point -> SIMD2<Double> in let p = fit.apply(point); return SIMD2(p.x, p.y) }
         let byFace = GlassesTracker.Result(center: projected.reduce(.zero, +) / Double(projected.count), scale: fit.scale,
                                            score: score ?? 0, projected: projected)
+        measureTurnByGlasses(pixels: pixels, rotation: rotation, scale: fit.scale,
+                             shift: SIMD2(fit.translation.x, fit.translation.y), projected: projected,
+                             classifier: classifier, frame: &frame)
         return place(byFace, shape: shape, width: width, height: height, focal: focal, frame: frame)
+    }
+
+    private func measureTurnByGlasses(pixels: CVPixelBuffer, rotation: simd_double3x3, scale: Double, shift: SIMD2<Double>,
+                                      projected: [SIMD2<Double>], classifier: SkinClassifier, frame: inout GlassesFrame) {
+        let xs = projected.map(\.x), ys = projected.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return }
+        let margin = 0.3 * (maxX - minX)
+        let (crop, origin) = Self.crop(pixels, x0: minX - margin, y0: minY - margin, x1: maxX + margin, y1: maxY + margin)
+        guard crop.width > 8, crop.height > 8,
+              let fit = GlassesRotationFit(crop: crop, origin: origin, rotation: rotation, scale: scale, shift: shift,
+                                           kept: kept, probes: probes, classifier: classifier)
+        else { return }
+        frame.glassesTurn = headTurn(fromCameraRotation: fit.rotation)
+        frame.glassesTurnScore = fit.score
+    }
+
+    private static func crop(_ pixels: CVPixelBuffer, x0: Double, y0: Double, x1: Double, y1: Double) -> (RGBAImage, SIMD2<Double>) {
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        let width = CVPixelBufferGetWidth(pixels), height = CVPixelBufferGetHeight(pixels)
+        let left = max(0, Int(x0)), top = max(0, Int(y0))
+        let right = min(width - 1, Int(x1)), bottom = min(height - 1, Int(y1))
+        guard right > left, bottom > top, let source = CVPixelBufferGetBaseAddress(pixels)?.assumingMemoryBound(to: UInt8.self)
+        else { return (RGBAImage(width: 0, height: 0, pixels: []), .zero) }
+        let row = CVPixelBufferGetBytesPerRow(pixels)
+        let w = right - left + 1, h = bottom - top + 1
+        var out = [UInt8](repeating: 255, count: w * h * 4)
+        for y in 0..<h {
+            let line = source + (top + y) * row + left * 4
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                out[i] = line[x * 4 + 2]
+                out[i + 1] = line[x * 4 + 1]
+                out[i + 2] = line[x * 4]
+            }
+        }
+        return (RGBAImage(width: w, height: h, pixels: out), SIMD2(Double(left), Double(top)))
     }
 
     private func describeAlignment(_ frame: inout GlassesFrame) {

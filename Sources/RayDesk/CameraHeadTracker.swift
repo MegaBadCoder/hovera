@@ -461,7 +461,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
             let url = directory.appendingPathComponent("glasses-\(Int(Date().timeIntervalSinceReferenceDate)).csv")
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: url.path, contents: "time,captured,face,x,y,z,score,turnyaw,turnpitch,source,aligned,neckx,necky,neckz,verdict,speed,qw,qx,qy,qz,facedepth,fqw,fqx,fqy,fqz,pairs,residual\n".data(using: .utf8))
+            FileManager.default.createFile(atPath: url.path, contents: "time,captured,face,x,y,z,score,turnyaw,turnpitch,source,aligned,neckx,necky,neckz,verdict,speed,qw,qx,qy,qz,facedepth,fqw,fqx,fqy,fqz,pairs,residual,gturnyaw,gturnpitch,gscore\n".data(using: .utf8))
             glassesFile = try? FileHandle(forWritingTo: url)
             glassesFile?.seekToEndOfFile()
             log("glasses recording: \(url.lastPathComponent)")
@@ -477,7 +477,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                            + String(format: ",%.4f,%.5f,%.5f,%.5f,%.5f,%d,%.2f", frame?.faceDepth ?? .nan,
                                     frame?.faceRotation?.real ?? .nan, frame?.faceRotation?.imag.x ?? .nan,
                                     frame?.faceRotation?.imag.y ?? .nan, frame?.faceRotation?.imag.z ?? .nan,
-                                    frame?.alignmentPairs ?? 0, (frame?.alignmentResidual ?? .nan) * 180 / .pi))
+                                    frame?.alignmentPairs ?? 0, (frame?.alignmentResidual ?? .nan) * 180 / .pi)
+                           + String(format: ",%.3f,%.3f,%.3f", (frame?.glassesTurn?.x ?? .nan) * 180 / .pi,
+                                    (frame?.glassesTurn?.y ?? .nan) * 180 / .pi, frame?.glassesTurnScore ?? .nan))
         if glassesRows.count >= 30 {
             glassesFile?.write((glassesRows.joined(separator: "\n") + "\n").data(using: .utf8)!)
             glassesRows.removeAll(keepingCapacity: true)
