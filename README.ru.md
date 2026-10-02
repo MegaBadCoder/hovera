@@ -27,7 +27,7 @@
 
 ## Скачать
 
-Возьмите `Hovera-0.1.0-macOS-arm64.zip` в [Releases](https://github.com/MegaBadCoder/hovera/releases), распакуйте и перенесите `RayDesk.app` в «Программы». Только для Mac на Apple Silicon.
+Возьмите `Hovera-0.2.0-macOS-arm64.zip` в [Releases](https://github.com/MegaBadCoder/hovera/releases), распакуйте и перенесите `RayDesk.app` в «Программы». Только для Mac на Apple Silicon.
 
 Сборка пока не нотаризована, поэтому macOS блокирует первый запуск: откройте её один раз, затем Системные настройки → Конфиденциальность и безопасность → «Всё равно открыть». Или выполните `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
 

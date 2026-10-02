@@ -27,7 +27,7 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 
 ## Download
 
-Grab `Hovera-0.1.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
+Grab `Hovera-0.2.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
 
 The app is not notarized yet, so macOS blocks the first launch: open it once, then System Settings → Privacy & Security → "Open Anyway". Or run `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
 

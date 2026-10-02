@@ -205,12 +205,15 @@ public struct CameraReferenceLearner: Sendable {
     public var maxSpread: Double
     /// Наименьшее число кадров в окне.
     public var minSamples: Int
+    /// Допустимый разброс положения в окне, метры.
+    public var maxPositionSpread: Double
     private var samples: [(neck: SIMD3<Double>, yaw: Double, pitch: Double, time: Double)] = []
 
-    public init(window: Double = 1, maxSpread: Double = 5 * .pi / 180, minSamples: Int = 10) {
+    public init(window: Double = 1, maxSpread: Double = 5 * .pi / 180, minSamples: Int = 10, maxPositionSpread: Double = 0.03) {
         self.window = window
         self.maxSpread = maxSpread
         self.minSamples = minSamples
+        self.maxPositionSpread = maxPositionSpread
     }
 
     /// Добавляет кадр; если голова шевельнулась сильнее `maxSpread`, окно начинается заново с этого кадра.
@@ -222,11 +225,18 @@ public struct CameraReferenceLearner: Sendable {
     ///   - time: время кадра, секунды, по возрастанию.
     /// - Returns: опора, когда окно набрано; до этого `nil`.
     public mutating func add(neck: SIMD3<Double>, yaw: Double, pitch: Double, time: Double) -> Reference? {
+        guard neck.x.isFinite, neck.y.isFinite, neck.z.isFinite,
+              yaw.isFinite, pitch.isFinite, time.isFinite else { reset(); return nil }
+        if let last = samples.last, time <= last.time || time - last.time > 0.2 { reset() }
         let unwrapped = samples.first.map { $0.yaw + remainder(yaw - $0.yaw, 2 * .pi) } ?? yaw
         samples.append((neck, unwrapped, pitch, time))
         let yaws = samples.map(\.yaw)
         let pitches = samples.map(\.pitch)
-        if yaws.max()! - yaws.min()! > maxSpread || pitches.max()! - pitches.min()! > maxSpread {
+        let positionalSpread = (0..<3).contains { axis in
+            let values = samples.map { $0.neck[axis] }
+            return values.max()! - values.min()! > maxPositionSpread
+        }
+        if positionalSpread || yaws.max()! - yaws.min()! > maxSpread || pitches.max()! - pitches.min()! > maxSpread {
             samples = [(neck, unwrapped, pitch, time)]
             return nil
         }

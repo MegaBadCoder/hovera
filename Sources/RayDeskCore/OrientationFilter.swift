@@ -323,9 +323,10 @@ public final class OrientationFilter: @unchecked Sendable {
     public func correctYaw(by delta: Double) {
         guard delta.isFinite, abs(delta) <= .pi / 180 else { return }
         lock.lock()
-        guard initialized else { lock.unlock(); return }
-        rotateWorldYawLocked(by: delta)
+        let ready = initialized
         lock.unlock()
+        guard ready else { return }
+        rotateWorldYaw(by: delta)
     }
 
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
@@ -340,25 +341,27 @@ public final class OrientationFilter: @unchecked Sendable {
     /// недокрученный мир и поправка сама себя отменяет.
     public func rotateWorldYaw(by angle: Double) {
         lock.lock()
-        rotateWorldYawLocked(by: angle)
+        rotateOrientationAndHistory(by: angle)
+        for (sector, heading) in magneticReferences {
+            magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
+        }
         lock.unlock()
     }
 
-    private func rotateWorldYawLocked(by angle: Double) {
+    /// Вызывается под lock: прошлые кадры камеры должны использовать те же оси мира.
+    private func rotateOrientationAndHistory(by angle: Double) {
         let rotation = simd_quatd(angle: angle, axis: SIMD3(0, 1, 0))
         q = simd_normalize(rotation * q)
-        for index in history.indices where history[index].time > 0 {
+        for step in 0..<historyCount {
+            let index = (historyNext + Self.historySize - 1 - step) % Self.historySize
             history[index].orientation = simd_normalize(rotation * history[index].orientation)
-        }
-        for (sector, heading) in magneticReferences {
-            magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
         }
     }
 
     public func alignYaw(to target: Double) {
         lock.lock()
         let yp = q.yawPitch
-        q = simd_quatd(angle: target - yp.yaw, axis: SIMD3(0, 1, 0)) * q
+        rotateOrientationAndHistory(by: target - yp.yaw)
         magneticReferences = [:]
         lastCompassError = 0
         lock.unlock()

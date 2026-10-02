@@ -129,7 +129,8 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
         #expect(learner.add(neck: .zero, yaw: 0, pitch: 0, time: Double(frame) / 30) == nil)
     }
     #expect(learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: 26.0 / 30) == nil)
-    for frame in 27..<50 {
+    // Непрерывные кадры: отдельный тест проверяет сброс после потери камеры.
+    for frame in 27..<56 {
         #expect(learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: Double(frame) / 30) == nil)
     }
     let reference = learner.add(neck: .zero, yaw: 10 * degree, pitch: 0, time: 57.0 / 30)
