@@ -58,6 +58,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var cameraDirection: Double?
     private var referenceWindowStart: Double?
     private var learner = CameraReferenceLearner()
+    private var yawAnchor = CameraYawAnchor()
+    private var yawCorrectionEnabled = false
+    private var yawCorrectionTotal = 0.0
     private var latestEstimate: (time: Double, value: SIMD3<Double>)?
     private var previousEstimate: (time: Double, value: SIMD3<Double>)?
     private var latencySum = 0.0
@@ -77,11 +80,24 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let carrySeconds = 1.0
     private let orientation: @Sendable (Double) -> (orientation: simd_quatd, speed: Double)
 
-    init(orientation: @escaping @Sendable (Double) -> (orientation: simd_quatd, speed: Double)) {
+    private let correctYaw: @Sendable (Double) -> Void
+
+    init(orientation: @escaping @Sendable (Double) -> (orientation: simd_quatd, speed: Double),
+         correctYaw: @escaping @Sendable (Double) -> Void) {
         self.orientation = orientation
+        self.correctYaw = correctYaw
+    }
+
+    func disableYawCorrection() {
+        lock.withLock {
+            yawCorrectionEnabled = false
+            yawAnchor.reset()
+        }
     }
 
     var captureSession: AVCaptureSession { session }
+
+    var yawCorrectionDegrees: Double { lock.withLock { yawCorrectionTotal * 180 / .pi } }
 
     /// Получает на главном потоке каждое распознавание: рамку, точки лица и сдвиг шеи.
     func observe(_ handler: (@MainActor (CameraObservation) -> Void)?) {
@@ -118,6 +134,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     }
 
     func stop() {
+        disableYawCorrection()
         queue.async {
             self.session.stopRunning()
             self.flush()
@@ -183,12 +200,21 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         latencySum += arrival - captured
         latencyCount += 1
         lastLatency = arrival - captured
+        let yawPose = rectangles.results?.count == 1 ? face.flatMap { yawPose($0) } : nil
+        let correction = yawAnchor.update(pose: yawCorrectionEnabled && cameraDirection != nil ? yawPose : nil,
+                                          headYaw: head.yawPitch.yaw, speed: speed,
+                                          time: captured, latency: arrival - captured)
+        if correction != 0 {
+            correctYaw(correction)
+            yawCorrectionTotal += correction
+        }
+        let correctedHead = simd_quatd(angle: correction, axis: SIMD3(0, 1, 0)) * head
         if let face {
             faces += 1
             let position = camera.headPosition(face: face.boundingBox)
             spread.add(position, at: time)
             latestAngles = SIMD3(face.yaw?.doubleValue ?? .nan, face.pitch?.doubleValue ?? .nan, face.roll?.doubleValue ?? .nan)
-            trackNeck(face: measuredBox(face), cropped: isFaceCropped(face.boundingBox), head: head, speed: speed,
+            trackNeck(face: measuredBox(face), cropped: isFaceCropped(face.boundingBox), head: correctedHead, speed: speed,
                       time: captured, arrival: arrival)
         }
         let phase = currentPhase
@@ -297,6 +323,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             carry = currentOffset()
             carryStart = ProcessInfo.processInfo.systemUptime
             generation += 1
+            yawAnchor.reset()
+            yawCorrectionEnabled = true
+            yawCorrectionTotal = 0
             referenceNeck = nil
             referencePitch = nil
             cameraDirection = nil
@@ -311,6 +340,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     func worldYawChanged(by yawChange: Double) {
         lock.withLock {
             cameraDirection = cameraDirection.map { remainder($0 + yawChange, 2 * .pi) }
+            yawAnchor.worldYawChanged(by: yawChange)
             generation += 1
         }
     }
@@ -351,6 +381,28 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let offset = current - referenceNeck
         let length = simd_length(offset)
         return length > Self.maxOffset ? offset * (Self.maxOffset / length) : offset
+    }
+
+    /// Подпись поворота лица не зависит от сдвига рамки и её масштаба.
+    private func yawPose(_ face: VNFaceObservation) -> CameraYawAnchor.Pose? {
+        guard !isFaceCropped(face.boundingBox), face.confidence >= 0.9,
+              face.boundingBox.width > 0.12,
+              let yaw = face.yaw?.doubleValue, let pitch = face.pitch?.doubleValue,
+              let roll = face.roll?.doubleValue,
+              let left = face.landmarks?.leftEye, let right = face.landmarks?.rightEye,
+              let nose = face.landmarks?.noseCrest else { return nil }
+        func center(_ region: VNFaceLandmarkRegion2D) -> SIMD2<Double>? {
+            guard region.pointCount > 0 else { return nil }
+            return region.normalizedPoints.reduce(SIMD2<Double>.zero) {
+                $0 + SIMD2(Double($1.x), Double($1.y))
+            } / Double(region.pointCount)
+        }
+        guard let l = center(left), let r = center(right), let n = center(nose) else { return nil }
+        let eyeLine = r - l
+        let squared = simd_length_squared(eyeLine)
+        guard squared > 0.01 else { return nil }
+        let relativeNose = simd_dot(n - (l + r) / 2, eyeLine) / squared
+        return .init(yaw: yaw, pitch: pitch, roll: roll, nose: relativeNose)
     }
 
     private func faceOutline(_ face: VNFaceObservation) -> FaceOutline? {

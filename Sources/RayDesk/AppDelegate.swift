@@ -40,7 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
     private var cameraDebugWindow: CameraDebugWindow?
-    private lazy var cameraHead = CameraHeadTracker { [filter] uptime in (filter.orientation(atUptime: uptime), filter.angularSpeed) }
+    private lazy var cameraHead = CameraHeadTracker(
+        orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) },
+        correctYaw: { [filter] delta in filter.correctYaw(by: delta) }
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -637,6 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let renderer else { return }
         if renderer.headOffset != nil {
             renderer.headOffset = nil
+            cameraHead.disableYawCorrection()
             sender.state = .off
             log("wall mode off")
             return
@@ -747,6 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func logCameraHead() {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
+        log(String(format: "CAMERA yaw correction total %.2f°", cameraHead.yawCorrectionDegrees))
         guard let position = reading.position else {
             log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")
             return

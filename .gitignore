@@ -3,3 +3,6 @@ RayDesk.app/
 .swiftpm/
 .worktrees/
 tmp/
+.claude/
+.learning/
+output/

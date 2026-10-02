@@ -310,6 +310,21 @@ public final class OrientationFilter: @unchecked Sendable {
         return simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega)))
     }
 
+    /// Медленная внешняя поправка курса. Сохраняет наклон и согласованность истории
+    /// камеры; магнитные опоры сдвигаются вместе, чтобы компас не отменял поправку.
+    public func correctYaw(by delta: Double) {
+        guard delta.isFinite, abs(delta) <= .pi / 180 else { return }
+        lock.withLock {
+            guard initialized else { return }
+            let rotation = simd_quatd(angle: delta, axis: SIMD3(0, 1, 0))
+            q = simd_normalize(rotation * q)
+            for index in history.indices where history[index].time > 0 {
+                history[index].orientation = simd_normalize(rotation * history[index].orientation)
+            }
+            magneticReferences = magneticReferences.mapValues { remainder($0 + delta, 2 * .pi) }
+        }
+    }
+
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
     /// за верное: опора поля берётся заново со следующего принятого показания.
     public func alignYawToZero() {
