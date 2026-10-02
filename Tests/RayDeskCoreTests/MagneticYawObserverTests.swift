@@ -211,7 +211,6 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 6)
 }
 
-<<<<<<< HEAD
 @Test func rotatingTheWorldKeepsTheCompassFromPullingBack() {
     let filter = OrientationFilter()
     filter.magnetometerCalibration = calibration
@@ -232,7 +231,8 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
     filter.compassPaused = true
     _ = run(filter, seconds: 20, gyroBias: .zero, field: simd_quatd(angle: 0.3, axis: SIMD3(0, 1, 0)).act(earthField), initialYaw: trueYaw)
     #expect(abs(yawError(filter, trueYaw: trueYaw) - rotated) / degree < 0.2)
-=======
+}
+
 @Test func compassWaitsForHeadMotionToTurnTheWorld() {
     let filter = OrientationFilter()
     filter.magnetometerCalibration = calibration
@@ -262,5 +262,4 @@ private func yawError(_ filter: OrientationFilter, trueYaw: Double) -> Double {
         if abs(time - 60) < dt / 2 { settled = yawError(filter, trueYaw: trueYaw) }
     }
     #expect(abs(yawError(filter, trueYaw: trueYaw) - settled) / degree < 3)
->>>>>>> fef46dd (Компас поворачивает мир в основном во время движения головы и не верит курсу, искажённому наклоном)
 }
