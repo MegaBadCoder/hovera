@@ -23,7 +23,6 @@ public final class OrientationFilter: @unchecked Sendable {
     private var lastCompassError = 0.0
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
-    private var biasLearner = StillnessBiasLearner()
     private var restorer = FirmwareZeroRestorer()
     private var restoring = true
     private var learningWithCompass = false
