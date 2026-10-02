@@ -17,6 +17,7 @@
 - Если поле у очков изменилось (наушники, другое место), программа голосом просит перекалибровать компас.
 - Сетка горизонта и ручная настройка вида.
 - Чёткий текст: виртуальные мониторы работают в 1920×1080 без HiDPI, картинка ужимается до пикселей очков бикубическим фильтром с лёгким повышением резкости.
+- Экраны на стене по камере MacBook: RayDesk один раз учит форму очков на лице (меню «Выучить форму очков», 20 секунд покрутить головой), дальше находит их в кадре и переносит сдвиг головы в картинку. Точки лица считает модель MediaPipe, переведённая в CoreML; поворот головы берётся от гироскопа, поэтому слежение держится и там, где лицо уже не видно. Меню «Положение головы по очкам» и «Дополнительная калибровка камерой».
 
 ## Что нужно
 
@@ -109,6 +110,7 @@ defaults write local.raydesk recordIMU -bool true
 - [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) и [Breezy Desktop](https://github.com/wheaney/breezy-desktop)
 - [Fusion](https://github.com/xioTechnologies/Fusion)
 - [XRealDesk](https://github.com/PlunderStruck/XRealDesk)
+- [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) — сеть точек лица (Apache 2.0), переведена в CoreML скриптом `tools/facemesh-coreml`
 
 ## Лицензия
 

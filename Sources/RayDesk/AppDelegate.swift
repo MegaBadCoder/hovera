@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var glassesView: MTKView?
     private var frameLink: CADisplayLink?
+    private var lastRenderedFrame = CACurrentMediaTime()
+    private var renderStalled = false
     private var renderer: Renderer?
     private var isCalibrating = false
     private var statusTicks = 0
@@ -44,8 +46,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) },
         correctYaw: { [filter] delta in filter.correctYaw(by: delta) }
     )
+    private let glassesVision = GlassesVision()
+    private let watchdog = MainThreadWatchdog()
+    private var glassesTrackingItem: NSMenuItem?
+    private var wallModeItem: NSMenuItem?
+    private var learningGlasses = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        watchdog.start()
         setupMenu()
         setupHotkeys()
         setupMouseTap()
@@ -55,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        useLightGlassesMode()
         slots = scene.screens.indices.map { ScreenSlot(index: $0) }
         saveScene()
         arrangeDisplays()
@@ -63,6 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadGyroBias()
         loadGyroScale()
         loadMacAnchor()
+        cameraHead.turnWorld = { [filter] angle in filter.rotateWorldYaw(by: angle) }
+        if UserDefaults.standard.bool(forKey: "glassesTracking") {
+            glassesVision.start()
+            cameraHead.useGlasses(glassesVision)
+        }
+        filter.restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
         imu = GlassesIMU(filter: filter)
         if UserDefaults.standard.bool(forKey: "recordIMU") {
             imu?.recorder = IMURecorder()
@@ -71,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.fitWindowToGlasses()
+            self?.restartFrameLink()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
@@ -88,6 +104,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func glassesScreen() -> NSScreen? {
         NSScreen.screens.first { $0.localizedName.localizedCaseInsensitiveContains("SmartGlasses") || $0.localizedName.localizedCaseInsensitiveContains("RayNeo") }
+    }
+
+    private func useLightGlassesMode() {
+        guard let id = glassesScreen()?.displayID, let current = CGDisplayCopyDisplayMode(id) else { return }
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []).filter {
+            $0.width == 1920 && $0.height == 1080 && $0.pixelWidth == 1920 && $0.pixelHeight == 1080 && $0.isUsableForDesktopGUI()
+        }
+        guard let target = modes.min(by: { abs($0.refreshRate - 60) < abs($1.refreshRate - 60) }) else {
+            log("glasses display: no plain 1920x1080 mode")
+            return
+        }
+        guard current.pixelWidth != target.pixelWidth || current.pixelHeight != target.pixelHeight
+                || abs(current.refreshRate - target.refreshRate) > 0.5 else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, id, target, nil)
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        log(String(format: "glasses display: %dx%d pixels @%.0f Hz -> %dx%d @%.0f Hz (%d)", current.pixelWidth, current.pixelHeight,
+                   current.refreshRate, target.pixelWidth, target.pixelHeight, target.refreshRate, result.rawValue))
     }
 
     private func arrangeDisplays() {
@@ -128,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func renderFrame() {
+        lastRenderedFrame = CACurrentMediaTime()
         glassesView?.draw()
     }
 
@@ -193,12 +230,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.enableSetNeedsDisplay = false
         window.contentView = view
         glassesView = view
-        let link = screen.displayLink(target: self, selector: #selector(renderFrame))
-        link.add(to: .main, forMode: .common)
-        frameLink = link
         window.orderFrontRegardless()
         self.window = window
         self.renderer = renderer
+        restartFrameLink()
+        if UserDefaults.standard.bool(forKey: "wallMode"), let wallModeItem {
+            toggleWallMode(wallModeItem)
+        }
+    }
+
+    private func restartFrameLink() {
+        guard let screen = glassesScreen() else { return }
+        frameLink?.invalidate()
+        let link = screen.displayLink(target: self, selector: #selector(renderFrame))
+        link.add(to: .main, forMode: .common)
+        frameLink = link
+        lastRenderedFrame = CACurrentMediaTime()
+    }
+
+    private func watchRendering() {
+        guard window != nil, glassesScreen() != nil else { return }
+        let silent = CACurrentMediaTime() - lastRenderedFrame
+        guard silent > 1 else {
+            if renderStalled { log("render resumed") }
+            renderStalled = false
+            return
+        }
+        if !renderStalled { log(String(format: "render stalled for %.1f s, restarting the display link", silent)) }
+        renderStalled = true
+        fitWindowToGlasses()
+        restartFrameLink()
     }
 
     private func fitWindowToGlasses() {
@@ -574,6 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
             cameraHead.worldYawChanged(by: target - filterYaw)
+            if glassesTracking { cameraHead.resetReference(after: 0.3) }
         }
         NSSound(named: "Tink")?.play()
     }
@@ -588,6 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
             cameraHead.worldYawChanged(by: -yaw)
+            if glassesTracking { cameraHead.resetReference(after: 0.3) }
         }
     }
 
@@ -626,7 +689,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var wallDepthStrength: Double {
-        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? 0.25
+        UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? (glassesTracking ? 1 : 0.25)
+    }
+
+    @objc private func chooseCameraFieldOfView(_ sender: NSMenuItem) {
+        guard let degrees = sender.representedObject as? Int else { return }
+        UserDefaults.standard.set(Double(degrees), forKey: "cameraFieldOfView")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == degrees ? .on : .off }
+        cameraHead.resetReference(after: 0.3)
+        log("camera field of view \(degrees)°")
     }
 
     @objc private func chooseWallDepth(_ sender: NSMenuItem) {
@@ -642,12 +713,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renderer.headOffset = nil
             cameraHead.disableYawCorrection()
             sender.state = .off
+            UserDefaults.standard.set(false, forKey: "wallMode")
             log("wall mode off")
             return
         }
+        UserDefaults.standard.set(true, forKey: "wallMode")
         let enable = { [weak self] in
             guard let self, let renderer = self.renderer else { return }
-            cameraHead.resetReference(after: 4)
+            cameraHead.resetReference(after: glassesTracking ? 1 : 4)
             var referenceHead: simd_quatd?
             var generation = -1
             renderer.headOffset = { [cameraHead, weak self] head in
@@ -662,7 +735,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return neck + eyeArcOffset(head: head, reference: referenceHead)
             }
             sender.state = .on
-            say("Дополнительная калибровка камерой включена. Сядьте удобно и посмотрите в камеру ноутбука, через пару секунд я запомню, где она.")
+            say(glassesTracking ? "Калибровка камерой включена. Посидите спокойно секунду, я запомню положение головы."
+                : "Дополнительная калибровка камерой включена. Сядьте удобно и посмотрите в камеру ноутбука, через пару секунд я запомню, где она.")
             log("wall mode on")
         }
         if cameraHead.isRunning {
@@ -677,6 +751,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             log("camera head tracking on")
             enable()
+        }
+    }
+
+    @MainActor @objc private func toggleGlassesTracking(_ sender: NSMenuItem) {
+        setGlassesTracking(sender.state != .on)
+    }
+
+    private var glassesTracking: Bool { UserDefaults.standard.bool(forKey: "glassesTracking") }
+
+    @MainActor private func setGlassesTracking(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "glassesTracking")
+        glassesTrackingItem?.state = enabled ? .on : .off
+        if enabled { glassesVision.start() }
+        cameraHead.useGlasses(enabled ? glassesVision : nil)
+        if renderer?.headOffset != nil { cameraHead.resetReference(after: 1) }
+        log("glasses tracking \(enabled ? "on" : "off")")
+    }
+
+    @MainActor @objc private func toggleGlassesLearning(_ sender: NSMenuItem) {
+        if learningGlasses {
+            learningGlasses = false
+            sender.state = .off
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let points = await glassesVision.stopLearning() ?? 0
+                log("glasses shape learned: \(points) points")
+                say(points > 0 ? "Форма очков запомнена." : "Форма очков не набралась. Проверьте, что лицо видно в камеру, и попробуйте ещё раз.")
+            }
+            return
+        }
+        setGlassesTracking(true)
+        learningGlasses = true
+        sender.state = .on
+        let begin = { @MainActor [weak self] in
+            guard let self else { return }
+            glassesVision.start {
+                Task { @MainActor [weak self] in
+                    guard let self, learningGlasses else { return }
+                    await glassesVision.startLearning()
+                    say("Смотрите в камеру ноутбука и секунд двадцать медленно крутите головой влево, вправо, вверх и вниз. Руки держите подальше от лица. Потом выберите этот пункт ещё раз.")
+                }
+            }
+        }
+        if cameraHead.isRunning {
+            begin()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                self?.learningGlasses = false
+                sender.state = .off
+                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                return
+            }
+            log("camera head tracking on")
+            begin()
         }
     }
 
@@ -752,6 +883,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
         log(String(format: "CAMERA yaw correction total %.2f°", cameraHead.yawCorrectionDegrees))
+        if let glasses = reading.glassesPerSecond {
+            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°, уплывание гироскопа %.2f°/с, масштаб курса камеры %.2f",
+                       glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100,
+                       (reading.headingDrift ?? .nan) * 180 / .pi, reading.headingCorrection * 180 / .pi,
+                       reading.headingRate * 180 / .pi, reading.faceYawScale))
+        }
         guard let position = reading.position else {
             log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")
             return
@@ -1043,8 +1180,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
         menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
         menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
-        menu.addItem(menuItem("Дополнительная калибровка камерой (эксперимент)", #selector(toggleWallMode(_:))))
+        let wallItem = menuItem("Дополнительная калибровка камерой (эксперимент)", #selector(toggleWallMode(_:)))
+        wallModeItem = wallItem
+        menu.addItem(wallItem)
+        let glassesItem = menuItem("Положение головы по очкам (MediaPipe, проба)", #selector(toggleGlassesTracking(_:)))
+        glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
+        glassesTrackingItem = glassesItem
+        menu.addItem(glassesItem)
+        menu.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
         menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
+        let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
+        let angles = NSMenu()
+        let currentAngle = UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70
+        for degrees in [60, 70, 80, 90, 100, 110] {
+            let option = menuItem("\(degrees)°", #selector(chooseCameraFieldOfView(_:)))
+            option.representedObject = degrees
+            option.state = Double(degrees) == currentAngle ? .on : .off
+            angles.addItem(option)
+        }
+        fieldOfView.submenu = angles
+        menu.addItem(fieldOfView)
         let depth = NSMenuItem(title: "Калибровка камерой: сила вперёд-назад", action: nil, keyEquivalent: "")
         let strengths = NSMenu()
         for percent in [25, 50, 75, 100] {
@@ -1102,6 +1257,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
+        watchRendering()
+        let cameraHoldsHeading = cameraHead.isRunning && cameraHead.correctsHeading
+        if filter.compassPaused != cameraHoldsHeading {
+            filter.compassPaused = cameraHoldsHeading
+            log(cameraHoldsHeading ? "compass paused: the camera holds the heading" : "compass resumed")
+        }
         logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch

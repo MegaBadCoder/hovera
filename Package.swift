@@ -11,6 +11,7 @@ let package = Package(
             name: "RayDesk",
             dependencies: ["CGVirtualDisplayPrivate", "RayDeskCore"],
             path: "Sources/RayDesk",
+            exclude: ["Models"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

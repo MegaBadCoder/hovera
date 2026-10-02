@@ -7,6 +7,7 @@ final class CameraDebugWindow {
     private let preview: AVCaptureVideoPreviewLayer
     private let boxLayer = CAShapeLayer()
     private let pointsLayer = CAShapeLayer()
+    private let glassesLayer = CAShapeLayer()
     private let textLayer = CATextLayer()
 
     init(session: AVCaptureSession, on screen: NSScreen?) {
@@ -25,7 +26,7 @@ final class CameraDebugWindow {
         preview.frame = view.bounds
         preview.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(preview)
-        for layer in [boxLayer, pointsLayer] {
+        for layer in [boxLayer, pointsLayer, glassesLayer] {
             layer.isGeometryFlipped = true
             layer.frame = view.bounds
             layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -34,7 +35,9 @@ final class CameraDebugWindow {
         }
         boxLayer.lineWidth = 3
         pointsLayer.fillColor = NSColor.systemYellow.cgColor
-        textLayer.frame = NSRect(x: 12, y: 12, width: size.width - 24, height: 70)
+        glassesLayer.fillColor = NSColor.systemTeal.cgColor
+        textLayer.frame = NSRect(x: 12, y: 12, width: size.width - 24, height: 118)
+        textLayer.isWrapped = true
         textLayer.autoresizingMask = [.layerWidthSizable]
         textLayer.fontSize = 18
         textLayer.foregroundColor = NSColor.white.cgColor
@@ -58,10 +61,16 @@ final class CameraDebugWindow {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
+        let glassesDots = CGMutablePath()
+        for point in observation.glassesPoints {
+            let p = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: point.x, y: 1 - point.y))
+            glassesDots.addEllipse(in: CGRect(x: p.x - 1.5, y: p.y - 1.5, width: 3, height: 3))
+        }
+        glassesLayer.path = glassesDots
         guard let face = observation.face else {
             boxLayer.path = nil
             pointsLayer.path = nil
-            textLayer.string = "лицо не найдено"
+            textLayer.string = observation.glassesNote ?? "лицо не найдено"
             return
         }
         let rect = preview.layerRectConverted(fromMetadataOutputRect: CGRect(x: face.minX, y: 1 - face.maxY, width: face.width, height: face.height))
@@ -74,14 +83,15 @@ final class CameraDebugWindow {
         let dots = CGMutablePath()
         for point in observation.landmarks {
             let p = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: point.x, y: 1 - point.y))
-            dots.addEllipse(in: CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4))
+            let radius = observation.glassesNote == nil ? 2.0 : 1.0
+            dots.addEllipse(in: CGRect(x: p.x - radius, y: p.y - radius, width: 2 * radius, height: 2 * radius))
         }
         pointsLayer.path = dots
         let neck = observation.neckOffset * 100
         let degree = 180 / Double.pi
         textLayer.string = String(format: " шея: x %+.1f  y %+.1f  z %+.1f см\n от камеры: поворот %+.0f°  наклон %+.0f°  рамка %.3f%@",
                                   neck.x, neck.y, neck.z, observation.turn.x * degree, observation.turn.y * degree, face.width,
-                                  verdictText(observation.verdict))
+                                  verdictText(observation.verdict)) + (observation.glassesNote.map { "\n " + $0 } ?? "")
     }
 
     private func verdictText(_ verdict: CameraFrameVerdict) -> String {

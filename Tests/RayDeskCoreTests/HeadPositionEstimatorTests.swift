@@ -145,3 +145,63 @@ private func turnedFace(from rest: CGRect, yaw: Double, pitch: Double = 0) -> CG
     }
     #expect(abs(abs(try! #require(reference).cameraYaw) - .pi) < 0.01)
 }
+
+@Test func glassesStraightAtTheCameraSitInFrontOfAndAboveTheNeck() {
+    let glasses = SIMD3<Double>(0.01, 0.02, 0.55)
+    let neck = neckPosition(fromGlasses: glasses, yaw: 0, pitch: 0)
+    #expect(simd_length(neck - SIMD3(0.01, 0.02 - glassesFromNeck.up, 0.55 + glassesFromNeck.forward)) < 1e-12)
+}
+
+@Test func turningAndTiltingTheHeadDoesNotMoveTheNeckFoundByGlasses() {
+    let neck = SIMD3<Double>(-0.03, 0.01, 0.62)
+    for (yaw, pitch) in [(0.4, 0.0), (-0.7, 0.2), (0.3, -0.35), (0.0, -0.5)] {
+        let head = simd_quatd(angle: -yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: pitch, axis: SIMD3(1, 0, 0))
+        let facing = SIMD3(0.0, glassesFromNeck.up, -glassesFromNeck.forward)
+        let glasses = neck + head.act(facing)
+        #expect(simd_length(neckPosition(fromGlasses: glasses, yaw: yaw, pitch: pitch) - neck) < 1e-12)
+    }
+}
+
+@Test func glassesAndEyeArcAgreeOnWhereTheNeckIs() {
+    let reference = simd_quatd(angle: 0, axis: SIMD3(0, 1, 0))
+    let nod = simd_quatd(angle: -0.5, axis: SIMD3(1, 0, 0))
+    let eyeMove = eyeArcOffset(head: nod, reference: reference)
+    let glassesBefore = SIMD3(0.0, glassesFromNeck.up, -glassesFromNeck.forward)
+    let glassesMove = nod.act(glassesBefore) - glassesBefore
+    #expect(simd_length(eyeMove - glassesMove) < 0.012)
+}
+
+@Test func depthIsNotCorrectedWhenFacingTheCamera() {
+    #expect(depthCorrectedForTurn(0.8, turn: .zero) == 0.8)
+}
+
+@Test func turnedHeadIsPushedBackByTheMeasuredStretch() {
+    let corrected = depthCorrectedForTurn(0.8, turn: SIMD2(52 * Double.pi / 180, 0))
+    #expect(abs(corrected - 0.8 * (1 + turnDepthStretch * (1 - cos(52 * Double.pi / 180)))) < 1e-12)
+    #expect(corrected > 0.85)
+}
+
+@Test func tiltChangesTheMeasuredDepthOnlySlightly() {
+    let down = depthCorrectedForTurn(0.8, turn: SIMD2(0, -35 * Double.pi / 180))
+    let up = depthCorrectedForTurn(0.8, turn: SIMD2(0, 20 * Double.pi / 180))
+    #expect(abs(down - 0.8 * (1 + 0.10 * sin(35 * Double.pi / 180))) < 1e-12)
+    #expect(abs(up / 0.8 - 1) < 0.04)
+}
+
+@Test func tiltingTheHeadToAShoulderDoesNotMoveTheNeckFoundByGlasses() {
+    let neck = SIMD3<Double>(0.02, -0.01, 0.9)
+    for (yaw, pitch, roll) in [(0.0, 0.0, 0.5), (-0.45, 0.3, 0.85), (0.5, 0.2, -0.8)] {
+        let turn = simd_quatd(angle: -yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: pitch, axis: SIMD3(1, 0, 0))
+        let pivot = neck + turn.act(SIMD3(0, glassesFromNeck.up - sideBendRadius, -glassesFromNeck.forward))
+        let glasses = pivot + (turn * simd_quatd(angle: -roll, axis: SIMD3(0, 0, 1))).act(SIMD3(0, sideBendRadius, 0))
+        #expect(simd_length(neckPosition(fromGlasses: glasses, yaw: yaw, pitch: pitch, roll: roll) - neck) < 1e-12)
+    }
+}
+
+@Test func sideTiltIgnoresWhereTheHeadIsTurned() {
+    let tilt = simd_quatd(angle: 0.4, axis: SIMD3(0, 0, 1))
+    for yaw in [-1.2, 0.0, 0.7, 2.5] {
+        let head = simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: -0.2, axis: SIMD3(1, 0, 0)) * tilt
+        #expect(abs(head.sideTilt - 0.4) < 1e-12)
+    }
+}

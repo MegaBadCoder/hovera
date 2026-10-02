@@ -17,6 +17,7 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 - Voice prompt to recalibrate the compass when something magnetic near the glasses changes the field (earbuds, a new seat).
 - Horizon grid and manual view calibration.
 - Crisp text: virtual monitors run at 1920×1080 without HiDPI, and the picture is scaled down to the glasses' pixels with a bicubic filter plus light sharpening.
+- Screens pinned to the wall using the MacBook camera: RayDesk learns the shape of the glasses on your face once (menu "Learn glasses shape", turn your head for 20 seconds), then finds them in each frame and moves the picture with your head. Face points come from the MediaPipe face landmark model converted to CoreML; head rotation comes from the gyroscope, so tracking holds even where the face is no longer visible. Menu items "Head position from glasses" and "Camera calibration" (menu titles are in Russian for now).
 
 ## Requirements
 
@@ -103,6 +104,7 @@ Protocol details and ideas came from these open projects:
 - [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) and [Breezy Desktop](https://github.com/wheaney/breezy-desktop)
 - [Fusion](https://github.com/xioTechnologies/Fusion)
 - [XRealDesk](https://github.com/PlunderStruck/XRealDesk)
+- [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) — face landmark network (Apache 2.0), converted to CoreML by `tools/facemesh-coreml`
 
 ## License
 
