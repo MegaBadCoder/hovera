@@ -136,7 +136,7 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
     #expect(corrector.step(headYaw: 1, cameraYaw: 0, faceTurn: SIMD2(40 * degree, 0), dt: 0.033) == 0)
 }
 
-@Test func headingIsFixedFasterWhileTheHeadIsTurning() {
+@Test func fastHeadMotionDoesNotApplyOldHeadingError() {
     var still = CameraYawCorrector(), moving = CameraYawCorrector()
     var stillShift = still.step(headYaw: 4 * degree, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
     var movingShift = moving.step(headYaw: 4 * degree, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
@@ -146,7 +146,7 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
                                    headSpeed: 60 * degree)
     }
     #expect(abs(stillShift) <= 1.05 * degree)
-    #expect(abs(movingShift) > 1.5 * degree)
+    #expect(abs(movingShift) < 0.1 * degree)
     #expect(abs(movingShift) <= moving.maxMotionRate * 31 / 30 + 0.05 * degree)
 }
 
@@ -164,7 +164,7 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
     #expect(abs(shift) < 1.5 * degree)
 }
 
-@Test func steadyGyroDriftIsLearnedAndHeldWhileTheFaceIsAway() {
+@Test func steadyGyroDriftIsLearnedButCoastingStopsWithoutFreshEvidence() {
     var corrector = CameraYawCorrector()
     let rate = 0.4 * degree
     var gyroError = 0.0, worldShift = 0.0
@@ -179,7 +179,8 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         gyroError += rate * dt
         worldShift += corrector.coast(dt: dt)
     }
-    #expect(abs(gyroError + worldShift - before) < 1 * degree)
+    #expect(abs((gyroError + worldShift - before) - rate * 10) < 0.25 * degree)
+    #expect(corrector.coast(dt: dt) == 0)
 }
 
 private func angleBetween(_ a: simd_double3x3, _ b: simd_double3x3) -> Double {
@@ -255,4 +256,41 @@ private func angleBetween(_ a: simd_double3x3, _ b: simd_double3x3) -> Double {
     let learned = try! #require(alignment.rotation)
     #expect(angleBetween(learned, worldToCamera) < 2 * degree)
     #expect(alignment.residual < 1 * degree)
+}
+
+@Test func fixedFaceModelOffsetDoesNotBecomeAnInventedDriftRate() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    for _ in 0..<5400 {
+        shift += corrector.step(headYaw: 1 * degree + shift, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+    }
+    #expect(abs(corrector.driftRate) < 1e-10)
+    #expect(abs(shift) < 1e-10)
+}
+
+@Test func smallCameraErrorDoesNotTurnWorldWhenHeadStartsMoving() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    for frame in 0..<900 {
+        let speed = (frame % 2 == 0 ? 4.9 : 5.1) * degree
+        shift += corrector.step(headYaw: shift, cameraYaw: 0,
+                                faceTurn: SIMD2(-1 * degree, 0), dt: 1.0 / 30, headSpeed: speed)
+    }
+    #expect(abs(shift) < 1e-12)
+}
+
+@Test func learnedRateDoesNotMoveWorldInsideCameraNoiseBand() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    for frame in 0..<5400 {
+        shift += corrector.step(headYaw: Double(frame) / 30 * 0.4 * degree + shift,
+                                cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+    }
+    #expect(abs(corrector.driftRate) > 0.1 * degree)
+    // Let the filtered measurement settle before checking the noise band.
+    for _ in 0..<600 {
+        _ = corrector.step(headYaw: 0, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+    }
+    let step = corrector.step(headYaw: 0, cameraYaw: 0, faceTurn: .zero, dt: 1.0 / 30)
+    #expect(abs(step) < 1e-12)
 }

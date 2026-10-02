@@ -330,17 +330,27 @@ public final class OrientationFilter: @unchecked Sendable {
     /// они поворачиваются вместе с миром, поэтому компас не тянет курс обратно.
     public func rotateWorldYaw(by angle: Double) {
         lock.lock()
-        q = simd_normalize(simd_quatd(angle: angle, axis: SIMD3(0, 1, 0)) * q)
+        rotateOrientationAndHistory(by: angle)
         for (sector, heading) in magneticReferences {
             magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
         }
         lock.unlock()
     }
 
+    /// Вызывается под lock: прошлые кадры камеры должны использовать те же оси мира.
+    private func rotateOrientationAndHistory(by angle: Double) {
+        let rotation = simd_quatd(angle: angle, axis: SIMD3(0, 1, 0))
+        q = simd_normalize(rotation * q)
+        for step in 0..<historyCount {
+            let index = (historyNext + Self.historySize - 1 - step) % Self.historySize
+            history[index].orientation = simd_normalize(rotation * history[index].orientation)
+        }
+    }
+
     public func alignYaw(to target: Double) {
         lock.lock()
         let yp = q.yawPitch
-        q = simd_quatd(angle: target - yp.yaw, axis: SIMD3(0, 1, 0)) * q
+        rotateOrientationAndHistory(by: target - yp.yaw)
         magneticReferences = [:]
         lastCompassError = 0
         lock.unlock()

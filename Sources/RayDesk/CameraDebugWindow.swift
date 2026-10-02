@@ -87,6 +87,10 @@ final class CameraDebugWindow {
             dots.addEllipse(in: CGRect(x: p.x - radius, y: p.y - radius, width: 2 * radius, height: 2 * radius))
         }
         pointsLayer.path = dots
+        if observation.headingOnly {
+            textLayer.string = observation.glassesNote
+            return
+        }
         let neck = observation.neckOffset * 100
         let degree = 180 / Double.pi
         textLayer.string = String(format: " шея: x %+.1f  y %+.1f  z %+.1f см\n от камеры: поворот %+.0f°  наклон %+.0f°  рамка %.3f%@",

@@ -223,8 +223,8 @@ public struct CameraYawCorrector: Sendable {
     public var stillFastFrom = 3 * Double.pi / 180
     /// На сколько рад/с растёт предел скорости в покое на каждый радиан расхождения сверх `stillFastFrom`.
     public var stillFastShare = 0.3
-    /// Как быстро учится постоянная скорость уплывания, доля расхождения в секунду за секунду.
-    public var rateGain = 0.005
+    /// Постоянная времени обучения скорости по изменению ошибки, секунды.
+    public var rateTimeConstant = 30.0
     /// Скорость уплывания учится только на расхождениях меньше этого, радианы: крупные — это переходы после поворотов.
     public var rateLearningBelow = 5 * Double.pi / 180
     /// Предел выученной скорости уплывания, рад/с.
@@ -233,22 +233,30 @@ public struct CameraYawCorrector: Sendable {
     public private(set) var drift: Double?
     /// Выученная постоянная скорость уплывания курса по гироскопу, рад/с, плюс — влево.
     public private(set) var driftRate = 0.0
+    private var rateProbe: (error: Double, turn: SIMD2<Double>, elapsed: Double, correction: Double)?
+    private var unmeasuredSeconds = 0.0
 
     public init() {}
 
     /// Забывает накопленное расхождение; выученная скорость уплывания остаётся.
     public mutating func reset() {
         drift = nil
+        rateProbe = nil
+        unmeasuredSeconds = 0
     }
 
-    /// Кадр без лица: мир доворачивается только на выученную скорость уплывания.
+    /// Кадр без измерения: выученная поправка затухает до нуля за одну секунду.
     ///
     /// - Parameter dt: время с прошлого кадра, секунды.
     /// - Returns: на сколько довернуть мир вокруг вертикали, радианы.
     public mutating func coast(dt: Double) -> Double {
-        guard dt > 0 else { return 0 }
-        drift = drift.map { $0 - driftRate * dt }
-        return -driftRate * dt
+        guard dt.isFinite, dt > 0 else { return 0 }
+        rateProbe = nil
+        unmeasuredSeconds += dt
+        let fade = max(0, 1 - unmeasuredSeconds)
+        let rotation = -driftRate * dt * fade
+        drift = drift.map { $0 + rotation }
+        return rotation
     }
 
     /// Один кадр камеры.
@@ -261,24 +269,38 @@ public struct CameraYawCorrector: Sendable {
     ///   - headSpeed: скорость поворота головы, рад/с.
     /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево). Кадры, где голова
     ///   отвёрнута сильнее `maxTurn` или движется быстрее `measureSpeed`, расхождение не меняют: по ним
-    ///   мир доворачивается только на уже измеренное.
+    ///   поправка плавно затухает, чтобы старое измерение не вращало мир.
     public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double,
                               headSpeed: Double = 0) -> Double {
         guard dt > 0 else { return 0 }
         let measurable = abs(faceTurn.x) < maxTurn && abs(faceTurn.y) < maxTurn && abs(headSpeed) < measureSpeed
+        guard measurable, headYaw.isFinite, cameraYaw.isFinite, dt.isFinite, dt <= 0.2 else { return coast(dt: dt) }
+        unmeasuredSeconds = 0
         let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
-        guard let smoothed = measurable ? drift.map({ $0 + remainder(measured - $0, 2 * .pi) * smoothing }) ?? measured : drift
-        else { return 0 }
-        if measurable, abs(smoothed) < rateLearningBelow {
-            driftRate = max(-maxDriftRate, min(maxDriftRate, driftRate + rateGain * smoothed * dt))
-        }
+        let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
+        if abs(headSpeed) < stillSpeed, abs(measured) < rateLearningBelow {
+            if var probe = rateProbe, simd_length(faceTurn - probe.turn) < Double.pi / 180 {
+                probe.elapsed += dt
+                if probe.elapsed >= 2 {
+                    let observed = (remainder(measured - probe.error, 2 * .pi) - probe.correction) / probe.elapsed
+                    if abs(observed) <= maxDriftRate {
+                        driftRate += (observed - driftRate) * (1 - exp(-probe.elapsed / rateTimeConstant))
+                    }
+                    rateProbe = (measured, faceTurn, 0, 0)
+                } else { rateProbe = probe }
+            } else { rateProbe = (measured, faceTurn, 0, 0) }
+        } else { rateProbe = nil }
         let still = abs(headSpeed) < stillSpeed
-        let error = still ? (smoothed > 0 ? 1.0 : -1.0) * max(0, abs(smoothed) - stillDeadband) : smoothed
+        // Camera uncertainty does not disappear when the head starts moving.
+        let error = (smoothed > 0 ? 1.0 : -1.0) * max(0, abs(smoothed) - stillDeadband)
         let limit = still ? stillMaxRate + stillFastShare * max(0, abs(smoothed) - stillFastFrom)
             : min(maxRate + motionShare * abs(headSpeed), maxMotionRate)
         let correction = max(-limit, min(limit, (still ? stillGain : gain) * error))
-        let rotation = -(abs(smoothed) > stillFastFrom ? correction : driftRate + correction) * dt
+        // A learned rate alone is not evidence that a small current discrepancy needs correction.
+        let feedForward = abs(smoothed) > stillDeadband && abs(smoothed) <= stillFastFrom ? driftRate : 0
+        let rotation = -(feedForward + correction) * dt
         drift = smoothed + rotation
+        rateProbe?.correction += rotation
         return rotation
     }
 }
@@ -286,41 +308,59 @@ public struct CameraYawCorrector: Sendable {
 /// Во сколько раз курс по модели лица больше настоящего поворота головы. Настоящий поворот даёт гироскоп,
 /// его масштаб откалиброван на столе. Модель лица обычно завышает курс на 10–20 %, и от сессии к сессии по-разному.
 public struct FaceYawScale: Sendable {
-    /// Медиана отношений; единица, пока их мало.
     public private(set) var scale = 1.0
-    /// Сколько отношений накоплено.
     public var count: Int { ratios.count }
     private var history: [(time: Double, gyro: Double, face: Double)] = []
-    private var ratios: [Double] = []
+    private var ratios: [(value: Double, direction: Double)] = []
+    private var previousTime: Double?
     static let step = 1.0
-    static let minTurn = 8 * Double.pi / 180
+    static let minTurn = 15 * Double.pi / 180
     static let maxTurn = 40 * Double.pi / 180
     static let maxFaceTurn = 25 * Double.pi / 180
     static let maxRatios = 200
     static let minRatios = 30
     static let range = 0.8...1.4
 
-    public init() {}
+    public init(scale: Double = 1) {
+        self.scale = scale.isFinite && Self.range.contains(scale) ? scale : 1
+    }
 
-    /// Добавляет кадр, где видно лицо.
-    ///
-    /// - Parameters:
-    ///   - time: время кадра, секунды.
-    ///   - gyroYaw: курс головы по гироскопу, радианы.
-    ///   - faceYaw: поворот головы от камеры по модели лица, радианы.
+    /// Потеря лица, смена источника или recenter: не сравнивать кадры через разрыв.
+    /// Подтверждённый масштаб сохраняется, незавершённое обучение забывается.
+    public mutating func interrupt() {
+        history.removeAll()
+        ratios.removeAll()
+        previousTime = nil
+    }
+
+    /// Поправка мира не является физическим поворотом головы.
+    public mutating func worldYawChanged(by delta: Double) {
+        history = history.map { ($0.time, $0.gyro + delta, $0.face) }
+    }
+
     public mutating func add(time: Double, gyroYaw: Double, faceYaw: Double) {
-        guard abs(faceYaw) < Self.maxFaceTurn else { return }
+        guard time.isFinite, gyroYaw.isFinite, faceYaw.isFinite,
+              abs(faceYaw) < Self.maxFaceTurn else { interrupt(); return }
+        let dt = previousTime.map { time - $0 } ?? 0
+        if previousTime != nil && (dt <= 0 || dt > 0.2) { interrupt() }
+        previousTime = time
         history.append((time, gyroYaw, faceYaw))
-        while let first = history.first, time - first.time > Self.step {
+        while let first = history.first, time - first.time >= Self.step {
             history.removeFirst()
             let gyro = remainder(gyroYaw - first.gyro, 2 * .pi), face = faceYaw - first.face
             guard abs(gyro) >= Self.minTurn, abs(gyro) <= Self.maxTurn else { continue }
-            ratios.append(face / gyro)
+            let ratio = face / gyro
+            guard Self.range.contains(ratio) else { continue }
+            ratios.append((ratio, gyro))
             if ratios.count > Self.maxRatios { ratios.removeFirst() }
-            if ratios.count >= Self.minRatios {
-                let median = ratios.sorted()[ratios.count / 2]
-                scale = min(Self.range.upperBound, max(Self.range.lowerBound, median))
-            }
         }
+        // Один проход или шум в покое не калибруют масштаб.
+        guard ratios.filter({ $0.direction > 0 }).count >= Self.minRatios / 2,
+              ratios.filter({ $0.direction < 0 }).count >= Self.minRatios / 2,
+              dt > 0, dt <= 0.2 else { return }
+        let target = ratios.map(\.value).sorted()[ratios.count / 2]
+        // Не менять угловую геометрию скачком: максимум один процент в секунду.
+        let limit = 0.01 * dt
+        scale += max(-limit, min(limit, target - scale))
     }
 }
