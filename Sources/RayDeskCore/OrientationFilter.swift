@@ -321,8 +321,11 @@ public final class OrientationFilter: @unchecked Sendable {
     /// Медленная внешняя поправка курса (якорь камеры). Ограничена одним градусом за вызов
     /// и делегирует `rotateWorldYaw(by:)`.
     public func correctYaw(by delta: Double) {
-        guard delta.isFinite, abs(delta) <= .pi / 180, isReady else { return }
-        rotateWorldYaw(by: delta)
+        guard delta.isFinite, abs(delta) <= .pi / 180 else { return }
+        lock.lock()
+        guard initialized else { lock.unlock(); return }
+        rotateWorldYawLocked(by: delta)
+        lock.unlock()
     }
 
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
@@ -337,6 +340,11 @@ public final class OrientationFilter: @unchecked Sendable {
     /// недокрученный мир и поправка сама себя отменяет.
     public func rotateWorldYaw(by angle: Double) {
         lock.lock()
+        rotateWorldYawLocked(by: angle)
+        lock.unlock()
+    }
+
+    private func rotateWorldYawLocked(by angle: Double) {
         let rotation = simd_quatd(angle: angle, axis: SIMD3(0, 1, 0))
         q = simd_normalize(rotation * q)
         for index in history.indices where history[index].time > 0 {
@@ -345,7 +353,6 @@ public final class OrientationFilter: @unchecked Sendable {
         for (sector, heading) in magneticReferences {
             magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
         }
-        lock.unlock()
     }
 
     public func alignYaw(to target: Double) {
