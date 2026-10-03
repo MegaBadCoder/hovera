@@ -44,87 +44,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cameraDebugWindow: CameraDebugWindow?
     private var cameraCalibrationWindow: CameraCalibrationWindow?
     private lazy var cameraHead = CameraHeadTracker(
-        orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) },
-        correctYaw: { [filter] delta in filter.correctYaw(by: delta) }
+        orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) }
     )
     private let glassesVision = GlassesVision()
     private let watchdog = MainThreadWatchdog()
     private var glassesTrackingItem: NSMenuItem?
-    private var aprilTagItem: NSMenuItem?
-    private var aprilTagFOV: Double {
-        let value = UserDefaults.standard.double(forKey: "aprilTagFOV")
-        return (40...120).contains(value) ? value : 70
-    }
-    @MainActor @objc private func chooseAprilTagFOV(_ sender: NSMenuItem) {
-        guard let degrees = sender.representedObject as? Int else { return }
-        UserDefaults.standard.set(Double(degrees), forKey: "aprilTagFOV")
-        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == degrees ? .on : .off }
-        if cameraHead.aprilTagEnabled { cameraHead.useAprilTags(true, sizeMillimeters: aprilTagSize, fieldOfView: aprilTagFOV) }
-    }
-    private var aprilTagSize: Int {
-        let value = UserDefaults.standard.integer(forKey: "aprilTagSizeMM")
-        return [15,20,25,30].contains(value) ? value : 25
-    }
-
-    @MainActor @objc private func toggleAprilTags(_ sender: NSMenuItem) {
-        guard cameraCalibrationWindow == nil else { say("Закройте мастер калибровки перед сменой режима."); return }
-        let enable = !cameraHead.aprilTagEnabled
-        UserDefaults.standard.set(enable, forKey: "aprilTagTracking")
-        aprilTagItem?.state = enable ? .on : .off
-        cameraHead.useAprilTags(enable, sizeMillimeters: aprilTagSize, fieldOfView: aprilTagFOV)
-        if !enable {
-            glassesTrackingItem?.state = glassesTracking ? .on : .off
-            say("Трекинг AprilTag выключен. Восстановлен прежний режим камеры.")
-            return
-        }
-        glassesTrackingItem?.state = .off
-        let activate = { [weak self] in
-            guard let self, self.cameraHead.aprilTagEnabled else { return }
-            if let renderer = self.renderer { self.installCameraHeadOffset(renderer) }
-            self.showAprilTagPreview()
-            self.say("Диагностика AprilTag включена. Поправки экрана отключены. Покажите фронтальный ID ноль. Размер чёрного квадрата: \(self.aprilTagSize) миллиметров.")
-        }
-        if cameraHead.isRunning { activate() }
-        else {
-            cameraHead.start { [weak self] error in
-                guard let self else { return }
-                if error != nil {
-                    UserDefaults.standard.set(false, forKey: "aprilTagTracking")
-                    self.aprilTagItem?.state = .off
-                    self.cameraHead.useAprilTags(false, sizeMillimeters: self.aprilTagSize, fieldOfView: self.aprilTagFOV)
-                    self.glassesTrackingItem?.state = self.glassesTracking ? .on : .off
-                    self.say("Не удалось включить камеру. Проверьте разрешение в настройках macOS.")
-                } else { activate() }
-            }
-        }
-    }
-    @MainActor private func showAprilTagPreview() {
-        if cameraDebugWindow == nil {
-            let screen = NSScreen.screens.first { $0.displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false }
-            cameraDebugWindow = CameraDebugWindow(session: cameraHead.captureSession, on: screen)
-        }
-        cameraHead.observe { [weak self] observation in self?.cameraDebugWindow?.update(observation) }
-        cameraDebugWindow?.show()
-    }
-    @MainActor @objc private func resetAprilTags() {
-        guard cameraHead.aprilTagEnabled else { say("Сначала включите режим AprilTag."); return }
-        cameraHead.resetReference(after: 0, geometryChanged: true)
-        showAprilTagPreview()
-        say("Опора AprilTag сброшена. Покажите ID ноль и удерживайте голову спокойно.")
-    }
-    @MainActor @objc private func chooseAprilTagSize(_ sender: NSMenuItem) {
-        guard let size = sender.representedObject as? Int, [15,20,25,30].contains(size) else { return }
-        UserDefaults.standard.set(size, forKey: "aprilTagSizeMM")
-        sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == size ? .on : .off }
-        if cameraHead.aprilTagEnabled { cameraHead.useAprilTags(true, sizeMillimeters: size, fieldOfView: aprilTagFOV) }
-    }
 
     private var wallModeItem: NSMenuItem?
     private var learningGlasses = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let info = Bundle.main.infoDictionary ?? [:]
-        log("BUILD id=\(info["RayDeskBuildID"] ?? "development") commit=\(info["RayDeskCommit"] ?? "unknown") source=\(info["RayDeskSource"] ?? "unknown") executable=\(Bundle.main.executablePath ?? "unknown") tracking=\(UserDefaults.standard.bool(forKey: "glassesTracking") ? "glasses-coreml" : "vision")")
+        log("BUILD id=\(info["RayDeskBuildID"] ?? "development") commit=\(info["RayDeskCommit"] ?? "unknown") source=\(info["RayDeskSource"] ?? "unknown") executable=\(Bundle.main.executablePath ?? "unknown") tracking=glasses-coreml")
         watchdog.start()
         setupMenu()
         setupHotkeys()
@@ -148,10 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.bool(forKey: "glassesTracking") {
             glassesVision.start()
             cameraHead.useGlasses(glassesVision)
-        }
-        if UserDefaults.standard.bool(forKey: "aprilTagTracking") {
-            cameraHead.useAprilTags(true, sizeMillimeters: aprilTagSize, fieldOfView: aprilTagFOV)
-            glassesTrackingItem?.state = .off
         }
         filter.restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
         imu = GlassesIMU(filter: filter)
@@ -314,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.bool(forKey: "wallMode"), let wallModeItem {
             toggleWallMode(wallModeItem)
         }
-        if glassesTracking, !cameraHead.aprilTagEnabled, !UserDefaults.standard.bool(forKey: "guidedCalibrationIntroduced") {
+        if glassesTracking, !UserDefaults.standard.bool(forKey: "guidedCalibrationIntroduced") {
             UserDefaults.standard.set(true, forKey: "guidedCalibrationIntroduced")
             Task { @MainActor [weak self] in self?.startCameraCalibration() }
         }
@@ -716,7 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
             cameraHead.worldYawChanged(by: target - filterYaw)
-            if glassesTracking && !cameraHead.aprilTagEnabled { cameraHead.resetReference(after: 0.3) }
+            if glassesTracking { cameraHead.resetReference(after: 0.3) }
         }
         NSSound(named: "Tink")?.play()
     }
@@ -731,19 +658,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
             cameraHead.worldYawChanged(by: -yaw)
-            if glassesTracking && !cameraHead.aprilTagEnabled { cameraHead.resetReference(after: 0.3) }
+            if glassesTracking { cameraHead.resetReference(after: 0.3) }
         }
     }
 
     @MainActor @objc private func startCameraCalibration() {
-        if cameraHead.aprilTagEnabled { resetAprilTags(); return }
-        if cameraHead.faceCentreEnabled {
-            cameraHead.setCenterHolding(true)
-            if renderer?.headOffset == nil, let wallModeItem { toggleWallMode(wallModeItem) }
-            else { cameraHead.resetReference(after:0.3) }
-            say("Посмотрите на камеру и задержитесь на секунду. Запоминаю новый центр по лицу.")
-            return
-        }
         if let window = cameraCalibrationWindow { window.show(); return }
         let wasGlassesTracking = glassesTracking
         let wasRunning = cameraHead.isRunning
@@ -840,7 +759,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installCameraHeadOffset(_ renderer: Renderer) {
-        cameraHead.setCenterHolding(true)
         var referenceHead: simd_quatd?
         var generation = -1
         renderer.headOffset = { [cameraHead, weak self] head in
@@ -848,8 +766,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 generation = cameraHead.referenceGeneration
                 referenceHead = head
             }
-            if cameraHead.faceCentreEnabled { return .zero }
-            if let markerOffset = cameraHead.aprilTagWorldOffset { return markerOffset }
             var offset = cameraHead.neckOffset()
             offset.z *= self?.wallDepthStrength ?? 0.25
             let neck = worldOffset(fromCamera: offset, cameraYaw: cameraHead.cameraYaw ?? 0)
@@ -861,9 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleWallMode(_ sender: NSMenuItem) {
         guard let renderer else { return }
         if renderer.headOffset != nil {
-            cameraHead.setCenterHolding(false)
             renderer.headOffset = nil
-            cameraHead.disableYawCorrection()
             sender.state = .off
             UserDefaults.standard.set(false, forKey: "wallMode")
             log("wall mode off")
@@ -875,7 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cameraHead.resetReference(after: 0.3)
             installCameraHeadOffset(renderer)
             sender.state = .on
-            say(cameraHead.aprilTagEnabled ? "AprilTag: покажите ID ноль и замрите на секунду." : glassesTracking ? "Калибровка камерой включена. Посмотрите в камеру и посидите спокойно две секунды, я запомню положение головы."
+            say(glassesTracking ? "Калибровка камерой включена. Посмотрите в камеру и посидите спокойно две секунды, я запомню положение головы."
                 : "Удержание центра по лицу включено. Посмотрите на камеру и задержитесь на секунду. Для ручного выравнивания используйте R.")
             log("wall mode on")
         }
@@ -901,11 +815,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var glassesTracking: Bool { UserDefaults.standard.bool(forKey: "glassesTracking") }
 
     @MainActor private func setGlassesTracking(_ enabled: Bool) {
-        if cameraHead.aprilTagEnabled {
-            UserDefaults.standard.set(false, forKey: "aprilTagTracking")
-            aprilTagItem?.state = .off
-            cameraHead.useAprilTags(false, sizeMillimeters: aprilTagSize, fieldOfView: aprilTagFOV)
-        }
         UserDefaults.standard.set(enabled, forKey: "glassesTracking")
         glassesTrackingItem?.state = enabled ? .on : .off
         if enabled { glassesVision.start() }
@@ -956,90 +865,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func toggleCameraHead(_ sender: NSMenuItem) {
-        if cameraHead.isRunning || sender.state == .on {
-            cameraHead.stop()
-            renderer?.headOffset = nil
-            sender.state = .off
-            log("camera head tracking off")
-            return
-        }
-        sender.state = .on
-        cameraHead.start { [weak self] error in
-            guard let error else {
-                log("camera head tracking on")
-                return
-            }
-            sender.state = .off
-            log("camera head tracking failed: \(error)")
-            self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
-        }
-    }
-
-    @objc private func guidedCameraMeasurement() {
-        let steps: [(phase: String, seconds: Double, prompt: String)] = [
-            ("rest", 12, "Замер по шагам. Смотрите прямо на средний экран и не двигайтесь."),
-            ("turn-left", 8, "Поверните голову к левому монитору и замрите."),
-            ("rest", 6, "Снова прямо."),
-            ("turn-right", 8, "Поверните голову к правому монитору и замрите."),
-            ("rest", 6, "Снова прямо."),
-            ("lean-in", 8, "Наклонитесь к экрану, не поворачивая головы."),
-            ("rest", 6, "Вернитесь."),
-            ("lean-back", 8, "Отклонитесь назад."),
-            ("rest", 6, "Вернитесь."),
-            ("shift-left", 8, "Сдвиньтесь всем телом влево, смотрите прямо."),
-            ("rest", 6, "Вернитесь."),
-            ("shift-right", 8, "Сдвиньтесь всем телом вправо, смотрите прямо."),
-            ("rest", 6, "Вернитесь."),
-        ]
-        let run = { [weak self] in
-            guard let self else { return }
-            var start = 0.0
-            for step in steps {
-                DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
-                    self?.cameraHead.phase = step.phase
-                    self?.say(step.prompt)
-                    log("CAMERA phase \(step.phase)")
-                }
-                start += step.seconds
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
-                self?.cameraHead.phase = ""
-                self?.say("Замер окончен, спасибо.")
-                log("CAMERA guided measurement done")
-            }
-        }
-        if cameraHead.isRunning {
-            run()
-            return
-        }
-        cameraHead.start { [weak self] error in
-            if let error {
-                log("camera head tracking failed: \(error)")
-                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
-                return
-            }
-            log("camera head tracking on")
-            run()
-        }
-    }
-
     private func logCameraHead() {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
-        if let status = cameraHead.aprilTagStatus {
-            log(String(format: "CAMERA %@ · %d fps · latency %.0f ms · heading age %.2f s · correction %.3f°",
-                       status.replacingOccurrences(of: "\n", with: " · "), reading.framesPerSecond,
-                       (reading.latency ?? .nan)*1000, reading.headingAge, reading.headingCorrection*180 / .pi))
-            return
-        }
-        if let status = cameraHead.faceCentreStatus {
-            log(String(format:"CAMERA %@ · кадров %d/с · лицо %d/с · расхождение %.2f° · поправка %.3f° · задержка %.0f мс",
-                       status,reading.framesPerSecond,reading.facesPerSecond,(reading.headingDrift ?? .nan)*180 / .pi,
-                       reading.headingCorrection*180 / .pi,(reading.latency ?? .nan)*1000))
-            return
-        }
-        log(String(format: "CAMERA yaw correction total %.2f°", cameraHead.yawCorrectionDegrees))
         if let glasses = reading.glassesPerSecond {
             log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°, уплывание гироскопа %.2f°/с, масштаб курса камеры %.2f · возраст замера %.2f с",
                        glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100,
@@ -1051,13 +879,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let jitter = (reading.jitter ?? .zero) * 1000
-        let angles = (reading.angles ?? SIMD3(repeating: .nan)) * (180 / .pi)
         let neck = cameraHead.neckOffset() * 100
         log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см · задержка кадра %.0f мс%@", neck.x, neck.y, neck.z,
                    (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · калибровка камерой" : ""))
-        log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d · лицо yaw %.0f° pitch %.0f° roll %.0f°",
+        log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d",
                    position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
-                   reading.framesPerSecond, reading.facesPerSecond, angles.x, angles.y, angles.z))
+                   reading.framesPerSecond, reading.facesPerSecond))
     }
 
     @objc private func moveWindowToGaze() {
@@ -1312,125 +1139,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(statusLine)
         menu.addItem(.separator())
-        menu.addItem(menuItem("Поставить экран туда, куда смотрю   ⌃⌥Space", #selector(placeHere)))
-        menu.addItem(menuItem("Взять / отпустить экран   ⌃⌥G", #selector(toggleGrab)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Ближе   ⌃⌥↑", #selector(closer)))
-        menu.addItem(menuItem("Дальше   ⌃⌥↓", #selector(farther)))
-        menu.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
-        menu.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
-        menu.addItem(menuItem("Наклонить назад   ⌃⌥⇧↑", #selector(tiltBack)))
-        menu.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Вернуть экраны по MacBook: навести перекрестие, ещё раз   ⌃⌥R", #selector(recenterWorld)))
-        menu.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥⇧R", #selector(recenterToGaze)))
-        menu.addItem(menuItem("Метка: смотрю на средний экран (только в лог)   ⌃⌥M", #selector(markReference)))
-        menu.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
-        menu.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
-        menu.addItem(joinMenu())
-        menu.addItem(menuItem("Довернуть экран влево   ⌃⌥⇧←", #selector(turnLeft)))
-        menu.addItem(menuItem("Довернуть экран вправо   ⌃⌥⇧→", #selector(turnRight)))
-        menu.addItem(menuItem("Наклонить все назад   ⌃⌥⌘↑", #selector(tiltAllBack)))
-        menu.addItem(menuItem("Наклонить все вперёд   ⌃⌥⌘↓", #selector(tiltAllForward)))
-        menu.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
-        menu.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
-        menu.addItem(menuItem("Калибровка масштаба гироскопа (очки на столе)", #selector(calibrateGyroScale)))
-        menu.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
-        menu.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
-        menu.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
-        menu.addItem(menuItem("Камера: замер положения головы", #selector(toggleCameraHead(_:))))
-        menu.addItem(menuItem("Камера: замер по шагам с подсказками", #selector(guidedCameraMeasurement)))
-        menu.addItem(menuItem("Калибровка камерой с подсказками…   ⌃⌥⇧K", #selector(startCameraCalibration)))
-        let wallItem = menuItem("Удержание центра камерой", #selector(toggleWallMode(_:)))
-        wallModeItem = wallItem
-        menu.addItem(wallItem)
-        let glassesItem = menuItem("Положение головы по очкам (MediaPipe, проба)", #selector(toggleGlassesTracking(_:)))
-        glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
-        glassesTrackingItem = glassesItem
-        menu.addItem(glassesItem)
-        let tagItem = menuItem("AprilTag: диагностика без поправок экрана", #selector(toggleAprilTags(_:)))
-        tagItem.state = UserDefaults.standard.bool(forKey: "aprilTagTracking") ? .on : .off
-        aprilTagItem = tagItem
-        menu.addItem(tagItem)
-        let tagSizeItem = NSMenuItem(title: "AprilTag: сторона чёрного квадрата", action: nil, keyEquivalent: "")
-        let tagSizes = NSMenu()
-        for size in [15,20,25,30] {
-            let item = menuItem("\(size) мм", #selector(chooseAprilTagSize(_:)))
-            item.representedObject = size
-            item.state = size == aprilTagSize ? .on : .off
-            tagSizes.addItem(item)
-        }
-        tagSizeItem.submenu = tagSizes
-        menu.addItem(tagSizeItem)
-        let tagFOVItem = NSMenuItem(title: "AprilTag: угол камеры (оценка)", action: nil, keyEquivalent: "")
-        let tagAngles = NSMenu()
-        for degrees in [50,60,70,80,90,100,110] {
-            let item = menuItem("\(degrees)°", #selector(chooseAprilTagFOV(_:)))
-            item.representedObject = degrees
-            item.state = Double(degrees) == aprilTagFOV ? .on : .off
-            tagAngles.addItem(item)
-        }
-        tagFOVItem.submenu = tagAngles
-        menu.addItem(tagFOVItem)
-        menu.addItem(menuItem("AprilTag: сбросить опору и открыть камеру", #selector(resetAprilTags)))
-        menu.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
-        menu.addItem(menuItem("Камера: окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
-        let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
-        let angles = NSMenu()
-        let currentAngle = UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70
-        for degrees in [60, 70, 80, 90, 100, 110] {
-            let option = menuItem("\(degrees)°", #selector(chooseCameraFieldOfView(_:)))
-            option.representedObject = degrees
-            option.state = Double(degrees) == currentAngle ? .on : .off
-            angles.addItem(option)
-        }
-        fieldOfView.submenu = angles
-        menu.addItem(fieldOfView)
-        let depth = NSMenuItem(title: "Калибровка камерой: сила вперёд-назад", action: nil, keyEquivalent: "")
-        let strengths = NSMenu()
-        for percent in [25, 50, 75, 100] {
-            let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
-            option.representedObject = percent
-            option.state = Double(percent) / 100 == wallDepthStrength ? .on : .off
-            strengths.addItem(option)
-        }
-        depth.submenu = strengths
-        menu.addItem(depth)
-        let compassItem = menuItem("Компас (эксперимент)", #selector(toggleCompass(_:)))
-        compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
-        menu.addItem(compassItem)
-        menu.addItem(menuItem("Добавить экран", #selector(addScreen)))
-        menu.addItem(menuItem("Убрать экран", #selector(removeScreen)))
-        menu.addItem(.separator())
+        menu.addItem(submenu("Экраны") { screens in
+            screens.addItem(menuItem("Поставить экран туда, куда смотрю   ⌃⌥Space", #selector(placeHere)))
+            screens.addItem(menuItem("Взять / отпустить экран   ⌃⌥G", #selector(toggleGrab)))
+            screens.addItem(.separator())
+            screens.addItem(menuItem("Ближе   ⌃⌥↑", #selector(closer)))
+            screens.addItem(menuItem("Дальше   ⌃⌥↓", #selector(farther)))
+            screens.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
+            screens.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
+            screens.addItem(menuItem("Наклонить назад   ⌃⌥⇧↑", #selector(tiltBack)))
+            screens.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
+            screens.addItem(menuItem("Довернуть экран влево   ⌃⌥⇧←", #selector(turnLeft)))
+            screens.addItem(menuItem("Довернуть экран вправо   ⌃⌥⇧→", #selector(turnRight)))
+            screens.addItem(menuItem("Наклонить все назад   ⌃⌥⌘↑", #selector(tiltAllBack)))
+            screens.addItem(menuItem("Наклонить все вперёд   ⌃⌥⌘↓", #selector(tiltAllForward)))
+            screens.addItem(.separator())
+            screens.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
+            screens.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
+            screens.addItem(joinMenu())
+            screens.addItem(.separator())
+            screens.addItem(menuItem("Добавить экран", #selector(addScreen)))
+            screens.addItem(menuItem("Убрать экран", #selector(removeScreen)))
+            screens.addItem(.separator())
+            screens.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
+            screens.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
+        })
+        menu.addItem(submenu("Центр и курс") { center in
+            center.addItem(menuItem("Вернуть экраны по MacBook: навести перекрестие, ещё раз   ⌃⌥R", #selector(recenterWorld)))
+            center.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥⇧R", #selector(recenterToGaze)))
+            center.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
+            center.addItem(menuItem("Метка: смотрю на средний экран (только в лог)   ⌃⌥M", #selector(markReference)))
+            center.addItem(.separator())
+            let compassItem = menuItem("Компас", #selector(toggleCompass(_:)))
+            compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
+            center.addItem(compassItem)
+            center.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
+            center.addItem(menuItem("Калибровка масштаба гироскопа (очки на столе)", #selector(calibrateGyroScale)))
+            center.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
+        })
+        menu.addItem(submenu("Камера") { camera in
+            let glassesItem = menuItem("Положение головы по очкам (MediaPipe)", #selector(toggleGlassesTracking(_:)))
+            glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
+            glassesTrackingItem = glassesItem
+            camera.addItem(glassesItem)
+            let wallItem = menuItem("Удержание центра камерой", #selector(toggleWallMode(_:)))
+            wallModeItem = wallItem
+            camera.addItem(wallItem)
+            camera.addItem(menuItem("Калибровка камерой с подсказками…   ⌃⌥⇧K", #selector(startCameraCalibration)))
+            camera.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
+            camera.addItem(.separator())
+            let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
+            let angles = NSMenu()
+            let currentAngle = UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70
+            for degrees in [60, 70, 80, 90, 100, 110] {
+                let option = menuItem("\(degrees)°", #selector(chooseCameraFieldOfView(_:)))
+                option.representedObject = degrees
+                option.state = Double(degrees) == currentAngle ? .on : .off
+                angles.addItem(option)
+            }
+            fieldOfView.submenu = angles
+            camera.addItem(fieldOfView)
+            let depth = NSMenuItem(title: "Сила вперёд-назад", action: nil, keyEquivalent: "")
+            let strengths = NSMenu()
+            for percent in [25, 50, 75, 100] {
+                let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
+                option.representedObject = percent
+                option.state = Double(percent) / 100 == wallDepthStrength ? .on : .off
+                strengths.addItem(option)
+            }
+            depth.submenu = strengths
+            camera.addItem(depth)
+            camera.addItem(.separator())
+            camera.addItem(menuItem("Окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
+        })
+        menu.addItem(submenu("Картинка") { picture in
+            picture.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
+            let bordersItem = menuItem("Рамка вокруг экранов", #selector(toggleScreenBorders(_:)))
+            bordersItem.state = UserDefaults.standard.bool(forKey: "hideScreenBorders") ? .off : .on
+            picture.addItem(bordersItem)
+            picture.addItem(.separator())
+            picture.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
+            picture.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
+            picture.addItem(menuItem("Предсказание больше   ⌃⌥0", #selector(morePrediction)))
+            picture.addItem(menuItem("Предсказание меньше   ⌃⌥9", #selector(lessPrediction)))
+            let stabilization = NSMenuItem(title: "Стабилизация картинки", action: nil, keyEquivalent: "")
+            let levels = NSMenu()
+            for (level, title) in [(StabilizationLevel.off, "Выключена"), (.weak, "Слабая"), (.medium, "Средняя"), (.strong, "Сильная")] {
+                let item = menuItem(title, #selector(chooseStabilization(_:)))
+                item.representedObject = level.rawValue
+                item.state = level == savedStabilization() ? .on : .off
+                levels.addItem(item)
+            }
+            stabilization.submenu = levels
+            picture.addItem(stabilization)
+            picture.addItem(.separator())
+            picture.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
+            picture.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
+            picture.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
+        })
         menu.addItem(meditationMenu())
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
-        menu.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
-        let bordersItem = menuItem("Рамка вокруг экранов", #selector(toggleScreenBorders(_:)))
-        bordersItem.state = UserDefaults.standard.bool(forKey: "hideScreenBorders") ? .off : .on
-        menu.addItem(bordersItem)
-        let stabilization = NSMenuItem(title: "Стабилизация картинки", action: nil, keyEquivalent: "")
-        let levels = NSMenu()
-        for (level, title) in [(StabilizationLevel.off, "Выключена"), (.weak, "Слабая"), (.medium, "Средняя"), (.strong, "Сильная")] {
-            let item = menuItem(title, #selector(chooseStabilization(_:)))
-            item.representedObject = level.rawValue
-            item.state = level == savedStabilization() ? .on : .off
-            levels.addItem(item)
-        }
-        stabilization.submenu = levels
-        menu.addItem(stabilization)
-        menu.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
-        menu.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
-        menu.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
-        menu.addItem(menuItem("Предсказание больше   ⌃⌥0", #selector(morePrediction)))
-        menu.addItem(menuItem("Предсказание меньше   ⌃⌥9", #selector(lessPrediction)))
-        menu.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
         menu.addItem(.separator())
         menu.addItem(mouseTapLine)
         menu.addItem(.separator())
         menu.addItem(menuItem("Выйти   ⌃⌥Q", #selector(quit)))
         item.menu = menu
         statusItem = item
+    }
+
+    private func submenu(_ title: String, _ build: (NSMenu) -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        build(sub)
+        item.submenu = sub
+        return item
     }
 
     private func menuItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
