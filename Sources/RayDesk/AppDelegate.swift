@@ -445,10 +445,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(String(format: "gyro scale loaded: %.4f %.4f %.4f", values[0], values[1], values[2]))
     }
 
+    /// Ниже этой температуры калибровка масштаба не запускается: масштаб зависит от прогрева,
+    /// а пользуются очками тёплыми. Холодная калибровка — источник устаревшей поправки.
+    private static let gyroScaleMinTemperature = 32.0
+    private var gyroScaleWarmupTimer: Timer?
+
     @objc private func calibrateGyroScale() {
         guard let imu else { return }
+        if imu.temperature < Self.gyroScaleMinTemperature {
+            say(String(format: "Очки холодные: %.0f°. Масштаб гироскопа зависит от прогрева — наденьте их на пару минут, я запущу калибровку сама, когда будет %.0f°.",
+                       imu.temperature, Self.gyroScaleMinTemperature))
+            log(String(format: "gyro scale calibration postponed: temperature %.1f C", imu.temperature))
+            gyroScaleWarmupTimer?.invalidate()
+            gyroScaleWarmupTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] timer in
+                guard let self, let imu = self.imu else { timer.invalidate(); return }
+                if imu.temperature >= Self.gyroScaleMinTemperature {
+                    timer.invalidate()
+                    self.gyroScaleWarmupTimer = nil
+                    self.calibrateGyroScale()
+                }
+            }
+            return
+        }
         let box = GyroScaleBox()
-        say("Калибровка масштаба гироскопа. Поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте.")
+        say(String(format: "Очки прогреты до %.0f°. Калибровка масштаба гироскопа: поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте.", imu.temperature))
         log("gyro scale calibration started")
         imu.sampleSink = { [weak self] sample in
             guard let (previous, current) = box.add(sample) else { return }
@@ -474,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             filter.gyroScale = updated
             UserDefaults.standard.set([updated.x, updated.y, updated.z], forKey: "gyroScale.v1")
             log(String(format: "gyro scale calibrated: measured %.1f° for 720°, scale %.4f, stored %.4f", measured, scale, updated.y))
-            say(String(format: "Готово. Гироскоп ошибался на %.1f процента, поправка сохранена.", (1 / scale - 1) * 100))
+            say(String(format: "Готово при %.0f°. Гироскоп ошибался на %.1f процента, поправка сохранена. Дальше: откалибруйте компас и проверьте уход меткой.", imu?.temperature ?? 0, (1 / scale - 1) * 100))
         case .failed(.notUpright):
             imu?.sampleSink = nil
             say("Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново.")
@@ -1273,10 +1293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@",
+        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@ · %.0f°",
                                   imu?.isConnected == true ? "✓" : "✗", rate,
                                   yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
-                                  filter.magnetometerCalibration == nil ? "✗" : "✓")
+                                  filter.magnetometerCalibration == nil ? "✗" : "✓", imu?.temperature ?? 0)
         let learned = filter.gyroBias * 180 / .pi
         let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
             + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? " · поле изменилось" : ""))
