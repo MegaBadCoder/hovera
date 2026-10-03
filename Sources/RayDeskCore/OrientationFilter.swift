@@ -341,17 +341,6 @@ public final class OrientationFilter: @unchecked Sendable {
         return simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega)))
     }
 
-    /// Медленная внешняя поправка курса (якорь камеры). Ограничена одним градусом за вызов
-    /// и делегирует `rotateWorldYaw(by:)`.
-    public func correctYaw(by delta: Double) {
-        guard delta.isFinite, abs(delta) <= .pi / 180 else { return }
-        lock.lock()
-        let ready = initialized
-        lock.unlock()
-        guard ready else { return }
-        rotateWorldYaw(by: delta)
-    }
-
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление
     /// за верное: опора поля берётся заново со следующего показания.
     public func alignYawToZero() {
