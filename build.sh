@@ -11,8 +11,6 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp .build/release/RayDesk "$APP/Contents/MacOS/RayDesk"
 mkdir -p "$APP/Contents/Resources"
-cp Sources/CAprilTag/LICENSE.md "$APP/Contents/Resources/AprilTag-LICENSE.md"
-cp Sources/CAprilTag/UPSTREAM.txt "$APP/Contents/Resources/AprilTag-UPSTREAM.txt"
 xcrun coremlcompiler compile Sources/RayDesk/Models/FaceLandmarks.mlpackage "$APP/Contents/Resources" >/dev/null
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
