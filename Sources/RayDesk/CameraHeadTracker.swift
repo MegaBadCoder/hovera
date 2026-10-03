@@ -80,8 +80,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private static let glassesMaxSpeed = 90 * Double.pi / 180
     /// Позиция держится, пока очки видны: модель шеи валидна до 60° поворота, качество кадра
     /// страхует порог совпадения формы, поэтому пороги угла щедрые — боковые экраны должны трекаться.
-    private static let glassesHold = SIMD2(45 * Double.pi / 180, 45 * Double.pi / 180)
-    private static let glassesResume = SIMD2(40 * Double.pi / 180, 40 * Double.pi / 180)
+    private static let glassesHold = SIMD2(60 * Double.pi / 180, 60 * Double.pi / 180)
+    private static let glassesResume = SIMD2(55 * Double.pi / 180, 55 * Double.pi / 180)
     private var headingCorrector = CameraYawCorrector()
     private var faceYawScale = FaceYawScale()
     private var lastRotationSource: String?
