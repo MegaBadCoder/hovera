@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let info = Bundle.main.infoDictionary ?? [:]
         log("BUILD id=\(info["RayDeskBuildID"] ?? "development") commit=\(info["RayDeskCommit"] ?? "unknown") source=\(info["RayDeskSource"] ?? "unknown") executable=\(Bundle.main.executablePath ?? "unknown") tracking=glasses-coreml")
+        UserDefaults.standard.register(defaults: ["restoreFirmwareZero": true])
         watchdog.start()
         setupMenu()
         setupHotkeys()
@@ -72,7 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
 
         loadCompassCalibration()
-        loadGyroBias()
         loadGyroScale()
         loadMacAnchor()
         cameraHead.turnWorld = { [filter] angle in filter.rotateWorldYaw(by: angle) }
@@ -80,7 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             glassesVision.start()
             cameraHead.useGlasses(glassesVision)
         }
-        filter.restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
+        let restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
+        filter.restoresFirmwareZero = restoresFirmwareZero
+        // Восстановитель начинает со сдвига ноль, поэтому выученный с ним ноль к новому запуску не подходит.
+        if !restoresFirmwareZero { loadGyroBias() }
         imu = GlassesIMU(filter: filter)
         cameraHead.recordsFrames = UserDefaults.standard.bool(forKey: "recordIMU")
         if UserDefaults.standard.bool(forKey: "recordIMU") {
@@ -885,6 +888,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func toggleFirmwareZeroRestore(_ sender: NSMenuItem) {
+        let enabled = sender.state != .on
+        UserDefaults.standard.set(enabled, forKey: "restoreFirmwareZero")
+        filter.restoresFirmwareZero = enabled
+        filter.trustNextStillness()
+        sender.state = enabled ? .on : .off
+        log("firmware zero restore \(enabled ? "on" : "off")")
+    }
+
     private func logCameraHead() {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
@@ -1207,6 +1219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             camera.addItem(wallItem)
             camera.addItem(menuItem("Калибровка камерой с подсказками…   ⌃⌥⇧K", #selector(startCameraCalibration)))
             camera.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
+            let zeroItem = menuItem("Отменять пересчёты нуля гироскопа прошивкой", #selector(toggleFirmwareZeroRestore(_:)))
+            zeroItem.state = UserDefaults.standard.bool(forKey: "restoreFirmwareZero") ? .on : .off
+            camera.addItem(zeroItem)
             camera.addItem(.separator())
             let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
             let angles = NSMenu()

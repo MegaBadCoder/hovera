@@ -60,6 +60,9 @@ public final class OrientationFilter: @unchecked Sendable {
 
     /// Отменять ли пересчёты нуля гироскопа прошивкой очков (см. `FirmwareZeroRestorer`);
     /// по умолчанию да. Выключение забывает накопленную поправку.
+    ///
+    /// Переключение сдвигает ноль на величину, которую прошивка успела отследить (у прогретого
+    /// датчика до 2 °/с), поэтому после переключения ноль надо переучить — см. `trustNextStillness()`.
     public var restoresFirmwareZero: Bool {
         get { lock.withLock { restoring } }
         set {
