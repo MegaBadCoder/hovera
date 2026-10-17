@@ -2,10 +2,13 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 import RayDeskCore
+import RayDeskLocalization
 import simd
 
 /// Что нашлось на одном кадре камеры.
 struct GlassesFrame {
+    /// Уменьшенный кадр для показа в окне: то же поле зрения, что у формы.
+    var image: RGBAImage?
     /// Модель лица нашла лицо.
     var face: Bool
     /// Середина выученной формы очков в осях камеры, метры: x — вправо по кадру, y — вверх, z — от камеры.
@@ -21,6 +24,12 @@ struct GlassesFrame {
     var landmarks: [CGPoint]
     /// Точки формы очков там, где их нашёл трекер, доли кадра, начало внизу слева.
     var glassesPoints: [CGPoint]
+    /// Клетки сетки формы в кадре, доли кадра, начало внизу слева: по ним видно, что именно выучено.
+    var gridPoints: [CGPoint] = []
+    /// Точки выученной формы в кадре, доли кадра, начало внизу слева.
+    var shapePointsInFrame: [CGPoint] = []
+    /// Номер настройки камеры, при смене которой кадр пересчитывается.
+    var generation: Int = 0
     /// Поворот головы от положения «лицом к камере», радианы: x — влево, y — вверх.
     var turn: SIMD2<Double>? = nil
     /// Откуда взят поворот головы: модель лица, гироскоп или оба.
@@ -47,6 +56,7 @@ final class GlassesVision: @unchecked Sendable {
     private var kept: [SIMD3<Double>] = []
     private var probes: [SIMD3<Double>] = []
     private var learning = false
+    private var autoDetect = true
     private var lastFit: SimilarityFit?
     private var tracker = GlassesTracker()
     private var classifier: SkinClassifier?
@@ -54,6 +64,12 @@ final class GlassesVision: @unchecked Sendable {
     private var savedAlignmentPairs = 0
     private static let alignmentKey = "cameraAlignment.v1"
     private var anchor: (face: simd_double3x3, imu: simd_quatd)?
+    private var context: GlassesFrameContext?
+    private var cameraGeneration = 0
+    private var describedGrid: [CGPoint] = []
+    private var describedKept: [CGPoint] = []
+    private var describedAt: CGPoint?
+    private var describedSize: (width: Int, height: Int)?
     private static let faceBlend = 0.15
     private static let depthBiasBlend = 0.05
     private var depthBias = 0.0
@@ -131,22 +147,79 @@ final class GlassesVision: @unchecked Sendable {
         }
     }
 
+    /// Кадр, на котором можно рисовать: последний, где лицо нашлось и идёт обучение.
+    ///
+    /// - Parameter generation: номер настройки камеры, который ждёт окно.
+    /// - Returns: `nil`, если обучение выключено, лица не было или камера перенастроена.
+    func freeze(generation: Int) -> GlassesFrameContext? {
+        lock.withLock { learning && cameraGeneration == generation ? context : nil }
+    }
+
+    /// Учитывает обведённый контур как эталонный кадр и сводит вынос линзы.
+    ///
+    /// - Parameters:
+    ///   - contour: вершины контура в долях кадра, начало внизу слева.
+    ///   - context: кадр, на котором рисовали.
+    /// - Returns: сколько точек в форме после приёма обводки; `nil`, если контур вырожден или обучение выключено.
+    @discardableResult
+    func applyOutline(_ contour: [SIMD2<Double>], on context: GlassesFrameContext) -> Int? {
+        lock.withLock {
+            guard learning, var learned = shape, let outline = context.outline(contour: contour) else { return nil }
+            learned.commitOutline(outline, oval: context.oval, fit: context.fit, scale: context.scale, width: context.image.width)
+            learned.resolveStandoff()
+            shape = learned
+            use(learned)
+            log(String(format: "glasses vision: outline taken, shape %d points at standoff %@, %d cells framed",
+                       kept.count, learned.lensStandoff.map { String(format: "%.2f", $0) } ?? "-", learned.frames))
+            return kept.count
+        }
+    }
+
+    /// Оставляет в форме клетки, попавшие под курсор, или убирает их.
+    ///
+    /// - Parameters:
+    ///   - points: точки в долях кадра, начало внизу слева.
+    ///   - adding: `true` — клетки под точками считаются очками, `false` — кожей.
+    /// - Returns: сколько клеток затронуто.
+    @discardableResult
+    func markCells(at points: [CGPoint], adding: Bool, on context: GlassesFrameContext) -> Int {
+        lock.withLock {
+            guard learning, var learned = shape, !points.isEmpty else { return 0 }
+            let depth = learned.standoffDepth
+            var touched: Set<Int> = []
+            for point in points {
+                let at = SIMD2(point.x * Double(context.image.width), (1 - point.y) * Double(context.image.height))
+                guard let cell = learned.cell(at: at, fit: context.fit, scale: context.scale, width: context.image.width,
+                                              depth: depth) else { continue }
+                touched.insert(cell)
+            }
+            guard !touched.isEmpty else { return 0 }
+            learned.mark(Array(touched), onGlasses: adding, weight: GlassesShape.frameWeight(learned.frames))
+            shape = learned
+            use(learned)
+            return touched.count
+        }
+    }
+
     /// Обрабатывает кадр камеры в формате BGRA.
     ///
     /// - Parameters:
     ///   - pixels: кадр.
     ///   - head: ориентация очков по гироскопу в момент съёмки кадра.
-    func track(pixels: CVPixelBuffer, head: simd_quatd) -> GlassesFrame? {
+    ///   - generation: номер настройки камеры.
+    func track(pixels: CVPixelBuffer, head: simd_quatd, generation: Int = 0) -> GlassesFrame? {
         lock.lock()
         defer { lock.unlock() }
         guard let mesh else { return nil }
+        cameraGeneration = generation
         let width = Double(CVPixelBufferGetWidth(pixels)), height = Double(CVPixelBufferGetHeight(pixels))
         let focal = width / 2 / tan(Self.fieldOfView / 2)
         let landmarks = mesh.landmarks(in: pixels)
         let image = Self.downscale(pixels, width: Self.maskWidth)
         let scale = width / Double(image.width)
-        var frame = GlassesFrame(face: landmarks != nil, glasses: nil, score: nil, learnedFrames: shape?.frames ?? 0,
-                                 shapePoints: kept.count, landmarks: [], glassesPoints: [])
+        var frame = GlassesFrame(image: image, face: landmarks != nil, glasses: nil, score: nil,
+                                 learnedFrames: shape?.frames ?? 0, shapePoints: kept.count, landmarks: [], glassesPoints: [])
+        frame.generation = generation
         guard let landmarks else {
             lastFit = nil
             return trackWithoutFace(image: image, scale: scale, head: head, width: width, height: height, focal: focal, frame: frame)
@@ -166,11 +239,19 @@ final class GlassesVision: @unchecked Sendable {
             let oval = faceOvalMask(landmarks: small, width: image.width, height: image.height)
             let box = glassesSearchBox(landmarks: small, width: image.width, height: image.height)
             let bridge = small[FaceMeshPoint.noseBridge]
-            if let glasses = findGlasses(in: image, box: box, classifier: classifier, anchor: SIMD2(bridge.x, bridge.y), oval: oval) {
+            context = GlassesFrameContext(image: image, landmarks: small, fit: fit, scale: scale,
+                                          depth: focal * Self.templeSpan / simd_distance(landmarks[FaceMeshPoint.sides.0],
+                                                                                         landmarks[FaceMeshPoint.sides.1]),
+                                          fieldOfView: Self.fieldOfView, fullWidth: width, fullHeight: height,
+                                          generation: generation, head: head)
+            if autoDetect, let glasses = findGlasses(in: image, box: box, classifier: classifier, anchor: SIMD2(bridge.x, bridge.y), oval: oval) {
                 learned.accumulate(fit: fit, glasses: glasses, oval: oval, scale: scale, width: image.width)
                 shape = learned
             }
             frame.learnedFrames = learned.frames
+            let described = describeShape(width: width, height: height, mask: Self.maskWidth)
+            frame.gridPoints = described.grid
+            frame.shapePointsInFrame = described.kept
             return frame
         }
         guard let shape, let classifier, !kept.isEmpty else { return frame }
@@ -178,10 +259,10 @@ final class GlassesVision: @unchecked Sendable {
         lastFit = fit
         learnAlignment(face: fit.rotation, imu: head)
         var rotation = fit.rotation
-        frame.rotationSource = "лицо"
+        frame.rotationSource = t(.rotationSourceFace)
         if let anchor, let predicted = alignment.predict(anchorFace: anchor.face, anchorIMU: anchor.imu, imu: head) {
             rotation = simd_double3x3(simd_slerp(simd_quatd(predicted), simd_quatd(fit.rotation), Self.faceBlend))
-            frame.rotationSource = "гироскоп + лицо"
+            frame.rotationSource = t(.rotationSourceGyroAndFace)
         }
         anchor = (rotation, head)
         frame.turn = headTurn(fromCameraRotation: fit.rotation)
@@ -199,8 +280,36 @@ final class GlassesVision: @unchecked Sendable {
         return place(byFace, shape: shape, width: width, height: height, focal: focal, frame: frame)
     }
 
-    private func learnAlignment(face: simd_double3x3, imu: simd_quatd) {
-        alignment.add(face: face, imu: imu)
+    /// Клетки и точки формы в долях кадра, начало внизу слева: окно показывает по ним, что именно выучено.
+    ///
+    /// Проекция всей сетки стоит тысячи умножений, поэтому повторяется только когда лицо заметно сдвинулось
+    /// или сменился размер уменьшенного кадра.
+    ///
+    /// - Parameters:
+    ///   - width: ширина полного кадра.
+    ///   - height: высота полного кадра.
+    ///   - mask: ширина уменьшенного кадра, с которой считались точки.
+    private func describeShape(width: Double, height: Double, mask: Int) -> (grid: [CGPoint], kept: [CGPoint]) {
+        guard let shape, let fit = lastFit else { return ([], []) }
+        let scale = width / Double(mask)
+        let anchor = CGPoint(x: fit.translation.x / scale, y: fit.translation.y / scale)
+        let moved = describedAt.map { hypot(anchor.x - $0.x, anchor.y - $0.y) > 1.5 } ?? true
+        guard moved || describedSize == nil || describedSize! != (mask, shape.cells) || describedGrid.isEmpty else {
+            return (describedGrid, describedKept)
+        }
+        let grid: [SIMD2<Double>] = shape.gridCells(fit: fit, scale: scale, width: mask)
+        let points: [SIMD2<Double>] = kept.isEmpty ? [] : kept.map { point in let p = fit.apply(point); return SIMD2(p.x, p.y) }
+        func normalized(_ points: [SIMD2<Double>]) -> [CGPoint] {
+            points.map { CGPoint(x: $0.x / width, y: 1 - $0.y / height) }
+        }
+        describedGrid = normalized(grid)
+        describedKept = normalized(points)
+        describedAt = anchor
+        describedSize = (mask, shape.cells)
+        return (describedGrid, describedKept)
+    }
+
+    private func learnAlignment(face: simd_double3x3, imu: simd_quatd) {        alignment.add(face: face, imu: imu)
         guard let rotation = alignment.rotation, !alignment.usesPrior, alignment.pairCount != savedAlignmentPairs else { return }
         savedAlignmentPairs = alignment.pairCount
         let q = simd_quatd(rotation)
@@ -219,7 +328,7 @@ final class GlassesVision: @unchecked Sendable {
         guard !learning, let shape, let classifier, !kept.isEmpty, let anchor,
               let rotation = alignment.predict(anchorFace: anchor.face, anchorIMU: anchor.imu, imu: head)
         else { return frame }
-        frame.rotationSource = "гироскоп"
+        frame.rotationSource = t(.rotationSourceGyro)
         frame.turn = headTurn(fromCameraRotation: rotation)
         describeAlignment(&frame)
         return place(tracker.track(image: image, scale: scale, rotation: rotation, start: nil, kept: kept, probes: probes,
@@ -252,6 +361,10 @@ final class GlassesVision: @unchecked Sendable {
         lastFit = nil
         anchor = nil
         tracker.reset()
+        describedGrid = []
+        describedKept = []
+        describedAt = nil
+        describedSize = nil
     }
 
     private static func downscale(_ pixels: CVPixelBuffer, width: Int) -> RGBAImage {

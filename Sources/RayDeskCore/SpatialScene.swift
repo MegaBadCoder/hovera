@@ -15,8 +15,65 @@ private func wrap(_ angle: Double) -> Double {
 /// Пространственная сцена: позы виртуальных экранов вокруг головы, не более `maxScreens`.
 public final class SpatialScene {
     public let maxScreens = 4
-    public private(set) var screens: [ScreenPose]
+    public private(set) var screens: [ScreenPose] {
+        willSet {
+            focus = nil
+            swapSource = nil
+        }
+    }
     public private(set) var grabbed: Int?
+    /// Индекс первого экрана для обмена взглядом; `nil`, если выбор не начат.
+    public private(set) var swapSource: Int?
+
+    /// Выбирает первый экран или обменивает его со вторым. Повторный выбор первого отменяет обмен.
+    /// Отсутствующее попадание сохраняет выбор. Возвращает `true` только после обмена.
+    @discardableResult
+    public func selectSwapTarget(_ index: Int?) -> Bool {
+        guard let index, screens.indices.contains(index) else { return false }
+        guard let source = swapSource else {
+            grabbed = nil
+            swapSource = index
+            return false
+        }
+        swapSource = nil
+        return swapScreens(source, index)
+    }
+
+    /// Отменяет ожидание второго экрана, не меняя раскладку.
+    public func cancelSwap() {
+        swapSource = nil
+    }
+
+    /// Временная увеличенная панель; `nil` означает обычную раскладку.
+    public private(set) var focus: ScreenFocus?
+
+    /// Показывает увеличенную панель `index`; исходные позы и их сериализация не меняются.
+    public func beginFocus(_ index: Int, uv: SIMD2<Double>, head: simd_quatd, origin: SIMD3<Double>) {
+        guard screens.indices.contains(index) else { return }
+        grabbed = nil
+        cancelSwap()
+        focus = ScreenFocus(screen: index, source: screens[index], uv: uv, head: head, origin: origin)
+    }
+
+    /// Возвращает обычную раскладку.
+    public func endFocus() {
+        focus = nil
+    }
+
+    /// Меняет пространственные места двух панелей, сохраняя их соотношения сторон; отпускает захват.
+    /// Возвращает `false` для отсутствующих или одинаковых индексов.
+    @discardableResult
+    public func swapScreens(_ first: Int, _ second: Int) -> Bool {
+        guard screens.indices.contains(first), screens.indices.contains(second), first != second else { return false }
+        let firstAspect = screens[first].aspect
+        let secondAspect = screens[second].aspect
+        screens.swapAt(first, second)
+        screens[first].aspect = firstAspect
+        screens[second].aspect = secondAspect
+        grabbed = nil
+        return true
+    }
+
     private var grabOffset = (yaw: 0.0, pitch: 0.0)
 
     public init(screens: [ScreenPose]) {
@@ -73,6 +130,8 @@ public final class SpatialScene {
 
     /// Захватывает или отпускает экран `index` под текущим взглядом.
     public func toggleGrab(_ index: Int, head: simd_quatd) {
+        endFocus()
+        cancelSwap()
         if grabbed == index {
             grabbed = nil
             return

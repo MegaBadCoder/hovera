@@ -1,5 +1,6 @@
 import AVFoundation
 import RayDeskCore
+import RayDeskLocalization
 import simd
 
 enum CameraFrameVerdict {
@@ -18,6 +19,14 @@ struct CameraObservation {
     var turn: SIMD2<Double>
     var verdict: CameraFrameVerdict
     var glassesPoints: [CGPoint] = []
+    /// Уменьшенный кадр камеры для окна обводки.
+    var frameImage: RGBAImage?
+    /// Клетки сетки выученной формы в долях кадра, начало внизу слева.
+    var gridPoints: [CGPoint] = []
+    /// Точки выученной формы в долях кадра, начало внизу слева.
+    var shapePoints: [CGPoint] = []
+    /// Сколько кадров вошло в форму очков.
+    var learnedFrames = 0
     var glassesNote: String?
     var calibrationSample: GuidedCameraCalibration.Sample?
     var referenceGeneration: Int = 0
@@ -72,6 +81,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var lastAccepted = false
     private var lastVerdict = CameraFrameVerdict.noFace
     private var observer: (@MainActor (CameraObservation) -> Void)?
+    private var observers: [Int: @MainActor (CameraObservation) -> Void] = [:]
     private var calibrationObserver: (@MainActor (CameraObservation) -> Void)?
     private var guidedCalibrationActive = false
     private var glassesVision: GlassesVision?
@@ -115,6 +125,21 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lock.withLock { glassesVision = vision }
     }
     /// Получает на главном потоке каждое распознавание: рамку, точки лица и сдвиг шеи.
+    ///
+    /// - Parameters:
+    ///   - id: имя подписчика: повторная подписка под тем же именем заменяет прежнюю.
+    ///   - handler: что делать с распознаванием.
+    func addObserver(_ id: String, _ handler: @escaping @MainActor (CameraObservation) -> Void) {
+        lock.withLock { observers[id.hashValue] = handler }
+    }
+
+    /// Отписывает одного подписчика.
+    ///
+    /// - Parameter id: имя, под которым подписывались.
+    func removeObserver(_ id: String) {
+        lock.withLock { observers[id.hashValue] = nil }
+    }
+
     func observe(_ handler: (@MainActor (CameraObservation) -> Void)?) {
         lock.withLock { observer = handler }
     }
@@ -261,7 +286,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
     private func sendToGlasses(_ vision: GlassesVision, pixels: CVPixelBuffer, captured: Double, head: simd_quatd, speed: Double) {
         lock.withLock { frames += 1 }
-        receiveGlasses(vision.track(pixels: pixels, head: head), captured: captured, head: head, speed: speed)
+        receiveGlasses(vision.track(pixels: pixels, head: head, generation: lock.withLock { generation }),
+                       captured: captured, head: head, speed: speed)
     }
 
     private func receiveGlasses(_ frame: GlassesFrame?, captured: Double, head: simd_quatd, speed: Double) {
@@ -318,6 +344,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
         faceYawScale.worldYawChanged(by: headingStep)
         let observer = observer
+        let observers = self.observers
         let calibrationObserver = calibrationObserver
         let referenceGeneration = generation
         let turn = lastTurn
@@ -330,23 +357,26 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             vision?.worldYawChanged(by: headingStep)
         }
         recordGlasses(frame, verdict: verdict, captured: captured, head: head, speed: speed, headingStep: headingStep)
-        if observer != nil || calibrationObserver != nil {
+        if observer != nil || calibrationObserver != nil || !observers.isEmpty {
             let points = frame?.landmarks ?? []
             var face: CGRect?
             if let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
                let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() {
                 face = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
             }
-            let note: String = if frame?.face != true { "лицо не найдено" }
-                else if let frame, frame.shapePoints == 0 && frame.learnedFrames == 0 { "форма очков не выучена: меню → «Выучить форму очков»" }
-                else if let frame, frame.glasses == nil && frame.shapePoints == 0 { "учу форму очков: кадров \(frame.learnedFrames)" }
-                else if let score = frame?.score { String(format: "очки найдены, совпадение формы %.0f%%", score * 100) }
-                else { "очки не найдены" }
-            let axes = frame?.alignmentReady == true ? "оси гироскопа и камеры связаны"
-                : "оси гироскопа и камеры учатся: покрутите головой влево-вправо и вверх-вниз"
-            let fullNote = frame?.rotationSource.isEmpty == false ? "\(note) · поворот: \(frame!.rotationSource) · \(axes)" : note
+            let note: String = if frame?.face != true { t(.cameraNoteNoFace) }
+                else if let frame, frame.shapePoints == 0 && frame.learnedFrames == 0 { t(.cameraNoteShapeNotLearned) }
+                else if let frame, frame.glasses == nil && frame.shapePoints == 0 { String(format: t(.cameraNoteLearningShape), frame.learnedFrames) }
+                else if let score = frame?.score { String(format: t(.cameraNoteGlassesFound), score * 100) }
+                else { t(.cameraNoteGlassesNotFound) }
+            let axes = frame?.alignmentReady == true ? t(.cameraNoteAxesLinked) : t(.cameraNoteAxesLearning)
+            let fullNote = frame?.rotationSource.isEmpty == false ? String(format: t(.cameraNoteRotation), note, frame!.rotationSource, axes) : note
             var observation = CameraObservation(face: face, landmarks: points, neckOffset: neckOffset(), turn: turn,
-                                                verdict: verdict, glassesPoints: frame?.glassesPoints ?? [], glassesNote: fullNote)
+                                                verdict: verdict, glassesPoints: frame?.glassesPoints ?? [],
+                                                frameImage: frame?.image,
+                                                gridPoints: frame?.gridPoints ?? [], shapePoints: frame?.shapePointsInFrame ?? [],
+                                                learnedFrames: frame?.learnedFrames ?? 0,
+                                                glassesNote: fullNote)
             observation.referenceGeneration = referenceGeneration
             if let faceRotation = frame?.faceRotation, let position = frame?.glasses, frame?.face == true {
                 let rawTurn = headTurn(fromCameraRotation: simd_double3x3(faceRotation))
@@ -357,7 +387,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                     speed: speed, quality: frame?.score ?? 0, latency: arrival - captured)
             }
             let update = observation
-            Task { @MainActor in observer?(update); calibrationObserver?(update) }
+            Task { @MainActor in
+                observer?(update)
+                calibrationObserver?(update)
+                for handler in observers.values { handler(update) }
+            }
         }
     }
 

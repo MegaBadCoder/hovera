@@ -3,6 +3,7 @@ import RayDeskCore
 
 protocol MouseTapDelegate: AnyObject {
     func screenIndex(at point: CGPoint) -> Int?
+    func consumeFocusClick(at point: CGPoint) -> Bool
     func gazeHit() -> GazeHit?
     func cursorHit() -> CursorHit?
     func cursorTarget(at point: CGPoint) -> CursorTarget?
@@ -28,6 +29,9 @@ final class MouseTap {
     private var freePose: ScreenPose?
     private var shownPose: ScreenPose?
     private var lastLocation: CGPoint?
+    private var consumingFocusClick = false
+
+    var isDraggingScreen: Bool { draggingScreen != nil }
 
     init?(delegate: MouseTapDelegate) {
         self.delegate = delegate
@@ -94,6 +98,10 @@ final class MouseTap {
 
         switch type {
         case .leftMouseDown:
+            if delegate.consumeFocusClick(at: event.location) {
+                consumingFocusClick = true
+                return nil
+            }
             if hotkey, let target = dragTarget(event: event, delegate: delegate) {
                 draggingScreen = target
                 freePose = delegate.pose(of: target)
@@ -102,12 +110,17 @@ final class MouseTap {
                 return nil
             }
         case .leftMouseDragged:
+            if consumingFocusClick { return nil }
             if let target = draggingScreen {
                 applyDrag(target: target, event: event, delegate: delegate)
                 return nil
             }
             keepOutOfGlasses(event: event, delegate: delegate)
         case .leftMouseUp:
+            if consumingFocusClick {
+                consumingFocusClick = false
+                return nil
+            }
             if draggingScreen != nil {
                 CGAssociateMouseAndMouseCursorPosition(1)
                 draggingScreen = nil

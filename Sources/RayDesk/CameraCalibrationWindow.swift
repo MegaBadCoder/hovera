@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import RayDeskCore
+import RayDeskLocalization
 
 @MainActor
 final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
@@ -8,11 +9,14 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
     private let preview: AVCaptureVideoPreviewLayer
     private let guide = CAShapeLayer()
     private let outline = CAShapeLayer()
-    private let titleLabel = NSTextField(labelWithString: "Расположитесь перед камерой")
-    private let hintLabel = NSTextField(wrappingLabelWithString: "Посмотрите прямо в камеру ноутбука")
-    private let stepLabel = NSTextField(labelWithString: "Настройка центра")
+    private let cameraView = NSView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let hintLabel = NSTextField(wrappingLabelWithString: "")
+    private let stepLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
-    private let applyButton = NSButton(title: "Применить", target: nil, action: nil)
+    private let applyButton = NSButton(title: "", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "", target: nil, action: nil)
+    private let retryButton = NSButton(title: "", target: nil, action: nil)
     private var model = GuidedCameraCalibration()
     private var expectedGeneration: Int
     private var started = ProcessInfo.processInfo.systemUptime
@@ -37,7 +41,7 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         preview = AVCaptureVideoPreviewLayer(session: session)
         super.init()
-        window.title = "Калибровка камерой"
+        window.title = t(.calibrationWindowTitle)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.level = .floating
@@ -48,20 +52,20 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
         stepLabel.frame = NSRect(x: 28, y: 601, width: 780, height: 20)
         titleLabel.font = .systemFont(ofSize: 25, weight: .semibold)
         titleLabel.frame = NSRect(x: 28, y: 558, width: 784, height: 34)
-        let camera = NSView(frame: NSRect(x: 28, y: 158, width: 784, height: 384))
-        camera.wantsLayer = true
-        camera.layer?.backgroundColor = NSColor.black.cgColor
-        camera.layer?.cornerRadius = 16
-        camera.layer?.masksToBounds = true
-        preview.frame = camera.bounds
+        cameraView.frame = NSRect(x: 28, y: 158, width: 784, height: 384)
+        cameraView.wantsLayer = true
+        cameraView.layer?.backgroundColor = NSColor.black.cgColor
+        cameraView.layer?.cornerRadius = 16
+        cameraView.layer?.masksToBounds = true
+        preview.frame = cameraView.bounds
         preview.videoGravity = .resizeAspect
-        camera.layer?.addSublayer(preview)
+        cameraView.layer?.addSublayer(preview)
         for shape in [guide, outline] {
-            shape.frame = camera.bounds
+            shape.frame = cameraView.bounds
             shape.isGeometryFlipped = true
             shape.fillColor = nil
             shape.lineWidth = 2
-            camera.layer?.addSublayer(shape)
+            cameraView.layer?.addSublayer(shape)
         }
         guide.strokeColor = NSColor.white.withAlphaComponent(0.65).cgColor
         guide.lineDashPattern = [8, 6]
@@ -76,24 +80,27 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
         path.addRoundedRect(in: CGRect(x: 400, y: 145, width: 75, height: 44), cornerWidth: 12, cornerHeight: 12)
         path.move(to: CGPoint(x: 384, y: 159)); path.addLine(to: CGPoint(x: 400, y: 159))
         guide.path = path
-        camera.setAccessibilityLabel("Превью камеры с контуром головы и очков")
+        cameraView.setAccessibilityLabel(t(.calibrationPreviewLabel))
         hintLabel.font = .systemFont(ofSize: 15)
         hintLabel.frame = NSRect(x: 28, y: 102, width: 784, height: 44)
         progress.isIndeterminate = false
         progress.minValue = 0; progress.maxValue = 1
         progress.style = .bar
         progress.frame = NSRect(x: 28, y: 86, width: 784, height: 8)
-        progress.setAccessibilityLabel("Устойчивость положения")
-        let cancelButton = NSButton(title: "Отмена", target: self, action: #selector(closeWindow))
+        progress.setAccessibilityLabel(t(.calibrationSteadinessLabel))
+        cancelButton.title = t(.calibrationCancel)
+        cancelButton.target = self; cancelButton.action = #selector(closeWindow)
         cancelButton.keyEquivalent = "\u{1b}"
         cancelButton.frame = NSRect(x: 28, y: 23, width: 100, height: 32)
-        let retry = NSButton(title: "Начать заново", target: self, action: #selector(retryCalibration))
-        retry.frame = NSRect(x: 137, y: 23, width: 145, height: 32)
+        retryButton.title = t(.calibrationRetry)
+        retryButton.target = self; retryButton.action = #selector(retryCalibration)
+        retryButton.frame = NSRect(x: 137, y: 23, width: 145, height: 32)
+        applyButton.title = t(.calibrationApply)
         applyButton.target = self; applyButton.action = #selector(applyCalibration)
         applyButton.frame = NSRect(x: 672, y: 23, width: 140, height: 32)
         applyButton.keyEquivalent = "\r"
         applyButton.isEnabled = false
-        for view in [stepLabel, titleLabel, camera, hintLabel, progress, cancelButton, retry, applyButton] { content.addSubview(view) }
+        for view in [stepLabel, titleLabel, cameraView, hintLabel, progress, cancelButton, retryButton, applyButton] { content.addSubview(view) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -106,11 +113,23 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
         }
     }
     func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    func applyLanguage() {
+        window.title = t(.calibrationWindowTitle)
+        titleLabel.stringValue = t(.calibrationTitleInitial)
+        hintLabel.stringValue = t(.calibrationHintInitial)
+        stepLabel.stringValue = t(.calibrationStepCentre)
+        cancelButton.title = t(.calibrationCancel)
+        retryButton.title = t(.calibrationRetry)
+        applyButton.title = t(.calibrationApply)
+        cameraView.setAccessibilityLabel(t(.calibrationPreviewLabel))
+        progress.setAccessibilityLabel(t(.calibrationSteadinessLabel))
+        render()
+    }
     func update(_ observation: CameraObservation) {
         guard !finished else { return }
         lastFrame = ProcessInfo.processInfo.systemUptime
         guard observation.referenceGeneration == expectedGeneration else {
-            model.invalidate("Настройки камеры изменились. Нажмите «Начать заново»")
+            model.invalidate(.calibrationCameraSettingsChanged)
             render(); return
         }
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -122,22 +141,26 @@ final class CameraCalibrationWindow: NSObject, NSWindowDelegate {
         if let sample = observation.calibrationSample, sample.time >= started { model.update(sample) }
         else {
             model.checkTimeout(at: ProcessInfo.processInfo.systemUptime)
-            model.interrupt("Лицо не распознано уверенно. Посмотрите в камеру")
+            model.interrupt(.hintFaceNotRecognised)
         }
         render()
     }
     private func render() {
-        let diagnostic = "stage \(model.stage) · \(model.hint)"
+        let diagnostic = "stage \(model.stage) · \(t(model.hint))"
         let now = ProcessInfo.processInfo.systemUptime
         if diagnostic != lastDiagnostic && now - lastDiagnosticTime >= 1 {
             log("camera calibration: \(diagnostic)")
             lastDiagnostic = diagnostic; lastDiagnosticTime = now
         }
-        let titles = ["Расположитесь и замрите", "Поверните голову влево", "Вернитесь в центр", "Поверните голову вправо", "Вернитесь в исходное положение", "Калибровка готова", "Попробуем ещё раз"]
-        let steps = ["Настройка центра", "2 / 5 · Поворот влево", "3 / 5 · Проверка центра", "4 / 5 · Поворот вправо", "5 / 5 · Проверка возврата", "5 / 5 · Проверка пройдена", "Калибровка не применена"]
-        titleLabel.stringValue = model.stage == .position ? "Посмотрите в камеру и замрите на секунду" : titles[model.stage.rawValue]
-        stepLabel.stringValue = model.stage == .complete ? "Центр запомнен" : steps[model.stage.rawValue]
-        hintLabel.stringValue = model.hint
+        let titles: [UIString] = [.calibrationTitleSitStill, .calibrationTitleTurnLeft, .calibrationTitleReturnToCentre,
+                                  .calibrationTitleTurnRight, .calibrationTitleReturnToStart, .calibrationTitleReady,
+                                  .calibrationTitleTryAgain]
+        let steps: [UIString] = [.calibrationStepCentre, .calibrationStepTurnLeft, .calibrationStepCheckCentre,
+                                 .calibrationStepTurnRight, .calibrationStepCheckReturn, .calibrationStepCheckPassed,
+                                 .calibrationStepNotApplied]
+        titleLabel.stringValue = model.stage == .position ? t(.calibrationLookAndHold) : t(titles[model.stage.rawValue])
+        stepLabel.stringValue = model.stage == .complete ? t(.calibrationCentreRemembered) : t(steps[model.stage.rawValue])
+        hintLabel.stringValue = t(model.hint)
         progress.doubleValue = model.progress
         applyButton.isEnabled = model.result != nil
         CATransaction.begin(); CATransaction.setDisableActions(true)

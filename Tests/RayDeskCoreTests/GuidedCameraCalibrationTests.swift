@@ -3,6 +3,7 @@ import CoreGraphics
 import simd
 import Testing
 @testable import RayDeskCore
+import RayDeskLocalization
 
 private let wizardDegree = Double.pi / 180
 private func sample(_ time: Double, faceYaw: Double = 0, headYaw: Double = 0, speed: Double = 0, quality: Double = 0.9) -> GuidedCameraCalibration.Sample {
@@ -83,7 +84,7 @@ private func hold(_ model: inout GuidedCameraCalibration, _ time: inout Double, 
     hold(&model, &time, face: -22, head: -20)
     hold(&model, &time)
     #expect(model.result != nil)
-    model.invalidate("Настройки изменились")
+    model.invalidate(.calibrationCameraSettingsChanged)
     #expect(model.result == nil)
     #expect(model.stage == .failed)
 }
@@ -162,7 +163,7 @@ private func hold(_ model: inout GuidedCameraCalibration, _ time: inout Double, 
     var model = GuidedCameraCalibration(), time = 0.0
     hold(&model, &time)
     #expect(model.result != nil)
-    model.invalidate("Настройки изменились")
+    model.invalidate(.calibrationCameraSettingsChanged)
     #expect(model.result == nil)
 }
 

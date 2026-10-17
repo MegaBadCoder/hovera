@@ -22,7 +22,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let scene: SpatialScene
     private let filter: OrientationFilter
 
-    var verticalFOV = 23.6
+    static let verticalFOVRange: ClosedRange<Double> = 10...60
+    static let defaultVerticalFOV = 23.6
+    var verticalFOV = Renderer.defaultVerticalFOV
     var showsGrid = false
     let headPipeline: HeadPipeline
     var calibration: ViewCalibration {
@@ -34,6 +36,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         set { headPipeline.stabilizer = newValue }
     }
     private var lastFrameTime = CACurrentMediaTime()
+    private var stallStarted: [Int: Double] = [:]
+    /// Порог намеренно грубый: дисплей не перерисовывается, пока на нём ничего не меняется,
+    /// поэтому пауза захвата в секунды — норма. В лог попадают только длинные паузы,
+    /// такие как перестроение пространств на жест Mission Control.
+    private static let stallReportThreshold: TimeInterval = 8
     var macAnchor: MacAnchor?
     var aimingAtMac = false
     var showsScreenBorders = true
@@ -44,6 +51,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var snappedNeighbor: Int?
     var onFrame: ((simd_quatd) -> Void)?
 
+    private(set) var currentHeadOffset = SIMD3<Double>.zero
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     private(set) var meditation = MeditationTransition()
     var breathingEnabled = false
@@ -197,14 +205,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         lastFrameTime = now
         currentHead = head
         scene.tick(head: head)
+        currentHeadOffset = headFollower.follow(headOffset?(head) ?? .zero, dt: frameSeconds)
         onFrame?(head)
 
         guard let commandBuffer = queue.makeCommandBuffer() else { return }
         var retainedFrames: [CVMetalTexture] = []
         for slot in slots {
-            if let retained = uploadLatestFrame(slot: slot, commandBuffer: commandBuffer) {
+            let frame = uploadLatestFrame(slot: slot, commandBuffer: commandBuffer)
+            if let retained = frame.retained {
                 retainedFrames.append(retained)
             }
+            trackStalls(slot: slot, at: now)
         }
 
         guard let pass = view.currentRenderPassDescriptor,
@@ -219,7 +230,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             near: 0.05, far: 100
         )
         let rotationOnly = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
-        let offset = headFollower.follow(headOffset?(head) ?? .zero, dt: frameSeconds)
+        let offset = currentHeadOffset
         let viewMatrix = rotationOnly * .translation(SIMD3(Float(-offset.x), Float(-offset.y), Float(-offset.z)))
 
         let skyAmount = Float(meditation.eased)
@@ -243,13 +254,15 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         let screenOpacity = 1 - skyAmount
         for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() where screenOpacity > 0 {
-            let model = pose.modelMatrix
+            if let focus = scene.focus, focus.screen != i { continue }
+            let model = (scene.focus?.pose ?? pose).modelMatrix
             let texture = slot.texture ?? placeholder
-            let moving = scene.grabbed == i || draggingScreen == i || snappedNeighbor == i
+            let selectedForSwap = scene.swapSource == i
+            let moving = selectedForSwap || scene.grabbed == i || draggingScreen == i || snappedNeighbor == i
             let borderAlpha: Float = moving ? 1.0 : (!showsScreenBorders ? 0 : (cursorScreen == i ? 0.6 : 0.25))
             var uniforms = Uniforms(
                 mvp: projection * viewMatrix * model,
-                border: SIMD4(3 / Float(texture.width), 3 / Float(texture.height), borderAlpha, screenOpacity)
+                border: SIMD4((selectedForSwap ? 10 : 3) / Float(texture.width), (selectedForSwap ? 10 : 3) / Float(texture.height), borderAlpha, screenOpacity)
             )
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
@@ -303,13 +316,37 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func uploadLatestFrame(slot: ScreenSlot, commandBuffer: MTLCommandBuffer) -> CVMetalTexture? {
-        guard let cache = textureCache, let pixelBuffer = slot.capture.takeFrame(newerThan: &slot.seenGeneration) else { return nil }
+    /// Пишет в лог, когда кадр на панели перестаёт обновляться дольше порога и когда снова оживает.
+    ///
+    /// Тишина захвата бывает двух видов, и различить их по одному потоку нельзя: на дисплее
+    /// ничего не меняется, либо оконный сервер не отдаёт содержимое дисплея потоку захвата.
+    /// Второе случается на перестроении пространств: в момент Mission Control панель
+    /// замирает на последнем кадре, хотя дисплей продолжает перерисовываться.
+    private func trackStalls(slot: ScreenSlot, at now: Double) {
+        guard let silentFor = slot.capture.silentFor else { return }
+        if silentFor > Self.stallReportThreshold {
+            if stallStarted[slot.index] == nil {
+                stallStarted[slot.index] = now
+                log(String(format: "screen %d: no new capture frames for %.1f s, the picture may be stale", slot.index + 1, silentFor))
+            }
+            return
+        }
+        if let started = stallStarted.removeValue(forKey: slot.index), now - started > Self.stallReportThreshold {
+            log(String(format: "screen %d: capture alive again after %.1f s", slot.index + 1, now - started))
+        }
+    }
+
+    private func uploadLatestFrame(slot: ScreenSlot, commandBuffer: MTLCommandBuffer) -> (retained: CVMetalTexture?, live: Bool) {
+        guard let cache = textureCache, let pixelBuffer = slot.capture.takeFrame(newerThan: &slot.seenGeneration) else {
+            return (nil, slot.noteFrameArrived())
+        }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         var cvTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixelBuffer, nil, .bgra8Unorm_srgb, width, height, 0, &cvTexture)
-        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return nil }
+        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else {
+            return (nil, slot.noteFrameArrived())
+        }
 
         if slot.texture?.width != width || slot.texture?.height != height {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: true)
@@ -317,13 +354,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             descriptor.storageMode = .private
             slot.texture = device.makeTexture(descriptor: descriptor)
         }
-        guard let target = slot.texture, let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
+        guard let target = slot.texture, let blit = commandBuffer.makeBlitCommandEncoder() else {
+            return (nil, slot.noteFrameArrived())
+        }
         blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
                   sourceSize: MTLSize(width: width, height: height, depth: 1),
                   to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
         blit.generateMipmaps(for: target)
         blit.endEncoding()
-        return cvTexture
+        return (cvTexture, slot.noteFrameArrived())
     }
 
     private static func worldGridLines() -> [SIMD4<Float>] {

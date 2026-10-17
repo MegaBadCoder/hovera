@@ -144,9 +144,7 @@ public struct SimilarityFit: Sendable {
         scale = sqrt(normTo / normFrom)
         translation = meanTo - scale * (rotation * meanFrom)
         var error = 0.0
-        for (p, q) in zip(from, to) {
-            error += simd_length_squared(scale * (rotation * p) + (meanTo - scale * (rotation * meanFrom)) - q)
-        }
+        for (p, q) in zip(from, to) { error += simd_length_squared(scale * (rotation * p) + translation - q) }
         residual = sqrt(error / n)
     }
 }
@@ -186,6 +184,14 @@ public struct GlassesMask: Sendable {
     public var box: PixelBox
     /// `box.width·box.height` флагов по строкам окна.
     public var mask: [Bool]
+
+    /// Пиксель кадра попал в пятно.
+    ///
+    /// - Parameter point: пиксель в координатах кадра.
+    public func contains(_ point: SIMD2<Int>) -> Bool {
+        guard box.x0...box.x1 ~= point.x, box.y0...box.y1 ~= point.y else { return false }
+        return mask[(point.y - box.y0) * box.width + point.x - box.x0]
+    }
 }
 
 /// Окно, где ищутся очки: от висков, от чуть выше бровей до середины носа.
@@ -274,6 +280,12 @@ public struct GlassesShape: Codable, Sendable {
     var centers: [SIMD3<Float>]
     var hits: [UInt16]
     var misses: [UInt16]
+    /// Вынос линзы от поверхности лица в долях ширины лица: выбран обведёнными кадрами.
+    public var lensStandoff: Double?
+    /// Сколько клеток сетки попало в контур обведённых кадров на каждой глубине.
+    var standoffEvidence: [Int]
+    /// Сколько кадров обведено рукой.
+    var outlinedFrames: Int
     /// Сколько кадров вошло в форму.
     public var frames: Int
 
@@ -316,7 +328,179 @@ public struct GlassesShape: Codable, Sendable {
         self.centers = centers
         hits = [UInt16](repeating: 0, count: centers.count)
         misses = hits
+        standoffEvidence = [Int](repeating: 0, count: Self.depths.count)
+        outlinedFrames = 0
         frames = 0
+    }
+
+    /// Сколько свидетельств весит один кадр, если считать его бесспорным: столько, чтобы одиночная
+    /// обводка уже прошла порог, а два кадра весили столько же, сколько автоматически размеченные.
+    ///
+    /// - Parameter frames: сколько кадров уже вошло в форму.
+    public static func frameWeight(_ frames: Int) -> Int {
+        max(Int(minHits), 2 * frames)
+    }
+
+    /// Сколько клеток сетки на глубине `depth` попадает внутрь контура, обведённого рукой.
+    ///
+    /// - Parameters:
+    ///   - fit: подгонка опорного кадра формы к обведённому кадру, пиксели полного кадра.
+    ///   - outline: обведённый контур в пикселях уменьшенного кадра.
+    ///   - scale: во сколько полный кадр больше уменьшенного.
+    ///   - width: ширина уменьшенного кадра.
+    /// - Returns: число клеток; ноль, если глубина вне списка.
+    public func insideOutline(fit: SimilarityFit, outline: GlassesOutline, scale: Double, width: Int, depth: Int) -> Int {
+        guard Self.depths.indices.contains(depth) else { return 0 }
+        let depths = Self.depths.count
+        var count = 0
+        for cell in 0..<cells where outline.mask.contains(project(centers[cell * depths + depth], fit: fit, scale: scale, width: width)) {
+            count += 1
+        }
+        return count
+    }
+
+    /// Записывает обведённый кадр как эталонный: клетки внутри контура получают попадание на каждой глубине,
+    /// клетки внутри овала лица за контуром — промах. Клетки вне овала не получают ничего: там видно фон,
+    /// а не лицо, и судить по ним нельзя. На каждой глубине попаданий столько, сколько всего есть кадров:
+    /// так ручная обводка весит ровно столько же, сколько автоматически размеченный кадр.
+    ///
+    /// - Parameters:
+    ///   - outline: обведённый контур в пикселях уменьшенного кадра.
+    ///   - oval: овал лица, флаги по пикселям уменьшенного кадра.
+    ///   - fit: подгонка опорного кадра формы к обведённому кадру, пиксели полного кадра.
+    ///   - scale: во сколько полный кадр больше уменьшенного.
+    ///   - width: ширина уменьшенного кадра.
+    public mutating func commitOutline(_ outline: GlassesOutline, oval: [Bool], fit: SimilarityFit, scale: Double, width: Int) {
+        let depths = Self.depths.count
+        let budget = UInt16(clamping: Self.frameWeight(frames))
+        var inside = [Int](repeating: 0, count: depths)
+        for depth in 0..<depths {
+            for cell in 0..<cells {
+                let point = project(centers[cell * depths + depth], fit: fit, scale: scale, width: width)
+                guard oval.indices.contains(point.y * width + point.x), oval[point.y * width + point.x] else { continue }
+                let index = cell * depths + depth
+                if outline.mask.contains(point) {
+                    inside[depth] += 1
+                    hits[index] = min(hits[index] + budget, .max)
+                } else {
+                    misses[index] = min(misses[index] + budget, .max)
+                }
+            }
+        }
+        for depth in 0..<depths { standoffEvidence[depth] += inside[depth] }
+        outlinedFrames += 1
+        frames += 1
+    }
+
+    /// Учитывает обведённый кадр в выборе выноса линзы, не трогая счётчики клеток.
+    ///
+    /// - Parameters:
+    ///   - outline: обведённый контур в пикселях уменьшенного кадра.
+    ///   - fit: подгонка опорного кадра формы к обведённому кадру, пиксели полного кадра.
+    ///   - scale: во сколько полный кадр больше уменьшенного.
+    ///   - width: ширина уменьшенного кадра.
+    public mutating func noteOutline(_ outline: GlassesOutline, fit: SimilarityFit, scale: Double, width: Int) {
+        for depth in 0..<Self.depths.count {
+            standoffEvidence[depth] += insideOutline(fit: fit, outline: outline, scale: scale, width: width, depth: depth)
+        }
+        outlinedFrames += 1
+    }
+
+    /// Сводит свидетельства обведённых кадров в вынос линзы: побеждает глубина, где сетка чаще всего
+    /// попадала в контур. Пока обведён меньше двух кадров, вынос не задан и клетки живут на своей глубине.
+    public mutating func resolveStandoff() {
+        guard outlinedFrames >= 2, let best = standoffEvidence.indices.max(by: { standoffEvidence[$0] < standoffEvidence[$1] }),
+              standoffEvidence[best] > 0
+        else { return }
+        if let current = lensStandoff, let index = Self.depths.firstIndex(of: current), standoffEvidence[index] >= standoffEvidence[best] {
+            return
+        }
+        lensStandoff = Self.depths[best]
+    }
+
+    /// Клетки сетки формы в пикселях уменьшенного кадра на выбранной глубине: по ним видно, что выучено.
+    ///
+    /// - Parameters:
+    ///   - fit: подгонка опорного кадра формы к кадру, пиксели полного кадра.
+    ///   - scale: во сколько полный кадр больше уменьшенного.
+    ///   - width: ширина уменьшенного кадра.
+    /// - Returns: по точке на клетку.
+    public func gridCells(fit: SimilarityFit, scale: Double, width: Int) -> [SIMD2<Double>] {
+        let depth = standoffDepth
+        let depths = Self.depths.count
+        return (0..<cells).map { cell in
+            let point = project(centers[cell * depths + depth], fit: fit, scale: scale, width: width)
+            return SIMD2(Double(point.x) + 0.5, Double(point.y) + 0.5)
+        }
+    }
+
+    /// Проекция точки формы в пиксели уменьшенного кадра.
+    public func project(_ point: SIMD3<Float>, fit: SimilarityFit, scale: Double, width: Int) -> SIMD2<Int> {
+        let p = SIMD3<Double>(point)
+        let r = fit.rotation, t = fit.translation, k = fit.scale
+        let x = Int(floor((k * (r[0][0] * p.x + r[1][0] * p.y + r[2][0] * p.z) + t.x) / scale))
+        let y = Int(floor((k * (r[0][1] * p.x + r[1][1] * p.y + r[2][1] * p.z) + t.y) / scale))
+        return SIMD2(x, y)
+    }
+
+    /// Клетка сетки под точкой кадра: ближайшая из тех, что ближе шага сетки.
+    ///
+    /// - Parameters:
+    ///   - point: пиксель уменьшенного кадра.
+    ///   - fit: подгонка опорного кадра формы к этому кадру, пиксели полного кадра.
+    ///   - scale: во сколько полный кадр больше уменьшенного.
+    ///   - width: ширина уменьшенного кадра.
+    /// - Returns: номер клетки, общей для всех её глубин; `nil`, если рядом клеток нет.
+    public func cell(at point: SIMD2<Double>, fit: SimilarityFit, scale: Double, width: Int, depth: Int) -> Int? {
+        guard Self.depths.indices.contains(depth) else { return nil }
+        let depths = Self.depths.count
+        let reach = max(fit.scale / scale * faceWidth / Self.cellsAcross, 1)
+        var best: Int?
+        var bestDistance = reach
+        for cell in 0..<cells {
+            let projected = project(centers[cell * depths + depth], fit: fit, scale: scale, width: width)
+            let distance = hypot(Double(projected.x) + 0.5 - point.x, Double(projected.y) + 0.5 - point.y)
+            if distance < bestDistance {
+                best = cell
+                bestDistance = distance
+            }
+        }
+        return best
+    }
+
+    /// Глубина, на которой клетки сетки проецируются в кадр: вынос линзы, а без него — та,
+    /// на которой сошлось больше всего клеток формы.
+    public var standoffDepth: Int {
+        if let lensStandoff, let depth = Self.depths.firstIndex(of: lensStandoff) { return depth }
+        let depths = Self.depths.count
+        var best = depths / 2, bestCount = 0
+        for depth in 0..<depths {
+            var count = 0
+            for cell in 0..<cells where hits[cell * depths + depth] >= Self.minHits { count += 1 }
+            if count > bestCount { best = depth; bestCount = count }
+        }
+        return best
+    }
+
+    /// Отмечает клетки очками или кожей поверх уже собранных свидетельств.
+    ///
+    /// - Parameters:
+    ///   - cells: номера клеток из `cell(at:fit:scale:width:)`.
+    ///   - onGlasses: `true` — клетка считается очками, `false` — кожей.
+    ///   - weight: сколько свидетельств добавить.
+    public mutating func mark(_ cells: [Int], onGlasses: Bool, weight: Int) {
+        let depths = Self.depths.count
+        let step = UInt16(clamping: max(weight, 1))
+        for cell in cells where cell >= 0 && cell < self.cells {
+            for depth in 0..<depths {
+                let index = cell * depths + depth
+                if onGlasses {
+                    hits[index] = min(hits[index] + step, .max)
+                } else {
+                    misses[index] = min(misses[index] + step, .max)
+                }
+            }
+        }
     }
 
     /// Во сколько раз пересчитать глубину, если сейчас задан другой угол обзора камеры, чем при обучении:
@@ -340,14 +524,11 @@ public struct GlassesShape: Codable, Sendable {
     ///   - scale: во сколько полный кадр больше уменьшенного.
     ///   - width: ширина уменьшенного кадра.
     public mutating func accumulate(fit: SimilarityFit, glasses: GlassesMask, oval: [Bool], scale: Double, width: Int) {
-        let r = fit.rotation, t = fit.translation, k = fit.scale
         let box = glasses.box
         for i in centers.indices {
-            let p = SIMD3<Double>(centers[i])
-            let gx = Int(floor((k * (r[0][0] * p.x + r[1][0] * p.y + r[2][0] * p.z) + t.x) / scale))
-            let gy = Int(floor((k * (r[0][1] * p.x + r[1][1] * p.y + r[2][1] * p.z) + t.y) / scale))
-            guard gx >= box.x0, gx <= box.x1, gy >= box.y0, gy <= box.y1, oval[gy * width + gx] else { continue }
-            if glasses.mask[(gy - box.y0) * box.width + gx - box.x0] {
+            let point = project(centers[i], fit: fit, scale: scale, width: width)
+            guard box.x0...box.x1 ~= point.x, box.y0...box.y1 ~= point.y, oval[point.y * width + point.x] else { continue }
+            if glasses.mask[(point.y - box.y0) * box.width + point.x - box.x0] {
                 if hits[i] < .max { hits[i] += 1 }
             } else if misses[i] < .max {
                 misses[i] += 1
@@ -356,17 +537,30 @@ public struct GlassesShape: Codable, Sendable {
         frames += 1
     }
 
-    /// Клетки формы на лучшей глубине: те, что легли на очки хотя бы в 70 % кадров.
+    /// Клетки формы: те, что легли на очки хотя бы в 70 % кадров.
+    ///
+    /// Глубина берётся из выноса линзы, выбранного обведёнными кадрами, — тогда форма остаётся жёсткой
+    /// и поворот головы не разводит её клетки. Без выноса глубина ищется по клетке, и при равной доле
+    /// совпадения побеждает та, где больше свидетельств.
     public func keptPoints() -> [SIMD3<Double>] {
         let depths = Self.depths.count
+        let chosen = lensStandoff.flatMap { standoff in Self.depths.firstIndex { $0 == standoff } }
         var kept: [SIMD3<Double>] = []
         for cell in 0..<cells {
-            var best = -1, bestShare = Self.share
+            if let chosen {
+                let index = cell * depths + chosen
+                if hits[index] >= Self.minHits { kept.append(SIMD3<Double>(centers[index])) }
+                continue
+            }
+            var best = -1, bestShare = Self.share, bestSeen = 0
             for d in 0..<depths {
                 let h = hits[cell * depths + d], m = misses[cell * depths + d]
                 guard h >= Self.minHits else { continue }
                 let share = Double(h) / Double(h + m)
-                if share > bestShare { best = d; bestShare = share }
+                let seen = Int(h) + Int(m)
+                if share > bestShare + 1e-9 || (share > bestShare - 1e-9 && seen > bestSeen) {
+                    best = d; bestShare = share; bestSeen = seen
+                }
             }
             if best >= 0 { kept.append(SIMD3<Double>(centers[cell * depths + best])) }
         }

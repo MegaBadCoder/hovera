@@ -17,7 +17,8 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 - Voice prompt to recalibrate the compass when something magnetic near the glasses changes the field (earbuds, a new seat).
 - Horizon grid and manual view calibration.
 - Crisp text: virtual monitors run at 1920×1080 without HiDPI, and the picture is scaled down to the glasses' pixels with a bicubic filter plus light sharpening.
-- Screens pinned to the wall using the MacBook camera: RayDesk learns the shape of the glasses on your face once (menu "Learn glasses shape", turn your head for 20 seconds), then finds them in each frame and moves the picture with your head. Face points come from the MediaPipe face landmark model converted to CoreML; head rotation comes from the gyroscope, so tracking holds even where the face is no longer visible. Menu items "Head position from glasses" and "Camera calibration" (menu titles are in Russian for now).
+- Screens pinned to the wall using the MacBook camera: RayDesk learns the shape of the glasses on your face once (menu "Learn the glasses shape", turn your head for 20 seconds), then finds them in each frame and moves the picture with your head. Face points come from the MediaPipe face landmark model converted to CoreML; head rotation comes from the gyroscope, so tracking holds even where the face is no longer visible. Menu items "Head position from the glasses" and "Guided camera calibration".
+- Interface in English or Russian: menu → Settings → Русский / English. The choice applies at once and is remembered; the macOS permission dialogs follow the system language.
 
 ## Requirements
 
@@ -53,22 +54,24 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `⇧←` / `⇧→` — turn the screen under your gaze by 2°; a joined side monitor swings around the shared edge like on a real stand.
 - `⌘↑` / `⌘↓` — tilt all screens together.
 - Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
-- Menu → "Рамка вокруг экранов" hides the screen borders, e.g. for films; a screen being dragged still shows its border.
+- Menu → "Border around the screens" hides the screen borders, e.g. for films; a screen being dragged still shows its border.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
 - `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there, and `R` puts the screens back relative to it.
 - `J` — force the cursor to where you look.
 - `W` — move the active window to the screen you look at (it keeps its place on the screen and shrinks if it does not fit).
 - `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.
-- `Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
+- `Z`, then click — temporarily enlarge the selected screen 2×, center the clicked point in your view, and face the screen toward your eyes. Other screens are hidden; the enlarged screen stays anchored in space. Press `Z` again to restore the original layout or cancel point selection. The selection click is not sent to the application. Editing the layout ends zoom.
+- `S` — look at the first screen and press, then look at the second and press again to swap their places. A thick border marks the first screen. Selecting it again cancels; looking between screens keeps the selection. No voice prompt. Windows stay on their displays.
+- `Shift+Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
 - `[` / `]` — field of view; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — mark “I am looking at the middle screen”: logs how far the world has drifted without resetting anything; `Q` — quit.
 
 ## Gyro scale calibration
 
-Worn on the head, a gyro that under- or over-counts turns by a few percent makes the screens lag behind your head and then slowly swing back into place. Menu → "Калибровка масштаба гироскопа (очки на столе)": stand the glasses on the table as if worn, press one temple against the edge of the laptop, wait for the voice prompt, turn them two full turns and press the temple back against the same edge. The correction is saved. On the author's pair the gyro under-counted by 3.3 %.
+Worn on the head, a gyro that under- or over-counts turns by a few percent makes the screens lag behind your head and then slowly swing back into place. Menu → "Calibrate the gyro scale (glasses on the table)": stand the glasses on the table as if worn, press one temple against the edge of the laptop, wait for the voice prompt, turn them two full turns and press the temple back against the same edge. The correction is saved. On the author's pair the gyro under-counted by 3.3 %.
 
 ## Meditation mode
 
-⌃⌥Z fades the screens out and surrounds you with space: stars, slowly drifting nebulae and a planet below. The sky is drawn procedurally on the GPU and stays put as you turn your head. Press ⌃⌥Z again to get your screens back.
+⌃⌥⇧Z fades the screens out and surrounds you with space: stars, slowly drifting nebulae and a planet below. The sky is drawn procedurally on the GPU and stays put as you turn your head. Press ⌃⌥⇧Z again to get your screens back.
 
 The sound is generated on the fly, no audio files: soft chords without a melody and ocean waves. "Neural effect" (menu → Meditation) adds a gentle 6 Hz pulse to the music volume, similar in spirit to brain.fm; off / low / medium / high. "Breathing" shows a glowing ring in front of you: 4 s inhale, 6 s exhale. The cursor does not follow your gaze while meditating.
 

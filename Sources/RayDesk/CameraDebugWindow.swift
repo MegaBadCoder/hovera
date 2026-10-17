@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import QuartzCore
+import RayDeskLocalization
 
 final class CameraDebugWindow {
     private let window: NSWindow
@@ -15,7 +16,7 @@ final class CameraDebugWindow {
         let area = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: size)
         let frame = NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height)
         window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "RayDesk — камера"
+        window.title = t(.cameraDebugTitle)
         window.isReleasedWhenClosed = false
         window.level = .floating
         let view = NSView(frame: NSRect(origin: .zero, size: size))
@@ -57,6 +58,10 @@ final class CameraDebugWindow {
         window.orderOut(nil)
     }
 
+    func applyLanguage() {
+        window.title = t(.cameraDebugTitle)
+    }
+
     func update(_ observation: CameraObservation) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -70,7 +75,7 @@ final class CameraDebugWindow {
         guard let face = observation.face else {
             boxLayer.path = nil
             pointsLayer.path = nil
-            textLayer.string = observation.glassesNote ?? "лицо не найдено"
+            textLayer.string = observation.glassesNote ?? t(.cameraNoteNoFace)
             return
         }
         let rect = preview.layerRectConverted(fromMetadataOutputRect: CGRect(x: face.minX, y: 1 - face.maxY, width: face.width, height: face.height))
@@ -89,18 +94,18 @@ final class CameraDebugWindow {
         pointsLayer.path = dots
         let neck = observation.neckOffset * 100
         let degree = 180 / Double.pi
-        textLayer.string = String(format: " шея: x %+.1f  y %+.1f  z %+.1f см\n от камеры: поворот %+.0f°  наклон %+.0f°  рамка %.3f%@",
-                                  neck.x, neck.y, neck.z, observation.turn.x * degree, observation.turn.y * degree, face.width,
-                                  verdictText(observation.verdict)) + (observation.glassesNote.map { "\n " + $0 } ?? "")
+        textLayer.string = String(format: t(.cameraDebugReadings),
+                                          neck.x, neck.y, neck.z, observation.turn.x * degree, observation.turn.y * degree, face.width,
+                                          verdictText(observation.verdict)) + (observation.glassesNote.map { "\n " + $0 } ?? "")
     }
 
     private func verdictText(_ verdict: CameraFrameVerdict) -> String {
         switch verdict {
         case .accepted, .noFace: ""
-        case .learning: "  · смотрите в камеру, запоминаю"
-        case .turned: "  · голова отвёрнута от камеры"
-        case .tilted: "  · голова сильно наклонена"
-        case .fast: "  · быстрый поворот"
+        case .learning: t(.cameraDebugVerdictLearning)
+        case .turned: t(.cameraDebugVerdictTurned)
+        case .tilted: t(.cameraDebugVerdictTilted)
+        case .fast: t(.cameraDebugVerdictFast)
         }
     }
 }

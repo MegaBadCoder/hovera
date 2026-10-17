@@ -7,3 +7,4 @@ tmp/
 .learning/
 output/
 docs/paper/
+.DS_Store

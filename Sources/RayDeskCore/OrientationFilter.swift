@@ -26,6 +26,7 @@ public final class OrientationFilter: @unchecked Sendable {
     private var restorer = FirmwareZeroRestorer()
     private var restoring = true
     private var learningWithCompass = false
+    private var worldRotationSinceRead = 0.0
     private var vectorLearner = VectorBiasLearner()
     private var smoothedAccel: SIMD3<Double>?
     private var history = [(time: Double, orientation: simd_quatd)](repeating: (0, simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)), count: OrientationFilter.historySize)
@@ -357,10 +358,35 @@ public final class OrientationFilter: @unchecked Sendable {
     public func rotateWorldYaw(by angle: Double) {
         lock.lock()
         rotateOrientationAndHistory(by: angle)
+        worldRotationSinceRead += angle
         for (sector, heading) in magneticReferences {
             magneticReferences[sector] = remainder(heading + angle, 2 * .pi)
         }
         lock.unlock()
+    }
+
+    /// Доворот мира вокруг вертикали, накопленный с прошлого вызова, радианы (плюс — влево);
+    /// вызов обнуляет счётчик.
+    public func takeWorldRotation() -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        let rotation = worldRotationSinceRead
+        worldRotationSinceRead = 0
+        return rotation
+    }
+
+    /// Смещение нуля, которое фильтр вычитает из гироскопа прямо сейчас, рад/с по осям тела.
+    public var appliedGyroBias: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return compass != nil && !learningWithCompass ? vectorLearner.bias : biasLearner.bias
+    }
+
+    /// Поправка восстановителя пересчётов нуля прошивки, рад/с по осям тела; ноль, если восстановитель выключен.
+    public var firmwareZeroShift: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return restoring ? restorer.shift : SIMD3(repeating: 0)
     }
 
     /// Вызывается под lock: прошлые кадры камеры должны использовать те же оси мира.

@@ -6,8 +6,10 @@ import QuartzCore
 import AVFoundation
 import simd
 import RayDeskCore
+import RayDeskLocalization
 
 private let sceneDefaultsKey = "screens.v2"
+private let languageDefaultsKey = "appLanguage"
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var scene = SpatialScene(screens: SpatialScene.decode(UserDefaults.standard.data(forKey: sceneDefaultsKey), default: 2, aspect: 16.0 / 9.0))
@@ -18,9 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var glassesView: MTKView?
     private var frameLink: CADisplayLink?
+    private var frameLinkDisplay: CGDirectDisplayID?
+    private var frameLinkSize: CGSize = .zero
+    private var screenChangeWork: DispatchWorkItem?
     private var lastRenderedFrame = CACurrentMediaTime()
     private var renderStalled = false
     private var renderer: Renderer?
+    private var isSelectingFocus = false
     private var isCalibrating = false
     private var statusTicks = 0
     private var compassFieldPrompted = false
@@ -29,9 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let speech = AVSpeechSynthesizer()
     private var isCalibratingCompass = false
     private var statusItem: NSStatusItem?
-    private var statusLine = NSMenuItem(title: "Запуск…", action: nil, keyEquivalent: "")
+    private var statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var statusText = ""
     private var statusTimer: Timer?
-    private var mouseTapLine = NSMenuItem(title: "Перетаскивание мышью: проверка разрешений…", action: nil, keyEquivalent: "")
+    private var mouseTapLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var mouseTapState = MouseTapState.checking
     private var mouseTap: MouseTap?
     private var accessibilityTimer: Timer?
     private var warpPolicy = CursorWarpPolicy()
@@ -42,7 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
     private var cameraDebugWindow: CameraDebugWindow?
+    private static let debugObserver = "camera-debug-window"
+    private static let outlineObserver = "glasses-outline-window"
     private var cameraCalibrationWindow: CameraCalibrationWindow?
+    private var glassesOutlineWindow: GlassesOutlineWindow?
     private lazy var cameraHead = CameraHeadTracker(
         orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) }
     )
@@ -51,9 +62,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var glassesTrackingItem: NSMenuItem?
 
     private var wallModeItem: NSMenuItem?
+    private var fovSlider: NSSlider?
+    private var fovValueLabel: NSTextField?
+    private var verticalFOVSave: DispatchWorkItem?
     private var learningGlasses = false
 
+    private enum MouseTapState {
+        case checking
+        case needsAccessibility
+        case running
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyStoredLanguage()
         let info = Bundle.main.infoDictionary ?? [:]
         log("BUILD id=\(info["RayDeskBuildID"] ?? "development") commit=\(info["RayDeskCommit"] ?? "unknown") source=\(info["RayDeskSource"] ?? "unknown") executable=\(Bundle.main.executablePath ?? "unknown") tracking=glasses-coreml")
         UserDefaults.standard.register(defaults: ["restoreFirmwareZero": true])
@@ -63,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMouseTap()
 
         guard glassesScreen()?.displayID != nil else {
-            fail("Очки не найдены среди дисплеев. Подключите RayNeo и перезапустите.")
+            fail(t(.alertGlassesMissing))
             return
         }
 
@@ -92,15 +113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         imu?.start()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.fitWindowToGlasses()
-            self?.restartFrameLink()
+            self?.noteScreenParametersChanged()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
             do {
                 try openGlassesWindow()
             } catch {
-                fail("Metal: \(error)")
+                fail(String(format: t(.alertMetalFailed), "\(error)"))
                 return
             }
             startCaptures()
@@ -139,12 +159,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let glassesBounds = CGDisplayBounds(glassesID)
         let sizes = slots.map(\.displayBounds.size)
         let result = RayDeskCore.arrangeDisplays(screenYaws: scene.screens.map(\.yaw), screenSizes: sizes, main: mainBounds, glasses: glassesBounds.size)
+        var origins = zip(slots, result.screens).map { (display: $0.0.displayID, origin: $0.1) }
+        origins.append((display: glassesID, origin: result.glasses))
+        let current = origins.map { CGDisplayBounds($0.display).origin }
+        let changed = zip(current, origins.map(\.origin)).filter { $0 != $1 }
+        guard !changed.isEmpty else { return }
+        for (was, now) in changed {
+            log(String(format: "display origin %.0f,%.0f -> %.0f,%.0f", was.x, was.y, now.x, now.y))
+        }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
-        for (slot, origin) in zip(slots, result.screens) {
-            CGConfigureDisplayOrigin(config, slot.virtualScreen.displayID, Int32(origin.x), Int32(origin.y))
+        for target in origins {
+            CGConfigureDisplayOrigin(config, target.display, Int32(target.origin.x), Int32(target.origin.y))
         }
-        CGConfigureDisplayOrigin(config, glassesID, Int32(result.glasses.x), Int32(result.glasses.y))
         let status = CGCompleteDisplayConfiguration(config, .forAppOnly)
         log("arrange displays: \(status.rawValue)")
     }
@@ -153,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !CGPreflightScreenCaptureAccess() {
             log("screen capture: not granted, requesting")
             CGRequestScreenCaptureAccess()
-            fail("Нужно разрешение на запись экрана.\n\nСистемные настройки → Конфиденциальность и безопасность → Запись экрана и системного звука → включите RayDesk, затем перезапустите RayDesk.\n\nПока в очках будет серый прямоугольник вместо экрана.")
+            fail(t(.alertScreenRecording))
             return
         }
         for slot in slots { startCapture(slot) }
@@ -165,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await slot.start()
                 log("capture started: screen \(slot.index + 1)")
             } catch {
-                fail("Захват экрана \(slot.index + 1) не запустился: \(error)")
+                fail(String(format: t(.alertCaptureFailed), slot.index + 1, "\(error)"))
             }
         }
     }
@@ -191,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         saveScene()
         saveGyroBias()
+        saveVerticalFOV()
         for slot in slots { slot.stop() }
         imu?.stop()
         accessibilityTimer?.invalidate()
@@ -212,12 +240,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
         renderer.showsScreenBorders = !UserDefaults.standard.bool(forKey: "hideScreenBorders")
-        if let calibration = loadSetting(ViewCalibration.self, key: "viewCalibration", name: "Настройка сетки") {
+        if let calibration = loadSetting(ViewCalibration.self, key: "viewCalibration", name: t(.settingGrid)) {
             renderer.calibration = calibration
         }
-        if let savedFOV = UserDefaults.standard.object(forKey: "verticalFOV") as? Double {
-            renderer.verticalFOV = savedFOV
-        }
+        renderer.verticalFOV = savedVerticalFOV()
         renderer.slots = slots
         renderer.macAnchor = macAnchor
         renderer.stabilizer.level = savedStabilization()
@@ -227,8 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.breathingEnabled = UserDefaults.standard.bool(forKey: "meditationBreathing")
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
-            lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
-            lastCursorHit = RayDeskCore.cursorHit(head: head, screens: scene.screens, mac: macAnchor)
+            updatePointerTargets(head: head)
             guard self.renderer?.meditation.isActive != true else { return }
             warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
         }
@@ -252,11 +277,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func restartFrameLink() {
         guard let screen = glassesScreen() else { return }
+        let now = CACurrentMediaTime()
+        if let frameLinkDisplay, let frameLink, frameLinkDisplay == screen.displayID, frameLinkSize == screen.frame.size {
+            frameLink.add(to: .main, forMode: .common)
+            return
+        }
         frameLink?.invalidate()
         let link = screen.displayLink(target: self, selector: #selector(renderFrame))
         link.add(to: .main, forMode: .common)
         frameLink = link
-        lastRenderedFrame = CACurrentMediaTime()
+        frameLinkDisplay = screen.displayID
+        frameLinkSize = screen.frame.size
+        lastRenderedFrame = now
+    }
+
+    /// Пересобирает окно, дисплейную ссылку и режим панели после того, как система
+    /// изменила параметры экранов.
+    ///
+    /// Работа отложена на следующий проход главного цикла: уведомление приходит посреди
+    /// перестроения пространств (Mission Control, смена рабочего стола), и синхронная
+    /// переконфигурация дисплеев растягивает главный поток на десятки миллисекунд.
+    private func noteScreenParametersChanged() {
+        screenChangeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.screenChangeWork = nil
+            self?.screenParametersSettled()
+        }
+        screenChangeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    private func screenParametersSettled() {
+        let started = CACurrentMediaTime()
+        useLightGlassesMode()
+        fitWindowToGlasses()
+        restartFrameLink()
+        let elapsed = (CACurrentMediaTime() - started) * 1000
+        if elapsed > 20 {
+            log(String(format: "screen parameters settled in %.0f ms", elapsed))
+        }
+    }
+
+    private func fitWindowToGlasses() {
+        guard let window, let screen = glassesScreen(), window.frame != screen.frame else { return }
+        window.setFrame(screen.frame, display: true)
     }
 
     private func watchRendering() {
@@ -273,21 +337,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restartFrameLink()
     }
 
-    private func fitWindowToGlasses() {
-        guard let window, let screen = glassesScreen(), window.frame != screen.frame else { return }
-        window.setFrame(screen.frame, display: true)
-    }
-
     enum GlassesError: Error { case screenMissing }
 
     private var head: simd_quatd { renderer?.currentHead ?? simd_quatd(ix: 0, iy: 0, iz: 0, r: 1) }
 
     private func targetScreen() -> Int {
-        RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
+        scene.focus?.screen ?? RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
     }
 
     private func saveScene() {
+        setFocusSelection(false)
         UserDefaults.standard.set(scene.encoded(), forKey: sceneDefaultsKey)
+    }
+
+    private func updatePointerTargets(head: simd_quatd) {
+        if let focus = scene.focus {
+            lastGazeHit = focus.hit(head: head, origin: renderer?.currentHeadOffset ?? .zero)
+            lastCursorHit = lastGazeHit.map { CursorHit(target: .virtual($0.screen), uv: $0.uv) }
+        } else {
+            lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
+            lastCursorHit = RayDeskCore.cursorHit(head: head, screens: scene.screens, mac: macAnchor)
+        }
+    }
+
+    private func setFocusSelection(_ active: Bool) {
+        isSelectingFocus = active
+        statusItem?.button?.image = NSImage(systemSymbolName: active ? "plus.magnifyingglass" : "eyeglasses", accessibilityDescription: "RayDesk")
+        statusItem?.button?.toolTip = active ? t(.saySelectFocusPoint) : nil
+    }
+
+    @objc private func toggleFocusZoom() {
+        scene.cancelSwap()
+        if isSelectingFocus || scene.focus != nil {
+            setFocusSelection(false)
+            scene.endFocus()
+            updatePointerTargets(head: head)
+            NSSound(named: "Tink")?.play()
+            return
+        }
+        guard renderer != nil, mouseTap != nil, mouseTap?.isDraggingScreen != true,
+              renderer?.meditation.isActive != true else { NSSound.beep(); return }
+        if let grabbed = scene.grabbed {
+            scene.toggleGrab(grabbed, head: head)
+            saveScene()
+            arrangeDisplays()
+        }
+        setFocusSelection(true)
+    }
+
+    @objc private func swapScreensByGaze() {
+        guard renderer != nil, mouseTap?.isDraggingScreen != true, !isSelectingFocus,
+              scene.focus == nil, renderer?.meditation.isActive != true else { NSSound.beep(); return }
+        guard let target = RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen else { return }
+        if let grabbed = scene.grabbed {
+            scene.toggleGrab(grabbed, head: head)
+            saveScene()
+            arrangeDisplays()
+        }
+        let source = scene.swapSource
+        let point = CGEvent(source: nil)?.location
+        let cursorScreen = point.flatMap { screenIndex(at: $0) }
+        guard scene.selectSwapTarget(target) else {
+            NSSound(named: "Tink")?.play()
+            return
+        }
+        let cursorUV: SIMD2<Double>? = point.flatMap { point in
+            guard let cursorScreen else { return nil }
+            let rect = bounds(of: cursorScreen)
+            guard rect.width > 0, rect.height > 0 else { return nil }
+            return SIMD2(Double((point.x - rect.minX) / rect.width), Double((point.y - rect.minY) / rect.height))
+        }
+        saveScene()
+        arrangeDisplays()
+        if let cursorScreen, let cursorUV {
+            let restored = globalPoint(uv: cursorUV, in: bounds(of: cursorScreen))
+            CGWarpMouseCursorPosition(restored)
+            mouseTap?.noteCursorMoved(to: restored)
+        }
+        updatePointerTargets(head: head)
+        NSSound(named: "Tink")?.play()
+        log("swapped screens \((source ?? target) + 1) and \(target + 1)")
     }
 
     @objc private func placeHere() {
@@ -403,7 +532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func say(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "ru-RU")
+        utterance.voice = AVSpeechSynthesisVoice(language: Localization.shared.language.speechVoiceIdentifier)
         speech.speak(utterance)
         log("say: \(text)")
     }
@@ -415,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             UserDefaults.standard.removeObject(forKey: key)
             log("\(key): stored value unreadable, reset: \(error)")
-            say("\(name) сброшена, настройте заново.")
+            say(String(format: t(.settingReset), name))
             return nil
         }
     }
@@ -425,7 +554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(try JSONEncoder().encode(value), forKey: key)
         } catch {
             log("\(key): not saved: \(error)")
-            say("Не удалось сохранить настройку.")
+            say(t(.settingNotSaved))
         }
     }
 
@@ -434,7 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("compass: off")
             return
         }
-        guard let calibration = loadSetting(MagnetometerCalibration.self, key: "magCalibration.v1", name: "Калибровка компаса") else {
+        guard let calibration = loadSetting(MagnetometerCalibration.self, key: "magCalibration.v1", name: t(.settingCompass)) else {
             log("compass: not calibrated")
             return
         }
@@ -456,8 +585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func calibrateGyroScale() {
         guard let imu else { return }
         if imu.temperature < Self.gyroScaleMinTemperature {
-            say(String(format: "Очки холодные: %.0f°. Масштаб гироскопа зависит от прогрева — наденьте их на пару минут, я запущу калибровку сама, когда будет %.0f°.",
-                       imu.temperature, Self.gyroScaleMinTemperature))
+            say(String(format: t(.sayGlassesCold), imu.temperature, Self.gyroScaleMinTemperature))
             log(String(format: "gyro scale calibration postponed: temperature %.1f C", imu.temperature))
             gyroScaleWarmupTimer?.invalidate()
             gyroScaleWarmupTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] timer in
@@ -471,7 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let box = GyroScaleBox()
-        say(String(format: "Очки прогреты до %.0f°. Калибровка масштаба гироскопа: поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте.", imu.temperature))
+        say(String(format: t(.sayGyroScaleStart), imu.temperature))
         log("gyro scale calibration started")
         imu.sampleSink = { [weak self] sample in
             guard let (previous, current) = box.add(sample) else { return }
@@ -480,7 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self, weak imu] in
             guard imu?.sampleSink != nil, box.isRunning else { return }
             imu?.sampleSink = nil
-            self?.say("Калибровка гироскопа прервана: время вышло.")
+            self?.say(t(.sayGyroScaleTimeout))
             log("gyro scale calibration timed out")
         }
     }
@@ -488,7 +616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func gyroScaleStageChanged(from previous: GyroScaleCalibration.Stage, to stage: GyroScaleCalibration.Stage) {
         switch stage {
         case .readyToTurn:
-            say("Ноль измерен. Медленно поверните очки на два полных оборота и прижмите дужку к тому же краю. Потом не трогайте.")
+            say(t(.sayGyroZeroMeasured))
         case .turning:
             break
         case .finished(let scale, let measured):
@@ -497,14 +625,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             filter.gyroScale = updated
             UserDefaults.standard.set([updated.x, updated.y, updated.z], forKey: "gyroScale.v1")
             log(String(format: "gyro scale calibrated: measured %.1f° for 720°, scale %.4f, stored %.4f", measured, scale, updated.y))
-            say(String(format: "Готово при %.0f°. Гироскоп ошибался на %.1f процента, поправка сохранена. Дальше: откалибруйте компас и проверьте уход меткой.", imu?.temperature ?? 0, (1 / scale - 1) * 100))
+            say(String(format: t(.sayGyroScaleDone), imu?.temperature ?? 0, (1 / scale - 1) * 100))
         case .failed(.notUpright):
             imu?.sampleSink = nil
-            say("Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново.")
+            say(t(.sayGyroNotUpright))
             log("gyro scale calibration failed: not upright")
         case .failed(.wrongTurnCount(let measured)):
             imu?.sampleSink = nil
-            say("Не получилось: насчитал не два оборота. Начните заново.")
+            say(t(.sayGyroWrongTurnCount))
             log(String(format: "gyro scale calibration failed: measured %.1f°", measured))
         case .waitingForRest:
             break
@@ -538,7 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isCalibratingCompass, let imu else { return }
         isCalibratingCompass = true
         imu.startCompassCalibration()
-        say("Калибровка компаса. Двадцать пять секунд медленно поворачивайте голову во все стороны: влево, вправо, вверх, вниз и к плечам.")
+        say(t(.sayCompassStart))
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.finishCompassCalibration() }
     }
 
@@ -550,7 +678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !compassFieldPrompted, !isCalibratingCompass else { return }
         compassFieldPrompted = true
         log("compass: field around the glasses differs from calibration")
-        say("Магнитное поле у очков изменилось, например от наушников. Чтобы экраны держались точнее, откалибруйте компас: Control Option K.")
+        say(t(.sayCompassFieldChanged))
     }
 
     private func finishCompassCalibration() {
@@ -565,24 +693,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(String(format: "compass calibrated: center %.1f %.1f %.1f radius %.2f dip %.1f° samples %d",
                        calibration.center.x, calibration.center.y, calibration.center.z,
                        calibration.radius, calibration.dip * 180 / .pi, fitter.sampleCount))
-            say("Компас откалиброван.")
+            say(t(.sayCompassDone))
         } catch MagnetometerCalibrationError.tooFewSamples(let count) {
             log("compass calibration failed: too few samples \(count)")
-            say("Не получилось: от очков пришло мало данных компаса. Попробуйте ещё раз.")
+            say(t(.sayCompassTooFewSamples))
         } catch MagnetometerCalibrationError.insufficientCoverage(let spread) {
             log(String(format: "compass calibration failed: coverage %.4f", spread))
-            say("Не получилось: мало поворотов. Повторите и крутите головой шире, особенно наклоны к плечам.")
+            say(t(.sayCompassTooFlat))
         } catch MagnetometerCalibrationError.noisyField(let spread) {
             log(String(format: "compass calibration failed: field spread %.3f", spread))
-            say("Не получилось: поле сильно искажено. Отодвиньтесь от магнитов и колонок и повторите.")
+            say(t(.sayCompassNoisy))
         } catch {
-            fail("Калибровка компаса: \(error)")
+            fail(String(format: t(.alertCompassCalibrationFailed), "\(error)"))
         }
     }
 
 
     private func loadMacAnchor() {
-        macAnchor = loadSetting(MacAnchor.self, key: "macAnchor.v1", name: "Позиция экрана Mac")
+        macAnchor = loadSetting(MacAnchor.self, key: "macAnchor.v1", name: t(.settingMacAnchor))
     }
 
     @objc private func captureMacAnchor() {
@@ -617,7 +745,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     log("glasses recording started: \(url.path)")
                 }
             } catch {
-                fail("Запись видео очков: \(error)")
+                fail(String(format: t(.alertGlassesRecordingFailed), "\(error)"))
             }
         }
     }
@@ -704,7 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     wallModeItem?.state = .on
                     cameraHead.observeCalibration(nil)
                     cameraCalibrationWindow = nil
-                    say("Калибровка готова.")
+                    say(t(.sayCalibrationDone))
                 }, cancel: { [weak self] in
                     self?.cameraHead.cancelGuidedCalibration()
                     self?.cameraHead.observeCalibration(nil)
@@ -720,28 +848,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             guard error == nil else {
                 if !wasGlassesTracking { self?.setGlassesTracking(false) }
-                self?.say("Камера недоступна. Разрешите доступ к камере в настройках macOS.")
+                self?.say(t(.sayCameraUnavailableSystem))
                 return
             }
             present()
         }
     }
 
+    /// Открывает окно обводки очков: обведённый контур ложится в форму эталоном. Форму при этом
+    /// не переучивают заново — обучение включает «Выучить форму очков» в том же меню.
+    @MainActor @objc private func toggleGlassesOutline(_ sender: NSMenuItem) {
+        if let window = glassesOutlineWindow, window.isVisible {
+            sender.state = .off
+            log("glasses outline window off")
+            stopGlassesLearning()
+            return
+        }
+        let open = { [weak self] in
+            guard let self else { return }
+            let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].displayID
+            let screen = NSScreen.screens.first { $0.displayID == display }
+            let window = GlassesOutlineWindow(on: screen)
+            window.freezeFrame = { [weak self] generation in self?.glassesVision.freeze(generation: generation) }
+            window.applyOutline = { [weak self] contour, context in self?.glassesVision.applyOutline(contour, on: context) }
+            window.markCells = { [weak self] points, adding, context in
+                self?.glassesVision.markCells(at: points, adding: adding, on: context) ?? 0
+            }
+            glassesOutlineWindow = window
+            cameraHead.addObserver(Self.outlineObserver) { [weak window] observation in window?.update(observation) }
+            window.show()
+            sender.state = .on
+            log("glasses outline window on")
+        }
+        guard learningGlasses else {
+            say(t(.glassesOutlineNeedsLearning))
+            log("glasses outline window refused: learning is off")
+            return
+        }
+        setGlassesTracking(true)
+        let begin = { @MainActor [weak self] in
+            guard let self else { return }
+            glassesVision.start { open() }
+        }
+        if cameraHead.isRunning {
+            begin()
+            return
+        }
+        cameraHead.start { [weak self] error in
+            if let error {
+                log("camera head tracking failed: \(error)")
+                sender.state = .off
+                self?.say(t(.sayCameraUnavailablePrivacy))
+                return
+            }
+            log("camera head tracking on")
+            begin()
+        }
+    }
+
+    /// Заканчивает обучение формы, сохраняет её и закрывает окно обводки: рисовать больше некуда.
+    @MainActor private func stopGlassesLearning() {
+        learningGlasses = false
+        glassesOutlineWindow?.close()
+        glassesOutlineWindow = nil
+        cameraHead.removeObserver(Self.outlineObserver)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let points = await glassesVision.stopLearning() ?? 0
+            log("glasses shape learned: \(points) points")
+            say(points > 0 ? t(.sayGlassesShapeLearned) : t(.sayGlassesShapeFailed))
+        }
+    }
+
     @objc private func toggleCameraDebug(_ sender: NSMenuItem) {
         if let window = cameraDebugWindow, window.isVisible {
             window.close()
-            cameraHead.observe(nil)
+            cameraHead.removeObserver(Self.debugObserver)
             sender.state = .off
             log("camera debug window off")
             return
         }
         let open = { [weak self] in
             guard let self else { return }
-            let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].virtualScreen.displayID
+            let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].displayID
             let screen = NSScreen.screens.first { $0.displayID == display }
             let window = CameraDebugWindow(session: cameraHead.captureSession, on: screen)
             cameraDebugWindow = window
-            cameraHead.observe { [weak window] observation in window?.update(observation) }
+            cameraHead.addObserver(Self.debugObserver) { [weak window] observation in window?.update(observation) }
             window.show()
             sender.state = .on
             log("camera debug window on")
@@ -753,7 +946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             if let error {
                 log("camera head tracking failed: \(error)")
-                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                self?.say(t(.sayCameraUnavailablePrivacy))
                 return
             }
             log("camera head tracking on")
@@ -770,7 +963,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(Double(degrees), forKey: "cameraFieldOfView")
         sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == degrees ? .on : .off }
         cameraHead.resetReference(after: 1, geometryChanged: true)
-        say("Угол камеры изменён. Посмотрите в камеру и посидите спокойно, я заново запомню положение головы.")
+        say(t(.sayCameraAngleChanged))
         log("camera field of view \(degrees)°")
     }
 
@@ -812,8 +1005,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cameraHead.resetReference(after: 0.3)
             installCameraHeadOffset(renderer)
             sender.state = .on
-            say(glassesTracking ? "Калибровка камерой включена. Посмотрите в камеру и посидите спокойно две секунды, я запомню положение головы."
-                : "Удержание центра по лицу включено. Посмотрите на камеру и задержитесь на секунду. Для ручного выравнивания используйте R.")
+            say(glassesTracking ? t(.sayWallModeGlasses) : t(.sayWallModeFace))
             log("wall mode on")
         }
         if cameraHead.isRunning {
@@ -823,7 +1015,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             if let error {
                 log("camera head tracking failed: \(error)")
-                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                self?.say(t(.sayCameraUnavailablePrivacy))
                 return
             }
             log("camera head tracking on")
@@ -848,14 +1040,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor @objc private func toggleGlassesLearning(_ sender: NSMenuItem) {
         if learningGlasses {
-            learningGlasses = false
             sender.state = .off
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let points = await glassesVision.stopLearning() ?? 0
-                log("glasses shape learned: \(points) points")
-                say(points > 0 ? "Форма очков запомнена." : "Форма очков не набралась. Проверьте, что лицо видно в камеру, и попробуйте ещё раз.")
-            }
+            stopGlassesLearning()
             return
         }
         setGlassesTracking(true)
@@ -867,7 +1053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { @MainActor [weak self] in
                     guard let self, learningGlasses else { return }
                     await glassesVision.startLearning()
-                    say("Смотрите в камеру ноутбука и секунд двадцать медленно крутите головой влево, вправо, вверх и вниз. Руки держите подальше от лица. Потом выберите этот пункт ещё раз.")
+                    say(t(.sayGlassesLearning))
                 }
             }
         }
@@ -880,7 +1066,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log("camera head tracking failed: \(error)")
                 self?.learningGlasses = false
                 sender.state = .off
-                self?.say("Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности.")
+                self?.say(t(.sayCameraUnavailablePrivacy))
                 return
             }
             log("camera head tracking on")
@@ -901,32 +1087,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard cameraHead.isRunning else { return }
         let reading = cameraHead.takeReading()
         if let glasses = reading.glassesPerSecond {
-            log(String(format: "CAMERA по очкам: найдены в %d из %d кадров/с, с лицом %d · совпадение формы %.0f%% · курс по камере: расхождение %.1f°, доворот %.2f°, уплывание гироскопа %.2f°/с, масштаб курса камеры %.2f · возраст замера %.2f с",
+            log(String(format: t(.cameraLogGlasses),
                        glasses, reading.framesPerSecond, reading.facesPerSecond, (reading.glassesScore ?? .nan) * 100,
                        (reading.headingDrift ?? .nan) * 180 / .pi, reading.headingCorrection * 180 / .pi,
                        reading.headingRate * 180 / .pi, reading.faceYawScale, reading.headingAge))
         }
         guard let position = reading.position else {
-            log("CAMERA лицо не найдено · кадров \(reading.framesPerSecond)/с")
+            log(String(format: t(.cameraLogNoFace), reading.framesPerSecond))
             return
         }
         let jitter = (reading.jitter ?? .zero) * 1000
         let neck = cameraHead.neckOffset() * 100
-        log(String(format: "CAMERA шея сдвинута x %.1f y %.1f z %.1f см · задержка кадра %.0f мс%@", neck.x, neck.y, neck.z,
-                   (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? " · калибровка камерой" : ""))
-        log(String(format: "CAMERA голова x %.1f y %.1f z %.1f см · дрожь %.1f %.1f %.1f мм · кадров %d/с, с лицом %d",
-                   position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
-                   reading.framesPerSecond, reading.facesPerSecond))
+        log(String(format: t(.cameraLogNeck), neck.x, neck.y, neck.z,
+                                              (reading.latency ?? .nan) * 1000, renderer?.headOffset != nil ? t(.cameraDebugCalibrated) : ""))
+        log(String(format: t(.cameraLogHead),
+                           position.x * 100, position.y * 100, position.z * 100, jitter.x, jitter.y, jitter.z,
+                           reading.framesPerSecond, reading.facesPerSecond))
     }
 
     @objc private func moveWindowToGaze() {
         guard let target = lastCursorHit?.target else {
-            say("Посмотрите на экран, куда перенести окно.")
+            say(t(.sayWindowTarget))
             return
         }
         let display: CGDirectDisplayID
         switch target {
-        case .virtual(let index): display = slots[index].virtualScreen.displayID
+        case .virtual(let index): display = slots[index].displayID
         case .mac: display = CGMainDisplayID()
         }
         do {
@@ -934,13 +1120,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(String(format: "window of %@ moved to %@ at %.0f,%.0f %.0f×%.0f", moved.app, String(describing: target),
                        moved.frame.minX, moved.frame.minY, moved.frame.width, moved.frame.height))
         } catch WindowMoveError.noAccessibility {
-            say("Нужно разрешение «Универсальный доступ» для RayDesk.")
+            say(t(.sayWindowNoAccessibility))
         } catch WindowMoveError.noFrontWindow {
             log("window move: no front window")
-            say("Нет активного окна.")
+            say(t(.sayWindowNoFrontWindow))
         } catch {
             log("window move failed: \(error)")
-            say("Это окно не переносится.")
+            say(t(.sayWindowNotMovable))
         }
     }
 
@@ -964,10 +1150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func joinMenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Стыковка экранов", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: t(.menuJoin), action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        for (join, title) in [(ScreenJoin.hinge, "Как тройной монитор: вертикально, стык по всей длине"),
-                              (.gaze, "По взгляду: каждый экран смотрит на вас")] {
+        for (join, title) in [(ScreenJoin.hinge, t(.menuJoinHinge)),
+                              (.gaze, t(.menuJoinGaze))] {
             let option = menuItem(title, #selector(chooseJoin(_:)))
             option.representedObject = join.rawValue
             option.state = join == savedJoin() ? .on : .off
@@ -1011,17 +1197,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arrangeDisplays()
     }
     private func meditationMenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Медитация", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: t(.menuMeditation), action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        submenu.addItem(menuItem("Включить / выключить   ⌃⌥Z", #selector(toggleMeditation)))
-        let breathing = menuItem("Дыхание (вдох 4 с, выдох 6 с)", #selector(toggleBreathing(_:)))
+        submenu.addItem(menuItem(t(.menuMeditationToggle), #selector(toggleMeditation)))
+        let breathing = menuItem(t(.menuBreathing), #selector(toggleBreathing(_:)))
         breathing.state = UserDefaults.standard.bool(forKey: "meditationBreathing") ? .on : .off
         submenu.addItem(breathing)
         submenu.addItem(.separator())
-        submenu.addItem(NSMenuItem(title: "Нейроэффект", action: nil, keyEquivalent: ""))
+        submenu.addItem(NSMenuItem(title: t(.menuNeuralEffect), action: nil, keyEquivalent: ""))
         let saved = savedNeuralEffect()
         meditationAudio.neuralEffect = saved
-        for (effect, title) in [(NeuralEffect.off, "Выключен"), (.low, "Слабый"), (.medium, "Средний"), (.high, "Сильный")] {
+        for (effect, title) in [(NeuralEffect.off, t(.menuNeuralEffectOff)), (.low, t(.menuNeuralEffectLow)),
+                                (.medium, t(.menuNeuralEffectMedium)), (.high, t(.menuNeuralEffectHigh))] {
             let option = menuItem("   " + title, #selector(chooseNeuralEffect(_:)))
             option.representedObject = effect.rawValue
             option.state = effect == saved ? .on : .off
@@ -1037,13 +1224,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleMeditation() {
         guard let renderer else { return }
+        setFocusSelection(false)
+        scene.endFocus()
+        scene.cancelSwap()
         renderer.toggleMeditation()
         if renderer.meditation.isActive {
             do {
                 try meditationAudio.start()
             } catch {
                 log("meditation audio failed: \(error)")
-                say("Не удалось включить звук медитации.")
+                say(t(.sayMeditationAudioFailed))
             }
         } else {
             meditationAudio.stop()
@@ -1106,11 +1296,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func widerFOV() { changeFOV(by: 0.5) }
     @objc private func narrowerFOV() { changeFOV(by: -0.5) }
+    @objc private func fovSliderChanged(_ sender: NSSlider) {
+        applyVerticalFOV(sender.doubleValue)
+        scheduleVerticalFOVSave()
+    }
     private func changeFOV(by delta: Double) {
         guard let renderer else { return }
-        renderer.verticalFOV = min(60, max(10, renderer.verticalFOV + delta))
-        UserDefaults.standard.set(renderer.verticalFOV, forKey: "verticalFOV")
+        applyVerticalFOV(renderer.verticalFOV + delta)
+        saveVerticalFOV()
         log(String(format: "vertical FOV %.1f°", renderer.verticalFOV))
+    }
+    private func applyVerticalFOV(_ value: Double) {
+        guard let renderer else { return }
+        renderer.verticalFOV = min(Renderer.verticalFOVRange.upperBound, max(Renderer.verticalFOVRange.lowerBound, value))
+        showVerticalFOV(renderer.verticalFOV)
+    }
+    private func scheduleVerticalFOVSave() {
+        verticalFOVSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveVerticalFOV() }
+        verticalFOVSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+    private func saveVerticalFOV() {
+        guard let renderer else { return }
+        UserDefaults.standard.set(renderer.verticalFOV, forKey: "verticalFOV")
+    }
+    private func savedVerticalFOV() -> Double {
+        UserDefaults.standard.object(forKey: "verticalFOV") as? Double ?? Renderer.defaultVerticalFOV
+    }
+    private func showVerticalFOV(_ value: Double) {
+        fovSlider?.doubleValue = value
+        fovValueLabel?.stringValue = String(format: "%.1f°", value)
     }
     @objc private func toggleWindow() {
         guard let window else { return }
@@ -1160,7 +1376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_J) { [weak self] in self?.warpCursorToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
-        hotkeys.register(keyCode: kVK_ANSI_Z) { [weak self] in self?.toggleMeditation() }
+        hotkeys.register(keyCode: kVK_ANSI_Z) { [weak self] in self?.toggleFocusZoom() }
+        hotkeys.register(keyCode: kVK_ANSI_Z, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.toggleMeditation() }
+        hotkeys.register(keyCode: kVK_ANSI_S) { [weak self] in self?.swapScreensByGaze() }
         hotkeys.register(keyCode: kVK_ANSI_A) { [weak self] in self?.arrangeInArc() }
         hotkeys.register(keyCode: kVK_ANSI_W) { [weak self] in self?.moveWindowToGaze() }
     }
@@ -1168,62 +1386,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenu() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "RayDesk")
+        item.menu = buildMenu()
+        statusItem = item
+    }
+
+    private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        statusLine.title = statusText.isEmpty ? t(.statusStarting) : statusText
+        refreshMouseTapLine()
         menu.addItem(statusLine)
         menu.addItem(.separator())
-        menu.addItem(submenu("Экраны") { screens in
-            screens.addItem(menuItem("Поставить экран туда, куда смотрю   ⌃⌥Space", #selector(placeHere)))
-            screens.addItem(menuItem("Взять / отпустить экран   ⌃⌥G", #selector(toggleGrab)))
+        menu.addItem(submenu(t(.menuScreens)) { screens in
+            screens.addItem(menuItem(t(.menuPlaceHere), #selector(placeHere)))
+            screens.addItem(menuItem(t(.menuGrab), #selector(toggleGrab)))
+            screens.addItem(menuItem(t(.menuFocusZoom), #selector(toggleFocusZoom)))
+            screens.addItem(menuItem(t(.menuSwapScreen), #selector(swapScreensByGaze)))
             screens.addItem(.separator())
-            screens.addItem(menuItem("Ближе   ⌃⌥↑", #selector(closer)))
-            screens.addItem(menuItem("Дальше   ⌃⌥↓", #selector(farther)))
-            screens.addItem(menuItem("Больше   ⌃⌥=", #selector(bigger)))
-            screens.addItem(menuItem("Меньше   ⌃⌥−", #selector(smaller)))
-            screens.addItem(menuItem("Наклонить назад   ⌃⌥⇧↑", #selector(tiltBack)))
-            screens.addItem(menuItem("Наклонить вперёд   ⌃⌥⇧↓", #selector(tiltForward)))
-            screens.addItem(menuItem("Довернуть экран влево   ⌃⌥⇧←", #selector(turnLeft)))
-            screens.addItem(menuItem("Довернуть экран вправо   ⌃⌥⇧→", #selector(turnRight)))
-            screens.addItem(menuItem("Наклонить все назад   ⌃⌥⌘↑", #selector(tiltAllBack)))
-            screens.addItem(menuItem("Наклонить все вперёд   ⌃⌥⌘↓", #selector(tiltAllForward)))
+            screens.addItem(menuItem(t(.menuCloser), #selector(closer)))
+            screens.addItem(menuItem(t(.menuFarther), #selector(farther)))
+            screens.addItem(menuItem(t(.menuBigger), #selector(bigger)))
+            screens.addItem(menuItem(t(.menuSmaller), #selector(smaller)))
+            screens.addItem(menuItem(t(.menuTiltBack), #selector(tiltBack)))
+            screens.addItem(menuItem(t(.menuTiltForward), #selector(tiltForward)))
+            screens.addItem(menuItem(t(.menuTurnLeft), #selector(turnLeft)))
+            screens.addItem(menuItem(t(.menuTurnRight), #selector(turnRight)))
+            screens.addItem(menuItem(t(.menuTiltAllBack), #selector(tiltAllBack)))
+            screens.addItem(menuItem(t(.menuTiltAllForward), #selector(tiltAllForward)))
             screens.addItem(.separator())
-            screens.addItem(menuItem("Собрать экраны перед собой", #selector(gatherScreens)))
-            screens.addItem(menuItem("Собрать дугой, край к краю   ⌃⌥A", #selector(arrangeInArc)))
+            screens.addItem(menuItem(t(.menuGatherScreens), #selector(gatherScreens)))
+            screens.addItem(menuItem(t(.menuArrangeInArc), #selector(arrangeInArc)))
             screens.addItem(joinMenu())
             screens.addItem(.separator())
-            screens.addItem(menuItem("Добавить экран", #selector(addScreen)))
-            screens.addItem(menuItem("Убрать экран", #selector(removeScreen)))
+            screens.addItem(menuItem(t(.menuAddScreen), #selector(addScreen)))
+            screens.addItem(menuItem(t(.menuRemoveScreen), #selector(removeScreen)))
             screens.addItem(.separator())
-            screens.addItem(menuItem("Курсор — туда, куда смотрю   ⌃⌥J", #selector(warpCursorToGaze)))
-            screens.addItem(menuItem("Окно — туда, куда смотрю   ⌃⌥W", #selector(moveWindowToGaze)))
+            screens.addItem(menuItem(t(.menuCursorToGaze), #selector(warpCursorToGaze)))
+            screens.addItem(menuItem(t(.menuWindowToGaze), #selector(moveWindowToGaze)))
         })
-        menu.addItem(submenu("Центр и курс") { center in
-            center.addItem(menuItem("Вернуть экраны по MacBook: навести перекрестие, ещё раз   ⌃⌥R", #selector(recenterWorld)))
-            center.addItem(menuItem("«Вперёд» = куда смотрю   ⌃⌥⇧R", #selector(recenterToGaze)))
-            center.addItem(menuItem("Экран Mac — там, куда смотрю   ⌃⌥B", #selector(captureMacAnchor)))
-            center.addItem(menuItem("Метка: смотрю на средний экран (только в лог)   ⌃⌥M", #selector(markReference)))
+        menu.addItem(submenu(t(.menuCentreHeading)) { center in
+            center.addItem(menuItem(t(.menuRecentreWorld), #selector(recenterWorld)))
+            center.addItem(menuItem(t(.menuRecentreToGaze), #selector(recenterToGaze)))
+            center.addItem(menuItem(t(.menuCaptureMacAnchor), #selector(captureMacAnchor)))
+            center.addItem(menuItem(t(.menuMarkReference), #selector(markReference)))
             center.addItem(.separator())
-            let compassItem = menuItem("Компас", #selector(toggleCompass(_:)))
+            let compassItem = menuItem(t(.menuCompass), #selector(toggleCompass(_:)))
             compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
             center.addItem(compassItem)
-            center.addItem(menuItem("Калибровка компаса   ⌃⌥K", #selector(calibrateCompass)))
-            center.addItem(menuItem("Калибровка масштаба гироскопа (очки на столе)", #selector(calibrateGyroScale)))
-            center.addItem(menuItem("Перекалибровать гироскоп", #selector(recalibrate)))
+            center.addItem(menuItem(t(.menuCalibrateCompass), #selector(calibrateCompass)))
+            center.addItem(menuItem(t(.menuCalibrateGyroScale), #selector(calibrateGyroScale)))
+            center.addItem(menuItem(t(.menuRecalibrateGyro), #selector(recalibrate)))
         })
-        menu.addItem(submenu("Камера") { camera in
-            let glassesItem = menuItem("Положение головы по очкам (MediaPipe)", #selector(toggleGlassesTracking(_:)))
+        menu.addItem(submenu(t(.menuCamera)) { camera in
+            let glassesItem = menuItem(t(.menuGlassesTracking), #selector(toggleGlassesTracking(_:)))
             glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
             glassesTrackingItem = glassesItem
             camera.addItem(glassesItem)
-            let wallItem = menuItem("Удержание центра камерой", #selector(toggleWallMode(_:)))
+            let wallItem = menuItem(t(.menuWallMode), #selector(toggleWallMode(_:)))
+            wallItem.state = renderer?.headOffset != nil ? .on : .off
             wallModeItem = wallItem
             camera.addItem(wallItem)
-            camera.addItem(menuItem("Калибровка камерой с подсказками…   ⌃⌥⇧K", #selector(startCameraCalibration)))
-            camera.addItem(menuItem("Выучить форму очков (старт/стоп)", #selector(toggleGlassesLearning(_:))))
-            let zeroItem = menuItem("Отменять пересчёты нуля гироскопа прошивкой", #selector(toggleFirmwareZeroRestore(_:)))
+            camera.addItem(menuItem(t(.menuCameraCalibration), #selector(startCameraCalibration)))
+            let learnItem = menuItem(t(.menuLearnGlassesShape), #selector(toggleGlassesLearning(_:)))
+            learnItem.state = learningGlasses ? .on : .off
+            camera.addItem(learnItem)
+            let outlineItem = menuItem(t(.menuGlassesOutline), #selector(toggleGlassesOutline(_:)))
+            outlineItem.state = glassesOutlineWindow?.isVisible == true ? .on : .off
+            camera.addItem(outlineItem)
+            let zeroItem = menuItem(t(.menuFirmwareZeroRestore), #selector(toggleFirmwareZeroRestore(_:)))
             zeroItem.state = UserDefaults.standard.bool(forKey: "restoreFirmwareZero") ? .on : .off
             camera.addItem(zeroItem)
             camera.addItem(.separator())
-            let fieldOfView = NSMenuItem(title: "Угол обзора камеры (масштаб вперёд-назад)", action: nil, keyEquivalent: "")
+            let fieldOfView = NSMenuItem(title: t(.menuCameraFieldOfView), action: nil, keyEquivalent: "")
             let angles = NSMenu()
             let currentAngle = UserDefaults.standard.object(forKey: "cameraFieldOfView") as? Double ?? 70
             for degrees in [60, 70, 80, 90, 100, 110] {
@@ -1234,7 +1467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             fieldOfView.submenu = angles
             camera.addItem(fieldOfView)
-            let depth = NSMenuItem(title: "Сила вперёд-назад", action: nil, keyEquivalent: "")
+            let depth = NSMenuItem(title: t(.menuWallDepth), action: nil, keyEquivalent: "")
             let strengths = NSMenu()
             for percent in [25, 50, 75, 100] {
                 let option = menuItem("\(percent) %", #selector(chooseWallDepth(_:)))
@@ -1245,21 +1478,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             depth.submenu = strengths
             camera.addItem(depth)
             camera.addItem(.separator())
-            camera.addItem(menuItem("Окно отладки (рамка и точки лица)", #selector(toggleCameraDebug(_:))))
+            let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
+            debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
+            camera.addItem(debugItem)
         })
-        menu.addItem(submenu("Картинка") { picture in
-            picture.addItem(menuItem("Скрыть / показать картинку   ⌃⌥H", #selector(toggleWindow)))
-            let bordersItem = menuItem("Рамка вокруг экранов", #selector(toggleScreenBorders(_:)))
+        menu.addItem(submenu(t(.menuPicture)) { picture in
+            picture.autoenablesItems = false
+            picture.addItem(menuItem(t(.menuTogglePicture), #selector(toggleWindow)))
+            let bordersItem = menuItem(t(.menuScreenBorders), #selector(toggleScreenBorders(_:)))
             bordersItem.state = UserDefaults.standard.bool(forKey: "hideScreenBorders") ? .off : .on
             picture.addItem(bordersItem)
             picture.addItem(.separator())
-            picture.addItem(menuItem("Угол обзора больше   ⌃⌥]", #selector(widerFOV)))
-            picture.addItem(menuItem("Угол обзора меньше   ⌃⌥[", #selector(narrowerFOV)))
-            picture.addItem(menuItem("Предсказание больше   ⌃⌥0", #selector(morePrediction)))
-            picture.addItem(menuItem("Предсказание меньше   ⌃⌥9", #selector(lessPrediction)))
-            let stabilization = NSMenuItem(title: "Стабилизация картинки", action: nil, keyEquivalent: "")
+            picture.addItem(fovControl())
+            picture.addItem(menuItem(t(.menuFieldOfViewWider), #selector(widerFOV)))
+            picture.addItem(menuItem(t(.menuFieldOfViewNarrower), #selector(narrowerFOV)))
+            picture.addItem(menuItem(t(.menuMorePrediction), #selector(morePrediction)))
+            picture.addItem(menuItem(t(.menuLessPrediction), #selector(lessPrediction)))
+            let stabilization = NSMenuItem(title: t(.menuStabilization), action: nil, keyEquivalent: "")
             let levels = NSMenu()
-            for (level, title) in [(StabilizationLevel.off, "Выключена"), (.weak, "Слабая"), (.medium, "Средняя"), (.strong, "Сильная")] {
+            for (level, title) in [(StabilizationLevel.off, t(.menuStabilizationOff)), (.weak, t(.menuStabilizationWeak)),
+                                   (.medium, t(.menuStabilizationMedium)), (.strong, t(.menuStabilizationStrong))] {
                 let item = menuItem(title, #selector(chooseStabilization(_:)))
                 item.representedObject = level.rawValue
                 item.state = level == savedStabilization() ? .on : .off
@@ -1268,17 +1506,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stabilization.submenu = levels
             picture.addItem(stabilization)
             picture.addItem(.separator())
-            picture.addItem(menuItem("Сетка горизонта   ⌃⌥D", #selector(toggleGrid)))
-            picture.addItem(menuItem("Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)", #selector(toggleCalibration)))
-            picture.addItem(menuItem("Записать видео очков (старт/стоп)   ⌃⌥V", #selector(toggleRecording)))
+            picture.addItem(menuItem(t(.menuHorizonGrid), #selector(toggleGrid)))
+            picture.addItem(menuItem(t(.menuGridManual), #selector(toggleCalibration)))
+            picture.addItem(menuItem(t(.menuRecordGlassesVideo), #selector(toggleRecording)))
         })
         menu.addItem(meditationMenu())
+        menu.addItem(submenu(t(.menuSettings)) { settings in
+            for language in AppLanguage.allCases {
+                let option = menuItem(language.nativeName, #selector(chooseLanguage(_:)))
+                option.representedObject = language.rawValue
+                option.state = language == Localization.shared.language ? .on : .off
+                settings.addItem(option)
+            }
+        })
         menu.addItem(.separator())
         menu.addItem(mouseTapLine)
         menu.addItem(.separator())
-        menu.addItem(menuItem("Выйти   ⌃⌥Q", #selector(quit)))
-        item.menu = menu
-        statusItem = item
+        menu.addItem(menuItem(t(.menuQuit), #selector(quit)))
+        return menu
+    }
+
+    private func applyStoredLanguage() {
+        guard let raw = UserDefaults.standard.string(forKey: languageDefaultsKey),
+              let language = AppLanguage(rawValue: raw) else { return }
+        Localization.shared.language = language
+    }
+
+    @MainActor @objc private func chooseLanguage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let language = AppLanguage(rawValue: raw) else { return }
+        Localization.shared.language = language
+        UserDefaults.standard.set(language.rawValue, forKey: languageDefaultsKey)
+        cameraDebugWindow?.applyLanguage()
+        cameraCalibrationWindow?.applyLanguage()
+        glassesOutlineWindow?.applyLanguage()
+        // Меню подменяется следующим тиком: сейчас AppKit ещё показывает то, из которого выбрали язык.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            statusItem?.menu = buildMenu()
+        }
+        log("language \(language.rawValue)")
     }
 
     private func submenu(_ title: String, _ build: (NSMenu) -> Void) -> NSMenuItem {
@@ -1295,6 +1561,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func fovControl() -> NSMenuItem {
+        let saved = savedVerticalFOV()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 26))
+        let title = NSTextField(labelWithString: t(.menuFieldOfView))
+        title.font = .menuFont(ofSize: 0)
+        title.setContentHuggingPriority(.required, for: .horizontal)
+        let value = NSTextField(labelWithString: "")
+        value.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        value.alignment = .right
+        let slider = NSSlider(value: saved,
+                              minValue: Renderer.verticalFOVRange.lowerBound,
+                              maxValue: Renderer.verticalFOVRange.upperBound,
+                              target: self, action: #selector(fovSliderChanged(_:)))
+        slider.isContinuous = true
+        slider.setAccessibilityLabel(t(.menuFieldOfView))
+        slider.controlSize = .small
+        slider.altIncrementValue = 0.5
+        slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for view in [title, slider, value] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            title.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            slider.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 10),
+            slider.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            value.leadingAnchor.constraint(equalTo: slider.trailingAnchor, constant: 10),
+            value.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            value.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            value.widthAnchor.constraint(equalToConstant: 46)
+        ])
+        fovSlider = slider
+        fovValueLabel = value
+        showVerticalFOV(saved)
+        let item = NSMenuItem()
+        item.view = container
+        item.isEnabled = true
+        return item
+    }
+
     private func refreshStatus() {
         statusTicks += 1
         if statusTicks % 30 == 0 { saveGyroBias() }
@@ -1308,15 +1615,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logCameraHead()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        statusLine.title = String(format: "IMU %@ %d Гц · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · компас %@ · %.0f°",
-                                  imu?.isConnected == true ? "✓" : "✗", rate,
-                                  yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
-                                  filter.magnetometerCalibration == nil ? "✗" : "✓", imu?.temperature ?? 0)
+        if let renderer { showVerticalFOV(renderer.verticalFOV) }
+        statusText = String(format: t(.statusLine),
+                                    imu?.isConnected == true ? "✓" : "✗", rate,
+                                    yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
+                                    filter.magnetometerCalibration == nil ? "✗" : "✓", imu?.temperature ?? 0)
+        statusLine.title = statusText
         let learned = filter.gyroBias * 180 / .pi
-        let compass = String(format: "ноль %.3f %.3f %.3f °/с", learned.x, learned.y, learned.z)
-            + (filter.magnetometerCalibration == nil ? " · компас выкл" : String(format: " · компас расходится %.1f°", filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? " · поле изменилось" : ""))
-        log(statusLine.title + String(format: " · %@ · %.1f °C · предсказание %.0f мс · пересчётов нуля прошивкой отменено %d", compass,
-                                      imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
+        let compass = String(format: t(.statusGyroBias), learned.x, learned.y, learned.z)
+            + (filter.magnetometerCalibration == nil ? t(.statusCompassOff) : String(format: t(.statusCompassError), filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? t(.statusFieldChanged) : ""))
+        log(statusText + String(format: t(.statusDiagnostics), compass,
+                                                               imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
+        let applied = filter.appliedGyroBias * 180 / .pi
+        let shift = filter.firmwareZeroShift * 180 / .pi
+        log(String(format: "DIAG применён ноль %.3f %.3f %.3f · сдвиг восстановителя %.3f %.3f %.3f · доворот мира %.3f °/с · компас расходится %.1f°",
+                   applied.x, applied.y, applied.z, shift.x, shift.y, shift.z,
+                   filter.takeWorldRotation() * 180 / .pi, filter.compassError * 180 / .pi))
+    }
+
+    private func refreshMouseTapLine() {
+        switch mouseTapState {
+        case .checking: mouseTapLine.title = t(.mouseTapChecking)
+        case .needsAccessibility: mouseTapLine.title = t(.mouseTapNeedsAccessibility)
+        case .running: mouseTapLine.title = t(.mouseTapRunning)
+        }
     }
 
     private func setupMouseTap() {
@@ -1324,7 +1646,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if trusted {
             startMouseTap()
         } else {
-            mouseTapLine.title = "Перетаскивание мышью: нужно разрешение Accessibility"
+            mouseTapState = .needsAccessibility
+            refreshMouseTapLine()
             log("accessibility: not trusted, waiting for permission")
             accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 guard let self, AXIsProcessTrusted() else { return }
@@ -1337,17 +1660,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMouseTap() {
         guard let tap = MouseTap(delegate: self) else {
-            fail("Не удалось создать перехватчик событий мыши (CGEvent.tapCreate вернул nil).")
+            fail(t(.alertMouseTapFailed))
             return
         }
         mouseTap = tap
-        mouseTapLine.title = "⌃⌥ + тащить — двигать экран, ⌃⌥ + скролл — ближе/дальше"
+        mouseTapState = .running
+        refreshMouseTapLine()
         log("mouse tap: started")
     }
 
     private func fail(_ message: String) {
         log("ERROR \(message)")
-        statusLine.title = "Ошибка — см. окно"
+        statusText = t(.statusError)
+        statusLine.title = statusText
         let alert = NSAlert()
         alert.messageText = "RayDesk"
         alert.informativeText = message
@@ -1357,6 +1682,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: MouseTapDelegate {
+    func consumeFocusClick(at point: CGPoint) -> Bool {
+        guard isSelectingFocus else { return false }
+        guard let renderer, !renderer.meditation.isActive, let index = screenIndex(at: point) else {
+            NSSound.beep()
+            return true
+        }
+        let rect = bounds(of: index)
+        guard rect.width > 0, rect.height > 0 else { return true }
+        let uv = SIMD2(Double((point.x - rect.minX) / rect.width), Double((point.y - rect.minY) / rect.height))
+        scene.beginFocus(index, uv: uv, head: head, origin: renderer.currentHeadOffset)
+        setFocusSelection(false)
+        updatePointerTargets(head: head)
+        NSSound(named: "Tink")?.play()
+        return true
+    }
+
+    private func focusedCursorPoint(_ point: CGPoint) -> CGPoint? {
+        guard let focus = scene.focus else { return nil }
+        let rect = bounds(of: focus.screen)
+        guard !rect.contains(point) else { return nil }
+        return CGPoint(x: min(rect.maxX - 1, max(rect.minX, point.x)), y: min(rect.maxY - 1, max(rect.minY, point.y)))
+    }
+
     func screenIndex(at point: CGPoint) -> Int? {
         slots.firstIndex { $0.displayBounds.contains(point) }
     }
@@ -1371,11 +1719,12 @@ extension AppDelegate: MouseTapDelegate {
     }
 
     func warpTarget(cursor: CursorTarget?) -> CursorTarget? {
-        guard renderer?.meditation.isActive != true else { return nil }
+        guard renderer?.meditation.isActive != true, scene.focus == nil else { return nil }
         return warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
     }
 
     func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint? {
+        if scene.focus != nil { return focusedCursorPoint(proposed) }
         guard let glassesID = glassesScreen()?.displayID else { return nil }
         var preferred: Int?
         if case .virtual(let index) = lastCursorHit?.target { preferred = index }
@@ -1385,6 +1734,7 @@ extension AppDelegate: MouseTapDelegate {
     }
 
     func fencedCursor(previous: CGPoint, proposed: CGPoint) -> CGPoint? {
+        if scene.focus != nil { return focusedCursorPoint(proposed) }
         guard let glassesID = glassesScreen()?.displayID else { return nil }
         return RayDeskCore.fencedCursor(previous: previous, proposed: proposed,
                                         main: CGDisplayBounds(CGMainDisplayID()), glasses: CGDisplayBounds(glassesID))
@@ -1445,8 +1795,18 @@ extension NSScreen {
 
 private let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk.log")
 
+/// Время в логе: один форматтер на процесс.
+///
+/// `Date.formatted` тянет локаль лениво и может прокрутить главный цикл — вызов из кадра
+/// отрисовки заходит в отрисовку повторно, и кадр растягивается.
+private let logFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "H:mm:ss"
+    return formatter
+}()
+
 func log(_ message: String) {
-    let line = "\(Date().formatted(date: .omitted, time: .standard)) \(message)\n"
+    let line = "\(logFormatter.string(from: Date())) \(message)\n"
     guard let data = line.data(using: .utf8) else { return }
     if let handle = try? FileHandle(forWritingTo: logURL) {
         handle.seekToEndOfFile()

@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import simd
+import RayDeskLocalization
 
 /// Мастер не меняет рабочую опору до успешной проверки возврата.
 public struct GuidedCameraCalibration {
@@ -31,7 +32,7 @@ public struct GuidedCameraCalibration {
     }
     public private(set) var stage = Stage.position
     public private(set) var progress = 0.0
-    public private(set) var hint = "Расположите лицо внутри контура и посмотрите в камеру"
+    public private(set) var hint: UIString = .hintFaceInsideOutline
     public private(set) var result: Result?
     private var samples: [Sample] = []
     private var origin: Sample?
@@ -47,7 +48,7 @@ public struct GuidedCameraCalibration {
     public mutating func checkTimeout(at time: Double) {
         if mode == .center, stage == .complete, let lastTime, time - lastTime > 0.5 {
             stage = .position; result = nil; samples.removeAll(); progress = 0
-            hint = "Посмотрите в камеру — обновим положение перед применением"
+            hint = .hintRefreshBeforeApply
         }
         guard time.isFinite, stage != .complete, stage != .failed else { return }
         let lost = lastReliableTime.map { time - $0 > 2 } ?? false
@@ -56,19 +57,19 @@ public struct GuidedCameraCalibration {
             origin = nil; left = nil; result = nil; leftScale = 1; leftReturnError = 0
             legStarted = nil; lastReliableTime = nil
             advance(.position)
-            hint = "Опора устарела. Вернитесь в центр — заново запомним положение"
+            hint = .hintReferenceStale
         }
     }
     private static let degree = Double.pi / 180
     public init(mode: Mode = .center) { self.mode = mode }
 
-    public mutating func interrupt(_ message: String = "Кадры камеры не поступают. Проверьте камеру") {
+    public mutating func interrupt(_ hint: UIString = .hintNoCameraFrames) {
         if mode == .center, stage == .complete { stage = .position; result = nil }
         guard stage != .complete, stage != .failed else { return }
-        samples.removeAll(); progress = 0; hint = message
+        samples.removeAll(); progress = 0; self.hint = hint
     }
 
-    public mutating func invalidate(_ message: String) { result = nil; fail(message) }
+    public mutating func invalidate(_ hint: UIString) { result = nil; fail(hint) }
 
     public mutating func update(_ sample: Sample) {
         if mode == .center, stage == .complete {
@@ -84,39 +85,39 @@ public struct GuidedCameraCalibration {
               sample.neck.x.isFinite, sample.neck.y.isFinite, sample.neck.z.isFinite,
               sample.latency >= 0, sample.latency < 0.2,
               let face = sample.face, sample.quality >= 0.75 else {
-            interrupt("Лицо не распознано уверенно. Посмотрите в камеру"); return
+            interrupt(.hintFaceNotRecognised); return
         }
         guard face.minX > 0.03, face.maxX < 0.97, face.minY > 0.03, face.maxY < 0.97 else {
-            interrupt("Лицо обрезано. Расположитесь ближе к центру кадра"); return
+            interrupt(.hintFaceCropped); return
         }
-        guard face.width >= 0.12 else { interrupt("Приблизьтесь немного к камере"); return }
-        guard abs(sample.turn.y) < 25 * Self.degree else { interrupt("Держите голову ровнее"); return }
+        guard face.width >= 0.12 else { interrupt(.hintMoveCloser); return }
+        guard abs(sample.turn.y) < 25 * Self.degree else { interrupt(.hintHoldHeadStraight); return }
         lastReliableTime = sample.time
         let relativeYaw = sample.turn.x - (origin?.turn.x ?? 0)
         switch stage {
         case .position:
             guard abs(sample.turn.x) < 10 * Self.degree,
                   abs(face.midX - 0.5) < 0.2, abs(face.midY - 0.5) < 0.25 else {
-                interrupt("Посмотрите прямо в камеру и расположитесь по центру"); return
+                interrupt(.hintLookStraightAndCentre); return
             }
         case .left:
             guard relativeYaw > 12 * Self.degree, relativeYaw < 24 * Self.degree else {
-                interrupt("Медленно поверните голову влево примерно на 15°"); return
+                interrupt(.hintTurnLeftFifteen); return
             }
         case .right:
             guard relativeYaw < -12 * Self.degree, relativeYaw > -24 * Self.degree else {
-                interrupt("Теперь медленно поверните голову вправо примерно на 15°"); return
+                interrupt(.hintTurnRightFifteen); return
             }
         case .middle, .returning:
             guard abs(relativeYaw) < 2 * Self.degree,
                   abs(sample.turn.y - origin!.turn.y) < 3 * Self.degree,
                   simd_distance(sample.neck, origin!.neck) < 0.05 else {
-                interrupt("Вернитесь в исходное положение и посмотрите в камеру"); return
+                interrupt(.hintReturnToStart); return
             }
         default: return
         }
         guard sample.speed.isFinite, sample.speed < 5 * Self.degree else {
-            interrupt("Замрите на секунду"); return
+            interrupt(.hintFreezeForSecond); return
         }
         if let first = samples.first,
            abs(remainder(sample.head.x - first.head.x, 2 * .pi)) > 2 * Self.degree ||
@@ -126,7 +127,7 @@ public struct GuidedCameraCalibration {
         samples.append(sample)
         let duration = stage == .position || stage == .middle || stage == .returning ? 1.0 : 0.5
         progress = min(1, (sample.time - samples[0].time) / duration)
-        hint = stage == .position ? "Хорошо. Не двигайтесь — запоминаю положение" : "Хорошо. Удерживайте положение"
+        hint = stage == .position ? .hintHoldRemembering : .hintHoldPosition
         guard progress >= 1, samples.count >= 12 else { return }
         let mean = average()
         switch stage {
@@ -136,7 +137,7 @@ public struct GuidedCameraCalibration {
                                 cameraPitch: mean.head.y - mean.turn.y, neck: mean.neck,
                                 yawScale: 1, returnError: 0, checkedTurns: false)
                 stage = .complete; progress = 1
-                hint = "Центр запомнен. Нажмите «Применить» — поворачивать голову не нужно"
+                hint = .hintCentreRememberedApply
                 return
             }
             origin = mean; legStarted = sample.time; advance(.left)
@@ -146,18 +147,18 @@ public struct GuidedCameraCalibration {
             let origin = origin!, left = left!
             let gyro = remainder(left.head.x - origin.head.x, 2 * .pi)
             guard gyro > 8 * Self.degree else {
-                fail("Камера и датчик не согласовали поворот. Повторите калибровку"); return
+                fail(.hintSensorMismatch); return
             }
             leftScale = (left.turn.x - origin.turn.x) / gyro
             guard (0.8...1.4).contains(leftScale) else {
-                fail("Камера и датчик не согласовали поворот. Повторите калибровку"); return
+                fail(.hintSensorMismatch); return
             }
             let expected = origin.head.x + (mean.turn.x - origin.turn.x) / leftScale
             leftReturnError = abs(remainder(mean.head.x - expected, 2 * .pi))
             guard leftReturnError < 2 * Self.degree else {
                 self.origin = nil; self.left = nil; legStarted = nil
                 advance(.position)
-                hint = "При возврате обнаружено смещение. Снова посмотрите в центр"; return
+                hint = .hintShiftOnReturn; return
             }
             // Right turn uses a fresh central IMU measurement, not the start of the left leg.
             self.origin = mean; legStarted = sample.time; advance(.right)
@@ -165,11 +166,11 @@ public struct GuidedCameraCalibration {
             let origin = origin!
             let gyro = remainder(mean.head.x - origin.head.x, 2 * .pi)
             guard gyro < -8 * Self.degree else {
-                fail("Камера и датчик не согласовали поворот. Повторите калибровку"); return
+                fail(.hintSensorMismatch); return
             }
             let rightScale = (mean.turn.x - origin.turn.x) / gyro
             guard (0.8...1.4).contains(rightScale), abs(leftScale - rightScale) < 0.12 else {
-                fail("Оценки камеры и датчика разошлись. Повторите калибровку"); return
+                fail(.hintEstimatesDiverged); return
             }
             scale = (leftScale + rightScale) / 2
             advance(.returning)
@@ -178,22 +179,22 @@ public struct GuidedCameraCalibration {
             let expected = origin.head.x + (mean.turn.x - origin.turn.x) / scale
             let error = abs(remainder(mean.head.x - expected, 2 * .pi))
             guard error < 2 * Self.degree else {
-                fail("Направление после возврата не совпало. Повторите калибровку"); return
+                fail(.hintHeadingMismatch); return
             }
             result = Result(cameraYaw: remainder(mean.head.x - mean.turn.x / scale, 2 * .pi),
                             cameraPitch: mean.head.y - mean.turn.y, neck: mean.neck,
                             yawScale: scale, returnError: max(error, leftReturnError))
-            stage = .complete; progress = 1; hint = "Направление после поворотов совпало. Можно применить калибровку"
+            stage = .complete; progress = 1; hint = .hintHeadingMatched
         default: break
         }
     }
     private mutating func advance(_ next: Stage) {
         stage = next; samples.removeAll(); progress = 0
-        hint = next == .left ? "Медленно поверните голову влево примерно на 15°" :
-            next == .right ? "Теперь медленно поверните голову вправо примерно на 15°" :
-            "Вернитесь в исходное положение и посмотрите в камеру"
+        hint = next == .left ? .hintTurnLeftFifteen :
+            next == .right ? .hintTurnRightFifteen :
+            .hintReturnToStart
     }
-    private mutating func fail(_ message: String) { stage = .failed; hint = message; progress = 0; samples.removeAll() }
+    private mutating func fail(_ hint: UIString) { stage = .failed; self.hint = hint; progress = 0; samples.removeAll() }
     private func average() -> Sample {
         var value = samples[0]
         let count = Double(samples.count)

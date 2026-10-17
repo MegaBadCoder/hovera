@@ -127,8 +127,11 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
         }
         return (abs(error + shift), fastest)
     }
-    #expect(settle(6 * degree, seconds: 8).left < 3.2 * degree)
-    #expect(settle(2.5 * degree, seconds: 8).fastest <= 0.5 * degree + 1e-9)
+    // Крупная ошибка приходит назад не рывком: в покое предел доворота снижен, чтобы ошибка модели лица
+    // на повёрнутой голове не уводила мир. Двадцать секунд — плата за это.
+    #expect(settle(6 * degree, seconds: 20).left < 3.2 * degree)
+    #expect(settle(6 * degree, seconds: 20).fastest <= 0.5 * degree + 1e-9)
+    #expect(settle(2.5 * degree, seconds: 20).fastest <= 0.5 * degree + 1e-9)
 }
 
 @Test func headTurnedFarFromTheCameraIsNotUsedForHeading() {

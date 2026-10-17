@@ -1,6 +1,7 @@
 import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
+import QuartzCore
 
 final class DisplayCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
@@ -8,6 +9,20 @@ final class DisplayCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let lock = NSLock()
     private var latest: CVPixelBuffer?
     private var generation = 0
+    private var lastArrival = 0.0
+    private var arrivals = 0
+
+    /// Сколько секунд захват не отдаёт кадров, либо `nil`, если кадров ещё не было.
+    ///
+    /// Дисплей в это время продолжает обновляться: оконный сервер перестаёт отдавать его
+    /// содержимое потокам захвата, пока поверх лежит слой Mission Control. Последний
+    /// полученный кадр в такие промежутки устаревает, и показывать его как живой нельзя.
+    var silentFor: TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard arrivals > 0 else { return nil }
+        return CACurrentMediaTime() - lastArrival
+    }
 
     func start(displayID: CGDirectDisplayID, width: Int, height: Int) async throws {
         var target: SCDisplay?
@@ -57,6 +72,8 @@ final class DisplayCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         lock.lock()
         latest = pixelBuffer
         generation &+= 1
+        lastArrival = CACurrentMediaTime()
+        arrivals += 1
         lock.unlock()
     }
 
