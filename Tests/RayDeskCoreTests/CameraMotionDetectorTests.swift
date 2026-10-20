@@ -73,3 +73,16 @@ private func shifted(_ image: [UInt8], dx: Int, dy: Int) -> [UInt8] {
     let face = MotionRegion(minX: 55, minY: 25, maxX: 105, maxY: 65)
     #expect(detector.update(luma: changed, excluding: face) == false)
 }
+
+@Test func movingFaceBoxDoesNotLookLikeCameraMotion() {
+    var detector = CameraMotionDetector()
+    let frame = texturedFrame()
+    let first = MotionRegion(minX: 55, minY: 25, maxX: 105, maxY: 65)
+    _ = detector.update(luma: frame, excluding: first)
+    var moved = frame
+    for y in 25..<65 {
+        for x in 55..<105 { moved[y * motionWidth + x] = UInt8((Int(moved[y * motionWidth + x]) + 120) % 256) }
+    }
+    let second = MotionRegion(minX: 70, minY: 25, maxX: 120, maxY: 65)
+    #expect(detector.update(luma: moved, excluding: second) == false)
+}

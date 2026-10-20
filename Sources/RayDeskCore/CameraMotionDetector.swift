@@ -49,6 +49,7 @@ public struct CameraMotionDetector {
     public private(set) var stillDifference = 0.0
 
     private var previous: [UInt8]?
+    private var previousExclusion: MotionRegion?
 
     public init() {}
 
@@ -68,12 +69,15 @@ public struct CameraMotionDetector {
 
         let width = Self.width, height = Self.height
         let margin = Self.search + 1
+        // Маска лица между кадрами переезжает: если сравнить старый кадр с новой маской,
+        // уехавшее лицо попадёт в выборку и будет выглядеть движением всего фона.
+        let exclusions = [previousExclusion, excluding].compactMap { $0 }
+        defer { previousExclusion = excluding }
         var indices: [Int] = []
         indices.reserveCapacity((width - 2 * margin) * (height - 2 * margin))
         for y in margin..<(height - margin) {
             for x in margin..<(width - margin) {
-                if let excluding, x >= excluding.minX, x < excluding.maxX,
-                   y >= excluding.minY, y < excluding.maxY { continue }
+                if exclusions.contains(where: { x >= $0.minX && x < $0.maxX && y >= $0.minY && y < $0.maxY }) { continue }
                 indices.append(y * width + x)
             }
         }
@@ -117,6 +121,7 @@ public struct CameraMotionDetector {
     /// Забывает предыдущий кадр: следующее сравнение будет с новым кадром.
     public mutating func reset() {
         previous = nil
+        previousExclusion = nil
         shift = .zero
         improvement = 0
         stillDifference = 0
