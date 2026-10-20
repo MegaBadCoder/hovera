@@ -13,14 +13,6 @@ public enum AppLanguage: String, CaseIterable, Sendable {
         }
     }
 
-    /// Идентификатор голоса `AVSpeechSynthesisVoice`, которым озвучиваются подсказки.
-    public var speechVoiceIdentifier: String {
-        switch self {
-        case .ru: "ru-RU"
-        case .en: "en-US"
-        }
-    }
-
     /// Язык, выбранный в системе: русский — только если он первый в списке предпочтений.
     public static var systemPreferred: AppLanguage {
         Locale.preferredLanguages.first?.hasPrefix("ru") == true ? .ru : .en

@@ -33,7 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalToken = 0
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private let recorder = GlassesRecorder()
-    private let speech = AVSpeechSynthesizer()
     private var isCalibratingCompass = false
     private var statusItem: NSStatusItem?
     private var statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -523,7 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setFocusSelection(_ active: Bool) {
         isSelectingFocus = active
         statusItem?.button?.image = NSImage(systemSymbolName: active ? "plus.magnifyingglass" : "eyeglasses", accessibilityDescription: "RayDesk")
-        statusItem?.button?.toolTip = active ? t(.saySelectFocusPoint) : nil
+        statusItem?.button?.toolTip = active ? t(.focusSelectionHint) : nil
     }
 
     @objc private func toggleFocusZoom() {
@@ -773,15 +772,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let active = self.isSelectingFocus
             self.statusItem?.button?.image = NSImage(systemSymbolName: active ? "plus.magnifyingglass" : "eyeglasses",
                                                      accessibilityDescription: "RayDesk")
-            self.statusItem?.button?.toolTip = active ? t(.saySelectFocusPoint) : nil
+            self.statusItem?.button?.toolTip = active ? t(.focusSelectionHint) : nil
         }
-    }
-
-    private func say(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: Localization.shared.language.speechVoiceIdentifier)
-        speech.speak(utterance)
-        log("say: \(text)")
     }
 
     private func loadSetting<Value: Decodable>(_ type: Value.Type, key: String, name: String) -> Value? {
@@ -791,7 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             UserDefaults.standard.removeObject(forKey: key)
             log("\(key): stored value unreadable, reset: \(error)")
-            say(String(format: t(.settingReset), name))
+            signal(String(format: t(.settingReset), name), symbol: "gearshape", seconds: 6)
             return nil
         }
     }
@@ -801,7 +793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(try JSONEncoder().encode(value), forKey: key)
         } catch {
             log("\(key): not saved: \(error)")
-            say(t(.settingNotSaved))
+            signal(t(.settingNotSaved), symbol: "exclamationmark.triangle", seconds: 8)
         }
     }
 
@@ -832,7 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func calibrateGyroScale() {
         guard let imu else { return }
         if imu.temperature < Self.gyroScaleMinTemperature {
-            say(String(format: t(.sayGlassesCold), imu.temperature, Self.gyroScaleMinTemperature))
+            signal(String(format: t(.signalGlassesCold), imu.temperature, Self.gyroScaleMinTemperature), symbol: "thermometer.snowflake", seconds: 10)
             log(String(format: "gyro scale calibration postponed: temperature %.1f C", imu.temperature))
             gyroScaleWarmupTimer?.invalidate()
             gyroScaleWarmupTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] timer in
@@ -846,7 +838,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let box = GyroScaleBox()
-        say(String(format: t(.sayGyroScaleStart), imu.temperature))
+        signal(String(format: t(.signalGyroScaleStart), imu.temperature), symbol: "gyroscope", seconds: 10)
         log("gyro scale calibration started")
         imu.sampleSink = { [weak self] sample in
             guard let (previous, current) = box.add(sample) else { return }
@@ -855,7 +847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self, weak imu] in
             guard imu?.sampleSink != nil, box.isRunning else { return }
             imu?.sampleSink = nil
-            self?.say(t(.sayGyroScaleTimeout))
+            self?.signal(t(.signalGyroScaleTimeout), symbol: "gyroscope", seconds: 10)
             log("gyro scale calibration timed out")
         }
     }
@@ -863,7 +855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func gyroScaleStageChanged(from previous: GyroScaleCalibration.Stage, to stage: GyroScaleCalibration.Stage) {
         switch stage {
         case .readyToTurn:
-            say(t(.sayGyroZeroMeasured))
+            signal(t(.signalGyroZeroMeasured), symbol: "gyroscope", seconds: 6)
         case .turning:
             break
         case .finished(let scale, let measured):
@@ -872,14 +864,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             filter.gyroScale = updated
             UserDefaults.standard.set([updated.x, updated.y, updated.z], forKey: "gyroScale.v1")
             log(String(format: "gyro scale calibrated: measured %.1f° for 720°, scale %.4f, stored %.4f", measured, scale, updated.y))
-            say(String(format: t(.sayGyroScaleDone), imu?.temperature ?? 0, (1 / scale - 1) * 100))
+            signal(String(format: t(.signalGyroScaleDone), imu?.temperature ?? 0, (1 / scale - 1) * 100), symbol: "gyroscope", seconds: 8)
         case .failed(.notUpright):
             imu?.sampleSink = nil
-            say(t(.sayGyroNotUpright))
+            signal(t(.signalGyroNotUpright), symbol: "exclamationmark.triangle", seconds: 10)
             log("gyro scale calibration failed: not upright")
         case .failed(.wrongTurnCount(let measured)):
             imu?.sampleSink = nil
-            say(t(.sayGyroWrongTurnCount))
+            signal(t(.signalGyroWrongTurnCount), symbol: "exclamationmark.triangle", seconds: 10)
             log(String(format: "gyro scale calibration failed: measured %.1f°", measured))
         case .waitingForRest:
             break
@@ -1034,7 +1026,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     wallModeItem?.state = .on
                     cameraHead.observeCalibration(nil)
                     cameraCalibrationWindow = nil
-                    say(t(.sayCalibrationDone))
+                    signal(t(.signalCalibrationDone), symbol: "checkmark.circle", seconds: 6)
                 }, cancel: { [weak self] in
                     self?.cameraHead.cancelGuidedCalibration()
                     self?.cameraHead.observeCalibration(nil)
@@ -1050,7 +1042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             guard error == nil else {
                 if !wasGlassesTracking { self?.setGlassesTracking(false) }
-                self?.say(t(.sayCameraUnavailableSystem))
+                self?.signal(t(.signalCameraUnavailableSystem), symbol: "video.slash", seconds: 10)
                 return
             }
             present()
@@ -1083,7 +1075,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("glasses outline window on")
         }
         guard learningGlasses else {
-            say(t(.glassesOutlineNeedsLearning))
+            signal(t(.glassesOutlineNeedsLearning), symbol: "eyeglasses", seconds: 8)
             log("glasses outline window refused: learning is off")
             return
         }
@@ -1100,7 +1092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let error {
                 log("camera head tracking failed: \(error)")
                 sender.state = .off
-                self?.say(t(.sayCameraUnavailablePrivacy))
+                self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
                 return
             }
             log("camera head tracking on")
@@ -1118,7 +1110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let points = await glassesVision.stopLearning() ?? 0
             log("glasses shape learned: \(points) points")
-            say(points > 0 ? t(.sayGlassesShapeLearned) : t(.sayGlassesShapeFailed))
+            signal(points > 0 ? t(.signalGlassesShapeLearned) : t(.signalGlassesShapeFailed), symbol: "eyeglasses", seconds: 8)
         }
     }
 
@@ -1148,7 +1140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             if let error {
                 log("camera head tracking failed: \(error)")
-                self?.say(t(.sayCameraUnavailablePrivacy))
+                self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
                 return
             }
             log("camera head tracking on")
@@ -1177,7 +1169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(Double(degrees), forKey: "cameraFieldOfView")
         sender.menu?.items.forEach { $0.state = ($0.representedObject as? Int) == degrees ? .on : .off }
         cameraHead.resetReference(after: 1, geometryChanged: true)
-        say(t(.sayCameraAngleChanged))
+        signal(t(.signalCameraAngleChanged), symbol: "camera", seconds: 6)
         log("camera field of view \(degrees)°")
     }
 
@@ -1222,7 +1214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cameraHead.resetReference(after: 0.3)
             installCameraHeadOffset(renderer)
             sender.state = .on
-            say(glassesTracking ? t(.sayWallModeGlasses) : t(.sayWallModeFace))
+            signal(glassesTracking ? t(.signalWallModeGlasses) : t(.signalWallModeFace), symbol: "rectangle.on.rectangle", seconds: 6)
             log("wall mode on")
         }
         if cameraHead.isRunning {
@@ -1232,7 +1224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cameraHead.start { [weak self] error in
             if let error {
                 log("camera head tracking failed: \(error)")
-                self?.say(t(.sayCameraUnavailablePrivacy))
+                self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
                 return
             }
             log("camera head tracking on")
@@ -1270,7 +1262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { @MainActor [weak self] in
                     guard let self, learningGlasses else { return }
                     await glassesVision.startLearning()
-                    say(t(.sayGlassesLearning))
+                    signal(t(.signalGlassesLearning), symbol: "camera", seconds: 12)
                 }
             }
         }
@@ -1283,7 +1275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log("camera head tracking failed: \(error)")
                 self?.learningGlasses = false
                 sender.state = .off
-                self?.say(t(.sayCameraUnavailablePrivacy))
+                self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
                 return
             }
             log("camera head tracking on")
@@ -1324,7 +1316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func moveWindowToGaze() {
         guard let target = lastCursorHit?.target else {
-            say(t(.sayWindowTarget))
+            signal(t(.signalWindowTarget), symbol: "rectangle.on.rectangle", seconds: 6)
             return
         }
         let display: CGDirectDisplayID
@@ -1337,13 +1329,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(String(format: "window of %@ moved to %@ at %.0f,%.0f %.0f×%.0f", moved.app, String(describing: target),
                        moved.frame.minX, moved.frame.minY, moved.frame.width, moved.frame.height))
         } catch WindowMoveError.noAccessibility {
-            say(t(.sayWindowNoAccessibility))
+            signal(t(.signalWindowNoAccessibility), symbol: "rectangle.on.rectangle.slash", seconds: 10)
         } catch WindowMoveError.noFrontWindow {
             log("window move: no front window")
-            say(t(.sayWindowNoFrontWindow))
+            signal(t(.signalWindowNoFrontWindow), symbol: "rectangle.on.rectangle.slash", seconds: 10)
         } catch {
             log("window move failed: \(error)")
-            say(t(.sayWindowNotMovable))
+            signal(t(.signalWindowNotMovable), symbol: "rectangle.on.rectangle.slash", seconds: 10)
         }
     }
 
@@ -1450,7 +1442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try meditationAudio.start()
             } catch {
                 log("meditation audio failed: \(error)")
-                say(t(.sayMeditationAudioFailed))
+                signal(t(.signalMeditationAudioFailed), symbol: "speaker.slash", seconds: 10)
             }
         } else {
             meditationAudio.stop()

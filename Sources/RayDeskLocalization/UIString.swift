@@ -18,7 +18,7 @@ public enum UIString: CaseIterable {
     case menuScreens
     case menuFocusZoom
     case menuSwapScreen
-    case saySelectFocusPoint
+    case focusSelectionHint
     case menuPlaceHere
     case menuGrab
     case menuMoveMode
@@ -105,33 +105,33 @@ public enum UIString: CaseIterable {
     case settingReset
     case settingNotSaved
 
-    case sayGlassesCold
-    case sayGyroScaleStart
-    case sayGyroScaleTimeout
-    case sayGyroZeroMeasured
-    case sayGyroScaleDone
-    case sayGyroNotUpright
-    case sayGyroWrongTurnCount
+    case signalGlassesCold
+    case signalGyroScaleStart
+    case signalGyroScaleTimeout
+    case signalGyroZeroMeasured
+    case signalGyroScaleDone
+    case signalGyroNotUpright
+    case signalGyroWrongTurnCount
     case signalCompassStart
     case signalCompassFieldChanged
     case signalCompassDone
     case signalCompassTooFewSamples
     case signalCompassTooFlat
     case signalCompassNoisy
-    case sayCalibrationDone
-    case sayCameraUnavailableSystem
-    case sayCameraUnavailablePrivacy
-    case sayCameraAngleChanged
-    case sayWallModeGlasses
-    case sayWallModeFace
-    case sayGlassesShapeLearned
-    case sayGlassesShapeFailed
-    case sayGlassesLearning
-    case sayWindowTarget
-    case sayWindowNoAccessibility
-    case sayWindowNoFrontWindow
-    case sayWindowNotMovable
-    case sayMeditationAudioFailed
+    case signalCalibrationDone
+    case signalCameraUnavailableSystem
+    case signalCameraUnavailablePrivacy
+    case signalCameraAngleChanged
+    case signalWallModeGlasses
+    case signalWallModeFace
+    case signalGlassesShapeLearned
+    case signalGlassesShapeFailed
+    case signalGlassesLearning
+    case signalWindowTarget
+    case signalWindowNoAccessibility
+    case signalWindowNoFrontWindow
+    case signalWindowNotMovable
+    case signalMeditationAudioFailed
 
     case calibrationWindowTitle
     case calibrationTitleInitial
@@ -248,7 +248,7 @@ public enum UIString: CaseIterable {
         case .menuScreens: "Экраны"
         case .menuFocusZoom: "Увеличить точку / вернуть раскладку   ⌃⌥Z"
         case .menuSwapScreen: "Выбрать экран / обменять взглядом   ⌃⌥S"
-        case .saySelectFocusPoint: "Кликните точку на виртуальном экране для увеличения. Control Option Z — отмена."
+        case .focusSelectionHint: "Кликните точку на виртуальном экране для увеличения. Control Option Z — отмена."
         case .menuPlaceHere: "Взять экран по центру / поставить по взгляду   ⌃⌥Space"
         case .menuGrab: "Взять / отпустить экран   ⌃⌥G"
         case .menuMoveMode: "Режим перемещения: стрелки двигают экран   ⌃⌥⇧M"
@@ -335,33 +335,33 @@ public enum UIString: CaseIterable {
         case .settingReset: "%@ сброшена, настройте заново."
         case .settingNotSaved: "Не удалось сохранить настройку."
 
-        case .sayGlassesCold: "Очки холодные: %.0f°. Масштаб гироскопа зависит от прогрева — наденьте их на пару минут, я запущу калибровку сама, когда будет %.0f°."
-        case .sayGyroScaleStart: "Очки прогреты до %.0f°. Калибровка масштаба гироскопа: поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте."
-        case .sayGyroScaleTimeout: "Калибровка гироскопа прервана: время вышло."
-        case .sayGyroZeroMeasured: "Ноль измерен. Медленно поверните очки на два полных оборота и прижмите дужку к тому же краю. Потом не трогайте."
-        case .sayGyroScaleDone: "Готово при %.0f°. Гироскоп ошибался на %.1f процента, поправка сохранена. Дальше: откалибруйте компас и проверьте уход меткой."
-        case .sayGyroNotUpright: "Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново."
-        case .sayGyroWrongTurnCount: "Не получилось: насчитал не два оборота. Начните заново."
+        case .signalGlassesCold: "Очки холодные: %.0f°. Масштаб гироскопа зависит от прогрева — наденьте их на пару минут, я запущу калибровку сама, когда будет %.0f°."
+        case .signalGyroScaleStart: "Очки прогреты до %.0f°. Калибровка масштаба гироскопа: поставьте очки на стол как на голове, дужками вниз, прижмите дужку к краю ноутбука и не трогайте."
+        case .signalGyroScaleTimeout: "Калибровка гироскопа прервана: время вышло."
+        case .signalGyroZeroMeasured: "Ноль измерен. Медленно поверните очки на два полных оборота и прижмите дужку к тому же краю. Потом не трогайте."
+        case .signalGyroScaleDone: "Готово при %.0f°. Гироскоп ошибался на %.1f процента, поправка сохранена. Дальше: откалибруйте компас и проверьте уход меткой."
+        case .signalGyroNotUpright: "Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново."
+        case .signalGyroWrongTurnCount: "Не получилось: насчитал не два оборота. Начните заново."
         case .signalCompassStart: "Калибровка компаса. Двадцать пять секунд медленно поворачивайте голову во все стороны: влево, вправо, вверх, вниз и к плечам."
         case .signalCompassFieldChanged: "Магнитное поле у очков изменилось, например от наушников. Чтобы экраны держались точнее, откалибруйте компас: Control Option K."
         case .signalCompassDone: "Компас откалиброван."
         case .signalCompassTooFewSamples: "Не получилось: от очков пришло мало данных компаса. Попробуйте ещё раз."
         case .signalCompassTooFlat: "Не получилось: мало поворотов. Повторите и крутите головой шире, особенно наклоны к плечам."
         case .signalCompassNoisy: "Не получилось: поле сильно искажено. Отодвиньтесь от магнитов и колонок и повторите."
-        case .sayCalibrationDone: "Калибровка готова."
-        case .sayCameraUnavailableSystem: "Камера недоступна. Разрешите доступ к камере в настройках macOS."
-        case .sayCameraUnavailablePrivacy: "Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности."
-        case .sayCameraAngleChanged: "Угол камеры изменён. Посмотрите в камеру и посидите спокойно, я заново запомню положение головы."
-        case .sayWallModeGlasses: "Калибровка камерой включена. Посмотрите в камеру и посидите спокойно две секунды, я запомню положение головы."
-        case .sayWallModeFace: "Удержание центра по лицу включено. Посмотрите на камеру и задержитесь на секунду. Для ручного выравнивания используйте R."
-        case .sayGlassesShapeLearned: "Форма очков запомнена."
-        case .sayGlassesShapeFailed: "Форма очков не набралась. Проверьте, что лицо видно в камеру, и попробуйте ещё раз."
-        case .sayGlassesLearning: "Смотрите в камеру ноутбука и секунд двадцать медленно крутите головой влево, вправо, вверх и вниз. Руки держите подальше от лица. Потом выберите этот пункт ещё раз."
-        case .sayWindowTarget: "Посмотрите на экран, куда перенести окно."
-        case .sayWindowNoAccessibility: "Нужно разрешение «Универсальный доступ» для RayDesk."
-        case .sayWindowNoFrontWindow: "Нет активного окна."
-        case .sayWindowNotMovable: "Это окно не переносится."
-        case .sayMeditationAudioFailed: "Не удалось включить звук медитации."
+        case .signalCalibrationDone: "Калибровка готова."
+        case .signalCameraUnavailableSystem: "Камера недоступна. Разрешите доступ к камере в настройках macOS."
+        case .signalCameraUnavailablePrivacy: "Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности."
+        case .signalCameraAngleChanged: "Угол камеры изменён. Посмотрите в камеру и посидите спокойно, я заново запомню положение головы."
+        case .signalWallModeGlasses: "Калибровка камерой включена. Посмотрите в камеру и посидите спокойно две секунды, я запомню положение головы."
+        case .signalWallModeFace: "Удержание центра по лицу включено. Посмотрите на камеру и задержитесь на секунду. Для ручного выравнивания используйте R."
+        case .signalGlassesShapeLearned: "Форма очков запомнена."
+        case .signalGlassesShapeFailed: "Форма очков не набралась. Проверьте, что лицо видно в камеру, и попробуйте ещё раз."
+        case .signalGlassesLearning: "Смотрите в камеру ноутбука и секунд двадцать медленно крутите головой влево, вправо, вверх и вниз. Руки держите подальше от лица. Потом выберите этот пункт ещё раз."
+        case .signalWindowTarget: "Посмотрите на экран, куда перенести окно."
+        case .signalWindowNoAccessibility: "Нужно разрешение «Универсальный доступ» для RayDesk."
+        case .signalWindowNoFrontWindow: "Нет активного окна."
+        case .signalWindowNotMovable: "Это окно не переносится."
+        case .signalMeditationAudioFailed: "Не удалось включить звук медитации."
 
         case .calibrationWindowTitle: "Калибровка камерой"
         case .calibrationTitleInitial: "Расположитесь перед камерой"
@@ -469,7 +469,7 @@ public enum UIString: CaseIterable {
         case .menuScreens: "Screens"
         case .menuFocusZoom: "Zoom into a point / restore layout   ⌃⌥Z"
         case .menuSwapScreen: "Select screen / swap by gaze   ⌃⌥S"
-        case .saySelectFocusPoint: "Click a point on a virtual screen to zoom in. Control Option Z cancels."
+        case .focusSelectionHint: "Click a point on a virtual screen to zoom in. Control Option Z cancels."
         case .menuPlaceHere: "Pick a screen at the centre / place it by gaze   ⌃⌥Space"
         case .menuGrab: "Grab / release a screen   ⌃⌥G"
         case .menuMoveMode: "Move mode: arrows move the screen   ⌃⌥⇧M"
@@ -556,33 +556,33 @@ public enum UIString: CaseIterable {
         case .settingReset: "%@ was reset, set it up again."
         case .settingNotSaved: "Could not save the setting."
 
-        case .sayGlassesCold: "The glasses are cold: %.0f°. The gyroscope scale depends on warm-up — put them on for a couple of minutes, and I will start the calibration myself once they reach %.0f°."
-        case .sayGyroScaleStart: "The glasses are warm at %.0f°. Gyroscope scale calibration: put the glasses on the table the way they sit on your head, temples down, press a temple against the edge of the laptop and keep still."
-        case .sayGyroScaleTimeout: "Gyroscope calibration interrupted: time is up."
-        case .sayGyroZeroMeasured: "Zero measured. Slowly turn the glasses two full revolutions, keeping the temple against the same edge. Then keep still."
-        case .sayGyroScaleDone: "Done at %.0f°. The gyroscope was off by %.1f percent, the correction is saved. Next: calibrate the compass and check the drift with a mark."
-        case .sayGyroNotUpright: "That did not work: the glasses are not lying the way they sit on your head. Stand them on the temples and start again."
-        case .sayGyroWrongTurnCount: "That did not work: I counted more or fewer than two revolutions. Start again."
+        case .signalGlassesCold: "The glasses are cold: %.0f°. The gyroscope scale depends on warm-up — put them on for a couple of minutes, and I will start the calibration myself once they reach %.0f°."
+        case .signalGyroScaleStart: "The glasses are warm at %.0f°. Gyroscope scale calibration: put the glasses on the table the way they sit on your head, temples down, press a temple against the edge of the laptop and keep still."
+        case .signalGyroScaleTimeout: "Gyroscope calibration interrupted: time is up."
+        case .signalGyroZeroMeasured: "Zero measured. Slowly turn the glasses two full revolutions, keeping the temple against the same edge. Then keep still."
+        case .signalGyroScaleDone: "Done at %.0f°. The gyroscope was off by %.1f percent, the correction is saved. Next: calibrate the compass and check the drift with a mark."
+        case .signalGyroNotUpright: "That did not work: the glasses are not lying the way they sit on your head. Stand them on the temples and start again."
+        case .signalGyroWrongTurnCount: "That did not work: I counted more or fewer than two revolutions. Start again."
         case .signalCompassStart: "Compass calibration. For twenty-five seconds, slowly turn your head in every direction: left, right, up, down and towards your shoulders."
         case .signalCompassFieldChanged: "The magnetic field around the glasses has changed, for example because of headphones. For steadier screens, calibrate the compass: Control Option K."
         case .signalCompassDone: "The compass is calibrated."
         case .signalCompassTooFewSamples: "That did not work: too little compass data came from the glasses. Try again."
         case .signalCompassTooFlat: "That did not work: too few turns. Repeat and turn your head wider, especially towards your shoulders."
         case .signalCompassNoisy: "That did not work: the field is badly distorted. Move away from magnets and speakers and try again."
-        case .sayCalibrationDone: "Calibration is done."
-        case .sayCameraUnavailableSystem: "The camera is unavailable. Allow camera access in the macOS settings."
-        case .sayCameraUnavailablePrivacy: "The camera is unavailable. Allow RayDesk camera access in the privacy settings."
-        case .sayCameraAngleChanged: "The camera angle has changed. Look at the camera and sit still; I will remember the head position again."
-        case .sayWallModeGlasses: "Camera calibration is on. Look at the camera and sit still for two seconds; I will remember the head position."
-        case .sayWallModeFace: "Face-based centring is on. Look at the camera and hold for a second. For manual alignment use R."
-        case .sayGlassesShapeLearned: "The glasses shape is remembered."
-        case .sayGlassesShapeFailed: "The glasses shape was not captured. Check that your face is visible to the camera and try again."
-        case .sayGlassesLearning: "Look at the laptop camera and slowly turn your head left, right, up and down for about twenty seconds. Keep your hands away from your face. Then choose this item again."
-        case .sayWindowTarget: "Look at the screen you want to move the window to."
-        case .sayWindowNoAccessibility: "RayDesk needs the Accessibility permission."
-        case .sayWindowNoFrontWindow: "There is no active window."
-        case .sayWindowNotMovable: "This window cannot be moved."
-        case .sayMeditationAudioFailed: "Could not start the meditation audio."
+        case .signalCalibrationDone: "Calibration is done."
+        case .signalCameraUnavailableSystem: "The camera is unavailable. Allow camera access in the macOS settings."
+        case .signalCameraUnavailablePrivacy: "The camera is unavailable. Allow RayDesk camera access in the privacy settings."
+        case .signalCameraAngleChanged: "The camera angle has changed. Look at the camera and sit still; I will remember the head position again."
+        case .signalWallModeGlasses: "Camera calibration is on. Look at the camera and sit still for two seconds; I will remember the head position."
+        case .signalWallModeFace: "Face-based centring is on. Look at the camera and hold for a second. For manual alignment use R."
+        case .signalGlassesShapeLearned: "The glasses shape is remembered."
+        case .signalGlassesShapeFailed: "The glasses shape was not captured. Check that your face is visible to the camera and try again."
+        case .signalGlassesLearning: "Look at the laptop camera and slowly turn your head left, right, up and down for about twenty seconds. Keep your hands away from your face. Then choose this item again."
+        case .signalWindowTarget: "Look at the screen you want to move the window to."
+        case .signalWindowNoAccessibility: "RayDesk needs the Accessibility permission."
+        case .signalWindowNoFrontWindow: "There is no active window."
+        case .signalWindowNotMovable: "This window cannot be moved."
+        case .signalMeditationAudioFailed: "Could not start the meditation audio."
 
         case .calibrationWindowTitle: "Camera calibration"
         case .calibrationTitleInitial: "Sit in front of the camera"

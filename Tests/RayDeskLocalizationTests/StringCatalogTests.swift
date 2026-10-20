@@ -72,9 +72,6 @@ private func shortcutTail(_ text: String) -> String? {
 @Test func languageNamesAreWrittenInTheirOwnLanguage() {
     #expect(hasCyrillic(AppLanguage.ru.nativeName))
     #expect(!hasCyrillic(AppLanguage.en.nativeName))
-    for language in AppLanguage.allCases {
-        #expect(!language.speechVoiceIdentifier.isEmpty)
-    }
 }
 
 @Test func storedLanguagesRoundTripThroughTheirRawValues() {
