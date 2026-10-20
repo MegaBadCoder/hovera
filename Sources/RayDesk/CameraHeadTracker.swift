@@ -103,9 +103,15 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var motionFrameCounter = 0
     private var cameraMovingUntil = 0.0
     private var cameraMovingFlag = false
+    private var motionHits = 0
+    private var lastHeadSpeed = 0.0
     private var cameraWasMoving = false
     private var lastCameraMotionLog = 0.0
     private static let cameraMotionHold = 0.7
+    /// Сколько подряд замеров должны показать движение фона, чтобы считать, что поехала камера.
+    private static let cameraMotionConfirm = 2
+    /// Быстрее этой скорости головы движение фона — это поворот головы и перекрытие лица, а не поездка камеры.
+    private static let cameraMotionHeadSpeed = 12 * Double.pi / 180
     private var headingPausedForCamera = false
     private var pendingHeadingReanchor = false
     private var lastFaceBox: (minX: Double, minY: Double, maxX: Double, maxY: Double)?
@@ -305,6 +311,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let captured = captureUptime(sampleBuffer)
         updateCameraMotion(pixels)
         let (head, speed) = orientation(captured)
+        lock.withLock { lastHeadSpeed = speed }
         guard let vision = lock.withLock({ glassesVision }) else { return }
         sendToGlasses(vision, pixels: pixels, captured: captured, head: head, speed: speed)
     }
@@ -314,6 +321,10 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private func updateCameraMotion(_ pixels: CVPixelBuffer) {
         motionFrameCounter += 1
         guard motionFrameCounter % 3 == 0, let samples = lumaSamples(pixels) else { return }
+        guard lock.withLock({ lastHeadSpeed }) < Self.cameraMotionHeadSpeed else {
+            motionHits = 0
+            return
+        }
         let now = ProcessInfo.processInfo.systemUptime
         var excluding: MotionRegion?
         if let box = lastFaceBox, now - lastFaceBoxTime < 1.5 {
@@ -325,7 +336,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                      maxY: min(CameraMotionDetector.height, Int((1 - box.minY) * height) + pad))
         }
         let moved = motionDetector.update(luma: samples, excluding: excluding)
-        if moved { cameraMovingUntil = now + Self.cameraMotionHold }
+        motionHits = moved ? motionHits + 1 : 0
+        if motionHits >= Self.cameraMotionConfirm { cameraMovingUntil = now + Self.cameraMotionHold }
         let moving = now < cameraMovingUntil
         if moving != cameraWasMoving {
             cameraWasMoving = moving
