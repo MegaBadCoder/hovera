@@ -112,12 +112,12 @@ public enum UIString: CaseIterable {
     case sayGyroScaleDone
     case sayGyroNotUpright
     case sayGyroWrongTurnCount
-    case sayCompassStart
-    case sayCompassFieldChanged
-    case sayCompassDone
-    case sayCompassTooFewSamples
-    case sayCompassTooFlat
-    case sayCompassNoisy
+    case signalCompassStart
+    case signalCompassFieldChanged
+    case signalCompassDone
+    case signalCompassTooFewSamples
+    case signalCompassTooFlat
+    case signalCompassNoisy
     case sayCalibrationDone
     case sayCameraUnavailableSystem
     case sayCameraUnavailablePrivacy
@@ -342,12 +342,12 @@ public enum UIString: CaseIterable {
         case .sayGyroScaleDone: "Готово при %.0f°. Гироскоп ошибался на %.1f процента, поправка сохранена. Дальше: откалибруйте компас и проверьте уход меткой."
         case .sayGyroNotUpright: "Не получилось: очки лежат не так, как на голове. Поставьте их на дужки и начните заново."
         case .sayGyroWrongTurnCount: "Не получилось: насчитал не два оборота. Начните заново."
-        case .sayCompassStart: "Калибровка компаса. Двадцать пять секунд медленно поворачивайте голову во все стороны: влево, вправо, вверх, вниз и к плечам."
-        case .sayCompassFieldChanged: "Магнитное поле у очков изменилось, например от наушников. Чтобы экраны держались точнее, откалибруйте компас: Control Option K."
-        case .sayCompassDone: "Компас откалиброван."
-        case .sayCompassTooFewSamples: "Не получилось: от очков пришло мало данных компаса. Попробуйте ещё раз."
-        case .sayCompassTooFlat: "Не получилось: мало поворотов. Повторите и крутите головой шире, особенно наклоны к плечам."
-        case .sayCompassNoisy: "Не получилось: поле сильно искажено. Отодвиньтесь от магнитов и колонок и повторите."
+        case .signalCompassStart: "Калибровка компаса. Двадцать пять секунд медленно поворачивайте голову во все стороны: влево, вправо, вверх, вниз и к плечам."
+        case .signalCompassFieldChanged: "Магнитное поле у очков изменилось, например от наушников. Чтобы экраны держались точнее, откалибруйте компас: Control Option K."
+        case .signalCompassDone: "Компас откалиброван."
+        case .signalCompassTooFewSamples: "Не получилось: от очков пришло мало данных компаса. Попробуйте ещё раз."
+        case .signalCompassTooFlat: "Не получилось: мало поворотов. Повторите и крутите головой шире, особенно наклоны к плечам."
+        case .signalCompassNoisy: "Не получилось: поле сильно искажено. Отодвиньтесь от магнитов и колонок и повторите."
         case .sayCalibrationDone: "Калибровка готова."
         case .sayCameraUnavailableSystem: "Камера недоступна. Разрешите доступ к камере в настройках macOS."
         case .sayCameraUnavailablePrivacy: "Камера недоступна. Разрешите RayDesk доступ к камере в настройках конфиденциальности."
@@ -563,12 +563,12 @@ public enum UIString: CaseIterable {
         case .sayGyroScaleDone: "Done at %.0f°. The gyroscope was off by %.1f percent, the correction is saved. Next: calibrate the compass and check the drift with a mark."
         case .sayGyroNotUpright: "That did not work: the glasses are not lying the way they sit on your head. Stand them on the temples and start again."
         case .sayGyroWrongTurnCount: "That did not work: I counted more or fewer than two revolutions. Start again."
-        case .sayCompassStart: "Compass calibration. For twenty-five seconds, slowly turn your head in every direction: left, right, up, down and towards your shoulders."
-        case .sayCompassFieldChanged: "The magnetic field around the glasses has changed, for example because of headphones. For steadier screens, calibrate the compass: Control Option K."
-        case .sayCompassDone: "The compass is calibrated."
-        case .sayCompassTooFewSamples: "That did not work: too little compass data came from the glasses. Try again."
-        case .sayCompassTooFlat: "That did not work: too few turns. Repeat and turn your head wider, especially towards your shoulders."
-        case .sayCompassNoisy: "That did not work: the field is badly distorted. Move away from magnets and speakers and try again."
+        case .signalCompassStart: "Compass calibration. For twenty-five seconds, slowly turn your head in every direction: left, right, up, down and towards your shoulders."
+        case .signalCompassFieldChanged: "The magnetic field around the glasses has changed, for example because of headphones. For steadier screens, calibrate the compass: Control Option K."
+        case .signalCompassDone: "The compass is calibrated."
+        case .signalCompassTooFewSamples: "That did not work: too little compass data came from the glasses. Try again."
+        case .signalCompassTooFlat: "That did not work: too few turns. Repeat and turn your head wider, especially towards your shoulders."
+        case .signalCompassNoisy: "That did not work: the field is badly distorted. Move away from magnets and speakers and try again."
         case .sayCalibrationDone: "Calibration is done."
         case .sayCameraUnavailableSystem: "The camera is unavailable. Allow camera access in the macOS settings."
         case .sayCameraUnavailablePrivacy: "The camera is unavailable. Allow RayDesk camera access in the privacy settings."

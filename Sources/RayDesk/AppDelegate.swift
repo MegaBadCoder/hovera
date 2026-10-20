@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCalibrating = false
     private var statusTicks = 0
     private var compassFieldPrompted = false
+    private var signalToken = 0
     private var lastCorrection: (time: CFTimeInterval, travel: RotationTravel)?
     private let recorder = GlassesRecorder()
     private let speech = AVSpeechSynthesizer()
@@ -755,6 +756,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastCorrection = (now, travel)
     }
 
+    /// Показывает событие в строке меню значком и подсказкой: голосовые объявления о компасе убраны.
+    ///
+    /// - Parameters:
+    ///   - text: что сказать в подсказке значка.
+    ///   - symbol: имя значка SF Symbols.
+    ///   - seconds: сколько секунд показывать, затем вернётся обычный значок.
+    private func signal(_ text: String, symbol: String, seconds: TimeInterval = 8) {
+        log("signal: \(text)")
+        signalToken &+= 1
+        let token = signalToken
+        statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: text)
+        statusItem?.button?.toolTip = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.signalToken == token else { return }
+            let active = self.isSelectingFocus
+            self.statusItem?.button?.image = NSImage(systemSymbolName: active ? "plus.magnifyingglass" : "eyeglasses",
+                                                     accessibilityDescription: "RayDesk")
+            self.statusItem?.button?.toolTip = active ? t(.saySelectFocusPoint) : nil
+        }
+    }
+
     private func say(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: Localization.shared.language.speechVoiceIdentifier)
@@ -891,7 +913,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isCalibratingCompass, let imu else { return }
         isCalibratingCompass = true
         imu.startCompassCalibration()
-        say(t(.sayCompassStart))
+        signal(t(.signalCompassStart), symbol: "location.north.circle", seconds: 30)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.finishCompassCalibration() }
     }
 
@@ -903,7 +925,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !compassFieldPrompted, !isCalibratingCompass else { return }
         compassFieldPrompted = true
         log("compass: field around the glasses differs from calibration")
-        say(t(.sayCompassFieldChanged))
+        signal(t(.signalCompassFieldChanged), symbol: "location.slash", seconds: 10)
     }
 
     private func finishCompassCalibration() {
@@ -918,16 +940,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(String(format: "compass calibrated: center %.1f %.1f %.1f radius %.2f dip %.1f° samples %d",
                        calibration.center.x, calibration.center.y, calibration.center.z,
                        calibration.radius, calibration.dip * 180 / .pi, fitter.sampleCount))
-            say(t(.sayCompassDone))
+            signal(t(.signalCompassDone), symbol: "location.north.circle.fill", seconds: 6)
         } catch MagnetometerCalibrationError.tooFewSamples(let count) {
             log("compass calibration failed: too few samples \(count)")
-            say(t(.sayCompassTooFewSamples))
+            signal(t(.signalCompassTooFewSamples), symbol: "location.slash", seconds: 8)
         } catch MagnetometerCalibrationError.insufficientCoverage(let spread) {
             log(String(format: "compass calibration failed: coverage %.4f", spread))
-            say(t(.sayCompassTooFlat))
+            signal(t(.signalCompassTooFlat), symbol: "location.slash", seconds: 8)
         } catch MagnetometerCalibrationError.noisyField(let spread) {
             log(String(format: "compass calibration failed: field spread %.3f", spread))
-            say(t(.sayCompassNoisy))
+            signal(t(.signalCompassNoisy), symbol: "location.slash", seconds: 8)
         } catch {
             fail(String(format: t(.alertCompassCalibrationFailed), "\(error)"))
         }
