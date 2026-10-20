@@ -10,9 +10,11 @@
 
 ## Видео
 
-[![Демонстрация Hovera: виртуальные мониторы в очках RayNeo](docs/hovera-demo-poster.webp)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4)
+[![Демонстрация Hovera: виртуальные мониторы в очках RayNeo](docs/hovera-demo-poster.webp)](https://github.com/user-attachments/assets/1672f470-9898-4518-8181-1e162efea922)
 
-[Посмотреть или скачать демонстрацию — 1:56 (MP4, 13,5 МБ)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4). На записи показана картинка, которую приложение выводит в очки.
+https://github.com/user-attachments/assets/1672f470-9898-4518-8181-1e162efea922
+
+На записи 1:56 показана картинка, которую приложение выводит в очки. [Скачать MP4 (13,5 МБ)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4).
 
 ## Что умеет
 

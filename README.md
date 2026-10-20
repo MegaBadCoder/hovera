@@ -10,9 +10,11 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 
 ## Demo
 
-[![Hovera demo: virtual monitors in RayNeo glasses](docs/hovera-demo-poster.webp)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4)
+[![Hovera demo: virtual monitors in RayNeo glasses](docs/hovera-demo-poster.webp)](https://github.com/user-attachments/assets/1672f470-9898-4518-8181-1e162efea922)
 
-[Watch or download the 1:56 demo (MP4, 13.5 MB)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4). The recording shows the view rendered for the glasses.
+https://github.com/user-attachments/assets/1672f470-9898-4518-8181-1e162efea922
+
+The 1:56 demo shows the view rendered for the glasses. [Download the MP4 (13.5 MB)](https://github.com/MegaBadCoder/hovera/releases/download/v0.3.0/Hovera-demo-720p.mp4).
 
 ## Features
 
