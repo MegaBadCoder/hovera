@@ -14,6 +14,7 @@ final class MainThreadWatchdog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "raydesk.watchdog", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
     private var observer: CFRunLoopObserver?
+    private var paused = false
     private let limit: Double
 
     init(limit: Double = 5) {
@@ -39,14 +40,28 @@ final class MainThreadWatchdog: @unchecked Sendable {
         self.timer = timer
     }
 
+    /// Замолкает, пока приложение само держит главный поток: модальное окно — не зависание.
+    func pause() {
+        lock.withLock { paused = true }
+    }
+
+    /// Снова следит за главным потоком; отсчёт начинается заново, чтобы время модального окна не зачлось.
+    func resume() {
+        lock.withLock {
+            paused = false
+            lastBeat = ProcessInfo.processInfo.systemUptime
+        }
+    }
+
     private func beat() {
         lock.withLock { lastBeat = ProcessInfo.processInfo.systemUptime }
     }
 
     private func check() {
         DispatchQueue.main.async { [weak self] in self?.beat() }
-        let silent = ProcessInfo.processInfo.systemUptime - lock.withLock { lastBeat }
-        guard silent > limit else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let (paused, silent) = lock.withLock { (paused, now - lastBeat) }
+        guard !paused, silent > limit else { return }
         log(String(format: "ERROR watchdog: main thread stuck for %.1f s, exiting so the displays come back", silent))
         _exit(3)
     }

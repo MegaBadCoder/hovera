@@ -28,7 +28,7 @@ On a Mac, RayNeo glasses behave like a plain second display: the picture is glue
 
 ## Download
 
-Grab `Hovera-0.2.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
+Grab `Hovera-0.3.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
 
 The app is not notarized yet, so macOS blocks the first launch: open it once, then System Settings → Privacy & Security → "Open Anyway". Or run `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
 
@@ -47,8 +47,9 @@ The build is signed with your first "Apple Development" identity if you have one
 
 All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 
-- `R` — put the screens back using the MacBook: the first press shows a yellow outline of the laptop and a crosshair; aim the crosshair at the centre of the real MacBook and press `R` again. Without a remembered MacBook (`B`), and with `⇧R`, "forward" becomes where you look.
-- `Space` — put the screen under your gaze where you look; `G` — grab / release a screen.
+- `R` — "forward" becomes where you look.
+- `Space` — pick the screen under your gaze, it immediately centres on your gaze, then press again to place it where you look: aim and pick, move your gaze, press again. `G` — grab / release a screen without moving it.
+- `⇧M` — move mode: `←` / `→` / `↑` / `↓` move the selected screen horizontally and vertically, `⇧↑` / `⇧↓` — closer and further.
 - `↑` / `↓` — closer / further; `=` / `-` — bigger / smaller; `⇧↑` / `⇧↓` — tilt the screen back / forward (5° steps, up to 60°).
 - `A` — arrange all screens in an arc, edge to edge. Default is a racing-style triple monitor: same size, upright, joined along the whole edge; menu → Screen joining switches to “facing you” (widths kept, each screen faces your eyes).
 - `⇧←` / `⇧→` — turn the screen under your gaze by 2°; a joined side monitor swings around the shared edge like on a real stand.
@@ -56,7 +57,6 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - Mouse with ⌃⌥ held — drag a screen (its side edge sticks to a neighbour's edge when within 3°); scroll — closer / further; with ⌃⌥⇧ held, scroll tilts the screen.
 - Menu → "Border around the screens" hides the screen borders, e.g. for films; a screen being dragged still shows its border.
 - `D` — horizon grid; `C` — manual grid calibration: `←` / `→` forward, `↑` / `↓` horizon, `,` / `.` roll.
-- `B` — remember where the MacBook screen is (look at its center); after that, looking at it also moves the cursor there, and `R` puts the screens back relative to it.
 - `J` — force the cursor to where you look.
 - `W` — move the active window to the screen you look at (it keeps its place on the screen and shrinks if it does not fit).
 - `K` — compass calibration: about 25 s of slowly turning your head in all directions, including tilting to the shoulders.

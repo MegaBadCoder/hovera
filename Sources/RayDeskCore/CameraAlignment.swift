@@ -232,6 +232,12 @@ public struct CameraYawCorrector: Sendable {
     /// На сколько рад/с растёт предел скорости в покое на каждый радиан расхождения сверх `stillFastFrom`.
     /// Доля снижена с 0.3: ускоренный доворот — это тот же уход мира, только по большой ошибке модели лица.
     public var stillFastShare = 0.1
+    /// Скачок расхождения больше этого — сбой модели лица или опоры камеры, а не уплывание гироскопа.
+    /// После такого скачка мир не доворачивается, пока расхождение не вернётся в пределы `maxJump / 2`.
+    public var maxJump = 8 * Double.pi / 180
+    /// Расхождение больше этого заведомо не накопленный дрейф гироскопа (0.02–0.4 °/с): мир не
+    /// доворачивается, пока оно не станет меньше `maxJump / 2`.
+    public var untrustedError = 15 * Double.pi / 180
     /// Постоянная времени обучения скорости по изменению ошибки, секунды.
     public var rateTimeConstant = 30.0
     /// Скорость уплывания учится только на расхождениях меньше этого, радианы: крупные — это переходы после поворотов.
@@ -244,6 +250,7 @@ public struct CameraYawCorrector: Sendable {
     public private(set) var driftRate = 0.0
     private var rateProbe: (error: Double, turn: SIMD2<Double>, elapsed: Double, correction: Double)?
     private var unmeasuredSeconds = 0.0
+    private var distrusting = false
 
     public init() {}
 
@@ -252,6 +259,7 @@ public struct CameraYawCorrector: Sendable {
         drift = nil
         rateProbe = nil
         unmeasuredSeconds = 0
+        distrusting = false
     }
 
     /// Кадр без измерения: выученная поправка затухает до нуля за одну секунду.
@@ -278,7 +286,9 @@ public struct CameraYawCorrector: Sendable {
     ///   - headSpeed: скорость поворота головы, рад/с.
     /// - Returns: на сколько довернуть мир вокруг вертикали, радианы (плюс — влево). Кадры, где голова
     ///   отвёрнута сильнее `maxTurn` или движется быстрее `measureSpeed`, расхождение не меняют: по ним
-    ///   поправка плавно затухает, чтобы старое измерение не вращало мир.
+    ///   поправка плавно затухает, чтобы старое измерение не вращало мир. Скачок расхождения больше
+    ///   `maxJump` и расхождение больше `untrustedError` считаются ошибкой модели лица или опоры камеры:
+    ///   мир за ними не доворачивается, пока расхождение не вернётся в пределы `maxJump / 2`.
     public mutating func step(headYaw: Double, cameraYaw: Double, faceTurn: SIMD2<Double>, dt: Double,
                               headSpeed: Double = 0) -> Double {
         guard dt > 0 else { return 0 }
@@ -286,7 +296,17 @@ public struct CameraYawCorrector: Sendable {
         guard measurable, headYaw.isFinite, cameraYaw.isFinite, dt.isFinite, dt <= 0.2 else { return coast(dt: dt) }
         unmeasuredSeconds = 0
         let measured = remainder(headYaw - (cameraYaw + faceTurn.x), 2 * .pi)
+        if let previous = drift, abs(remainder(measured - previous, 2 * .pi)) > maxJump {
+            distrusting = true
+        }
         let smoothed = drift.map { $0 + remainder(measured - $0, 2 * .pi) * smoothing } ?? measured
+        if abs(smoothed) > untrustedError { distrusting = true }
+        if distrusting {
+            drift = measured
+            rateProbe = nil
+            if abs(measured) <= maxJump / 2 { distrusting = false }
+            return 0
+        }
         if abs(headSpeed) < stillSpeed, abs(measured) < rateLearningBelow {
             if var probe = rateProbe, simd_length(faceTurn - probe.turn) < Double.pi / 180 {
                 probe.elapsed += dt

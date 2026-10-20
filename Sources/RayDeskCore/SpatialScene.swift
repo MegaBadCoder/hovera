@@ -141,6 +141,24 @@ public final class SpatialScene {
         grabbed = index
     }
 
+    /// Берёт экран `index` и сразу ставит его в центр взгляда: смещение захвата нулевое, поэтому
+    /// при движении головы экран остаётся ровно перед глазами. Расстояние, ширина и поворот в
+    /// плоскости не меняются.
+    ///
+    /// - Parameters:
+    ///   - index: номер экрана.
+    ///   - head: ориентация головы в момент захвата.
+    public func grabCentered(_ index: Int, head: simd_quatd) {
+        guard screens.indices.contains(index) else { return }
+        endFocus()
+        cancelSwap()
+        let gaze = head.yawPitch
+        screens[index].yaw = gaze.yaw
+        screens[index].pitch = min(maxPitch, max(-maxPitch, gaze.pitch))
+        grabOffset = (0, 0)
+        grabbed = index
+    }
+
     /// Обновляет позу захваченного экрана по текущему взгляду.
     public func tick(head: simd_quatd) {
         guard let grabbed else { return }
@@ -218,6 +236,24 @@ public final class SpatialScene {
     /// Изменяет ширину экрана `index`, умножая на `factor`, в пределах 0.2…5 м.
     public func adjustWidth(_ index: Int, by factor: Double) {
         screens[index].width = min(maxWidth, max(minWidth, screens[index].width * factor))
+    }
+
+    /// Сдвигает экран `index` на `yaw` влево и `pitch` вверх от его текущего направления.
+    ///
+    /// Захваченный экран сдвигается вместе со смещением захвата: без этого следующий `tick`
+    /// вернул бы его к прежнему месту относительно взгляда.
+    ///
+    /// - Parameters:
+    ///   - index: номер экрана.
+    ///   - yaw: сдвиг по горизонтали, радианы, плюс — влево.
+    ///   - pitch: сдвиг по вертикали, радианы, плюс — вверх; наклон ограничен ±80°.
+    public func nudge(_ index: Int, yaw: Double, pitch: Double) {
+        guard screens.indices.contains(index) else { return }
+        screens[index].yaw = wrap(screens[index].yaw + yaw)
+        screens[index].pitch = min(maxPitch, max(-maxPitch, screens[index].pitch + pitch))
+        if grabbed == index {
+            grabOffset = (wrap(grabOffset.yaw + yaw), grabOffset.pitch + pitch)
+        }
     }
 
     /// Напрямую заменяет позу экрана `index` (используется при перетаскивании мышью в приложении).

@@ -164,3 +164,66 @@ private let degree = Double.pi / 180
     #expect(scene.screens[0].yaw > scene.screens[1].yaw)
     #expect(scene.grabbed == nil)
 }
+
+@Test func nudgeMovesScreenHorizontallyAndVertically() {
+    let scene = SpatialScene(screens: [ScreenPose(yaw: 10 * degree, pitch: -5 * degree, distance: 1.5, width: 1.0, aspect: 1.0)])
+    scene.nudge(0, yaw: 2 * degree, pitch: 3 * degree)
+    #expect(abs(scene.screens[0].yaw - 12 * degree) < 1e-9)
+    #expect(abs(scene.screens[0].pitch - (-2 * degree)) < 1e-9)
+    scene.nudge(0, yaw: -4 * degree, pitch: -1 * degree)
+    #expect(abs(scene.screens[0].yaw - 8 * degree) < 1e-9)
+    #expect(abs(scene.screens[0].pitch - (-3 * degree)) < 1e-9)
+    #expect(scene.screens[0].distance == 1.5)
+}
+
+@Test func nudgeClampsPitchAndWrapsYaw() {
+    let scene = SpatialScene(screens: [ScreenPose(yaw: 179 * degree, pitch: 79 * degree, distance: 1.5, width: 1.0, aspect: 1.0)])
+    scene.nudge(0, yaw: 4 * degree, pitch: 10 * degree)
+    #expect(scene.screens[0].pitch <= 80 * degree + 1e-9)
+    #expect(abs(scene.screens[0].yaw) < 180 * degree)
+    #expect(scene.screens[0].yaw < 0)
+}
+
+@Test func nudgeKeepsGrabbedScreenAtTheSameOffsetFromGaze() {
+    let scene = SpatialScene(screens: [ScreenPose(yaw: 20 * degree, pitch: 5 * degree, distance: 1.5, width: 1.0, aspect: 1.0)])
+    let head = yawPitchQuat(yaw: 0, pitch: 0)
+    scene.toggleGrab(0, head: head)
+    scene.nudge(0, yaw: 3 * degree, pitch: 2 * degree)
+    // Сдвиг захваченного экрана должен пережить следующий кадр: смещение относительно взгляда выросло.
+    scene.tick(head: head)
+    #expect(abs(scene.screens[0].yaw - 23 * degree) < 1e-6)
+    #expect(abs(scene.screens[0].pitch - 7 * degree) < 1e-6)
+}
+
+@Test func nudgeIgnoresMissingScreen() {
+    let scene = SpatialScene(screens: [ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1.0, aspect: 1.0)])
+    scene.nudge(5, yaw: 1, pitch: 1)
+    #expect(scene.screens[0].yaw == 0)
+}
+
+@Test func grabCenteredPutsScreenAtGazeAndKeepsItCentered() {
+    let scene = SpatialScene(screens: [
+        ScreenPose(yaw: 30 * degree, pitch: 10 * degree, distance: 1.5, width: 1.0, aspect: 1.0),
+        ScreenPose(yaw: -30 * degree, pitch: 0, distance: 1.5, width: 1.0, aspect: 1.0),
+    ])
+    let head = yawPitchQuat(yaw: 5 * degree, pitch: -5 * degree)
+    scene.grabCentered(0, head: head)
+    #expect(scene.grabbed == 0)
+    // Экран встал ровно по центру взгляда, расстояние и размеры не изменились.
+    #expect(abs(scene.screens[0].yaw - 5 * degree) < 1e-9)
+    #expect(abs(scene.screens[0].pitch - (-5 * degree)) < 1e-9)
+    #expect(scene.screens[0].distance == 1.5)
+    // Захваченный экран остаётся по центру, когда голова поворачивается.
+    let moved = yawPitchQuat(yaw: -12 * degree, pitch: 8 * degree)
+    scene.tick(head: moved)
+    #expect(abs(scene.screens[0].yaw - (-12 * degree)) < 1e-6)
+    #expect(abs(scene.screens[0].pitch - 8 * degree) < 1e-6)
+    // Второй экран не сдвинулся.
+    #expect(abs(scene.screens[1].yaw - (-30 * degree)) < 1e-9)
+}
+
+@Test func grabCenteredClampsPitchAtTheLimit() {
+    let scene = SpatialScene(screens: [ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1.0, aspect: 1.0)])
+    scene.grabCentered(0, head: yawPitchQuat(yaw: 0, pitch: 89 * degree))
+    #expect(scene.screens[0].pitch <= 80 * degree + 1e-9)
+}

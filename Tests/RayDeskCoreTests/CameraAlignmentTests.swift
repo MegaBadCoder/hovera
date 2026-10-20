@@ -153,6 +153,49 @@ private let sweep: [(Double, Double)] = [(0, 0), (12, 0), (25, 3), (10, -10), (-
     #expect(abs(movingShift) <= moving.maxMotionRate * 31 / 30 + 0.05 * degree)
 }
 
+@Test func faceModelJumpIsNotTakenForDrift() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    let dt = 1.0 / 30
+    for _ in 0..<60 {
+        shift += corrector.step(headYaw: shift, cameraYaw: 0, faceTurn: .zero, dt: dt, headSpeed: 1 * degree)
+    }
+    let before = shift
+    for _ in 0..<(30 * 10) {
+        shift += corrector.step(headYaw: shift, cameraYaw: 0, faceTurn: SIMD2(-20 * degree, 0), dt: dt,
+                                headSpeed: 1 * degree)
+    }
+    #expect(abs(shift - before) < 0.1 * degree)
+    #expect(abs((corrector.drift ?? 0) - 20 * degree) < 1 * degree)
+}
+
+@Test func faceModelJumpStopsCorrectionUntilTheMeasurementIsBack() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    let dt = 1.0 / 30
+    for _ in 0..<60 {
+        shift += corrector.step(headYaw: shift, cameraYaw: 0, faceTurn: SIMD2(-25 * degree, 0), dt: dt,
+                                headSpeed: 1 * degree)
+    }
+    #expect(abs(shift) < 0.1 * degree)
+    let gyroDrift = 3 * degree
+    for _ in 0..<(30 * 40) {
+        shift += corrector.step(headYaw: gyroDrift + shift, cameraYaw: 0, faceTurn: .zero, dt: dt,
+                                headSpeed: 1 * degree)
+    }
+    #expect(abs(gyroDrift + shift) < corrector.stillDeadband + 0.2 * degree)
+}
+
+@Test func largeDiscrepancyFromTheStartIsNotChased() {
+    var corrector = CameraYawCorrector()
+    var shift = 0.0
+    for _ in 0..<(30 * 5) {
+        shift += corrector.step(headYaw: 120 * degree + shift, cameraYaw: 0, faceTurn: .zero,
+                                dt: 1.0 / 30, headSpeed: 1 * degree)
+    }
+    #expect(abs(shift) < 0.1 * degree)
+}
+
 @Test func headSwingsDoNotRotateTheWorldWhenTheCameraLags() {
     var corrector = CameraYawCorrector()
     var shift = 0.0

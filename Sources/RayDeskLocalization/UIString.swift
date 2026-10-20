@@ -21,6 +21,9 @@ public enum UIString: CaseIterable {
     case saySelectFocusPoint
     case menuPlaceHere
     case menuGrab
+    case menuMoveMode
+    case menuMacScreenOff
+    case menuPrimaryScreen
     case menuCloser
     case menuFarther
     case menuBigger
@@ -43,8 +46,6 @@ public enum UIString: CaseIterable {
 
     case menuCentreHeading
     case menuRecentreWorld
-    case menuRecentreToGaze
-    case menuCaptureMacAnchor
     case menuMarkReference
     case menuCompass
     case menuCalibrateCompass
@@ -60,6 +61,7 @@ public enum UIString: CaseIterable {
     case menuFirmwareZeroRestore
     case menuCameraFieldOfView
     case menuWallDepth
+    case menuEyeArc
     case menuCameraDebugWindow
 
     case menuPicture
@@ -100,7 +102,6 @@ public enum UIString: CaseIterable {
     case alertGlassesRecordingFailed
     case settingGrid
     case settingCompass
-    case settingMacAnchor
     case settingReset
     case settingNotSaved
 
@@ -248,8 +249,11 @@ public enum UIString: CaseIterable {
         case .menuFocusZoom: "Увеличить точку / вернуть раскладку   ⌃⌥Z"
         case .menuSwapScreen: "Выбрать экран / обменять взглядом   ⌃⌥S"
         case .saySelectFocusPoint: "Кликните точку на виртуальном экране для увеличения. Control Option Z — отмена."
-        case .menuPlaceHere: "Поставить экран туда, куда смотрю   ⌃⌥Space"
+        case .menuPlaceHere: "Взять экран по центру / поставить по взгляду   ⌃⌥Space"
         case .menuGrab: "Взять / отпустить экран   ⌃⌥G"
+        case .menuMoveMode: "Режим перемещения: стрелки двигают экран   ⌃⌥⇧M"
+        case .menuMacScreenOff: "Погасить MacBook и убрать туда курсор   ⌃⌥⇧B"
+        case .menuPrimaryScreen: "Главный экран — под взглядом, повтор — MacBook   ⌃⌥⇧P"
         case .menuCloser: "Ближе   ⌃⌥↑"
         case .menuFarther: "Дальше   ⌃⌥↓"
         case .menuBigger: "Больше   ⌃⌥="
@@ -260,7 +264,7 @@ public enum UIString: CaseIterable {
         case .menuTurnRight: "Довернуть экран вправо   ⌃⌥⇧→"
         case .menuTiltAllBack: "Наклонить все назад   ⌃⌥⌘↑"
         case .menuTiltAllForward: "Наклонить все вперёд   ⌃⌥⌘↓"
-        case .menuGatherScreens: "Собрать экраны перед собой"
+        case .menuGatherScreens: "Собрать экраны перед собой   ⌃⌥⇧G"
         case .menuArrangeInArc: "Собрать дугой, край к краю   ⌃⌥A"
         case .menuJoin: "Стыковка экранов"
         case .menuJoinHinge: "Как тройной монитор: вертикально, стык по всей длине"
@@ -271,9 +275,7 @@ public enum UIString: CaseIterable {
         case .menuWindowToGaze: "Окно — туда, куда смотрю   ⌃⌥W"
 
         case .menuCentreHeading: "Центр и курс"
-        case .menuRecentreWorld: "Вернуть экраны по MacBook: навести перекрестие, ещё раз   ⌃⌥R"
-        case .menuRecentreToGaze: "«Вперёд» = куда смотрю   ⌃⌥⇧R"
-        case .menuCaptureMacAnchor: "Экран Mac — там, куда смотрю   ⌃⌥B"
+        case .menuRecentreWorld: "«Вперёд» = куда смотрю   ⌃⌥R"
         case .menuMarkReference: "Метка: смотрю на средний экран (только в лог)   ⌃⌥M"
         case .menuCompass: "Компас"
         case .menuCalibrateCompass: "Калибровка компаса   ⌃⌥K"
@@ -289,6 +291,7 @@ public enum UIString: CaseIterable {
         case .menuFirmwareZeroRestore: "Отменять пересчёты нуля гироскопа прошивкой"
         case .menuCameraFieldOfView: "Угол обзора камеры (масштаб вперёд-назад)"
         case .menuWallDepth: "Сила вперёд-назад"
+        case .menuEyeArc: "Дуга глаз при повороте"
         case .menuCameraDebugWindow: "Окно отладки (рамка и точки лица)"
 
         case .menuPicture: "Картинка"
@@ -329,7 +332,6 @@ public enum UIString: CaseIterable {
         case .alertGlassesRecordingFailed: "Запись видео очков: %@"
         case .settingGrid: "Настройка сетки"
         case .settingCompass: "Калибровка компаса"
-        case .settingMacAnchor: "Позиция экрана Mac"
         case .settingReset: "%@ сброшена, настройте заново."
         case .settingNotSaved: "Не удалось сохранить настройку."
 
@@ -468,8 +470,11 @@ public enum UIString: CaseIterable {
         case .menuFocusZoom: "Zoom into a point / restore layout   ⌃⌥Z"
         case .menuSwapScreen: "Select screen / swap by gaze   ⌃⌥S"
         case .saySelectFocusPoint: "Click a point on a virtual screen to zoom in. Control Option Z cancels."
-        case .menuPlaceHere: "Place the screen where I look   ⌃⌥Space"
+        case .menuPlaceHere: "Pick a screen at the centre / place it by gaze   ⌃⌥Space"
         case .menuGrab: "Grab / release a screen   ⌃⌥G"
+        case .menuMoveMode: "Move mode: arrows move the screen   ⌃⌥⇧M"
+        case .menuMacScreenOff: "Blank the MacBook and keep the cursor out   ⌃⌥⇧B"
+        case .menuPrimaryScreen: "Primary screen — where I look, press again for the MacBook   ⌃⌥⇧P"
         case .menuCloser: "Closer   ⌃⌥↑"
         case .menuFarther: "Further   ⌃⌥↓"
         case .menuBigger: "Bigger   ⌃⌥="
@@ -480,7 +485,7 @@ public enum UIString: CaseIterable {
         case .menuTurnRight: "Turn the screen right   ⌃⌥⇧→"
         case .menuTiltAllBack: "Tilt all back   ⌃⌥⌘↑"
         case .menuTiltAllForward: "Tilt all forward   ⌃⌥⌘↓"
-        case .menuGatherScreens: "Gather the screens in front of me"
+        case .menuGatherScreens: "Gather the screens in front of me   ⌃⌥⇧G"
         case .menuArrangeInArc: "Arrange in an arc, edge to edge   ⌃⌥A"
         case .menuJoin: "Screen joining"
         case .menuJoinHinge: "Like a triple monitor: upright, joined along the whole edge"
@@ -491,9 +496,7 @@ public enum UIString: CaseIterable {
         case .menuWindowToGaze: "Window to where I look   ⌃⌥W"
 
         case .menuCentreHeading: "Centre and heading"
-        case .menuRecentreWorld: "Put the screens back with the MacBook: aim the crosshair, press again   ⌃⌥R"
-        case .menuRecentreToGaze: "\"Forward\" = where I look   ⌃⌥⇧R"
-        case .menuCaptureMacAnchor: "Mac screen where I look   ⌃⌥B"
+        case .menuRecentreWorld: "\"Forward\" = where I look   ⌃⌥R"
         case .menuMarkReference: "Mark: looking at the middle screen (log only)   ⌃⌥M"
         case .menuCompass: "Compass"
         case .menuCalibrateCompass: "Calibrate the compass   ⌃⌥K"
@@ -509,6 +512,7 @@ public enum UIString: CaseIterable {
         case .menuFirmwareZeroRestore: "Undo the firmware's gyroscope zero resets"
         case .menuCameraFieldOfView: "Camera field of view (forward/backward scale)"
         case .menuWallDepth: "Forward/backward strength"
+        case .menuEyeArc: "Eye arc when turning"
         case .menuCameraDebugWindow: "Debug window (box and face points)"
 
         case .menuPicture: "Picture"
@@ -549,7 +553,6 @@ public enum UIString: CaseIterable {
         case .alertGlassesRecordingFailed: "Glasses video recording: %@"
         case .settingGrid: "Grid calibration"
         case .settingCompass: "Compass calibration"
-        case .settingMacAnchor: "Mac screen position"
         case .settingReset: "%@ was reset, set it up again."
         case .settingNotSaved: "Could not save the setting."
 

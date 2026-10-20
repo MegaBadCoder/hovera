@@ -99,6 +99,17 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var lastFaceHeading = -Double.infinity
     private static let coastSeconds = 1.0
     private var headingCorrection = 0.0
+    private var motionDetector = CameraMotionDetector()
+    private var motionFrameCounter = 0
+    private var cameraMovingUntil = 0.0
+    private var cameraMovingFlag = false
+    private var cameraWasMoving = false
+    private var lastCameraMotionLog = 0.0
+    private static let cameraMotionHold = 0.7
+    private var headingPausedForCamera = false
+    private var pendingHeadingReanchor = false
+    private var lastFaceBox: (minX: Double, minY: Double, maxX: Double, maxY: Double)?
+    private var lastFaceBoxTime = 0.0
     /// Доворачивает мир вокруг вертикали на заданный угол, радианы; так камера поправляет уплывание курса.
     var turnWorld: ((Double) -> Void)?
     private var recording = false
@@ -152,6 +163,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lock.withLock {
             guidedCalibrationActive = true
             lastHeadingFrame = nil
+            headingPausedForCamera = false
+            pendingHeadingReanchor = false
             return generation
         }
     }
@@ -184,6 +197,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             headingCorrector = CameraYawCorrector()
             lastHeadingFrame = nil
             lastFaceHeading = -.infinity
+            headingPausedForCamera = false
+            pendingHeadingReanchor = false
             generation += 1
             guidedCalibrationActive = false
             if result.checkedTurns {
@@ -195,6 +210,12 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     }
 
     var isRunning: Bool { session.isRunning }
+
+    /// Двигается ли камера вместе с ноутбуком прямо сейчас: видно по сдвигу фона в кадре.
+    ///
+    /// Пока это `true`, камерные оценки курса и положения головы не применяются: они
+    /// описывают движение ноутбука, а не головы.
+    var cameraIsMoving: Bool { lock.withLock { cameraMovingFlag } }
 
     func start(completion: @escaping @MainActor (Error?) -> Void) {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -252,6 +273,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .unspecified)
             ?? AVCaptureDevice.default(for: .video)
         else { throw CameraError.noCamera }
+        configureCamera()
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
@@ -267,12 +289,80 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         log(String(format: "camera: %@ %dx%d", device.localizedName, dimensions.width, dimensions.height))
     }
 
+    /// Настраивает камеру под неподвижный кадр: без Center Stage. Иначе система сама кадрирует
+    /// и двигает зум под лицо, и на каждом повороте головы кадр пересобирается — лицо теряется,
+    /// а оценка позы уезжает.
+    private func configureCamera() {
+        if #available(macOS 12.3, *) {
+            AVCaptureDevice.centerStageControlMode = .app
+            AVCaptureDevice.isCenterStageEnabled = false
+            log("camera: center stage off")
+        }
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let captured = captureUptime(sampleBuffer)
+        updateCameraMotion(pixels)
         let (head, speed) = orientation(captured)
         guard let vision = lock.withLock({ glassesVision }) else { return }
         sendToGlasses(vision, pixels: pixels, captured: captured, head: head, speed: speed)
+    }
+
+    /// Раз в несколько кадров сравнивает фон с предыдущим кадром: пока голова поворачивается,
+    /// комната в кадре стоит, а когда едет ноутбук — сдвигается весь фон.
+    private func updateCameraMotion(_ pixels: CVPixelBuffer) {
+        motionFrameCounter += 1
+        guard motionFrameCounter % 3 == 0, let samples = lumaSamples(pixels) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        var excluding: MotionRegion?
+        if let box = lastFaceBox, now - lastFaceBoxTime < 1.5 {
+            let width = Double(CameraMotionDetector.width), height = Double(CameraMotionDetector.height)
+            let pad = 6
+            excluding = MotionRegion(minX: max(0, Int(box.minX * width) - pad),
+                                     minY: max(0, Int((1 - box.maxY) * height) - pad),
+                                     maxX: min(CameraMotionDetector.width, Int(box.maxX * width) + pad),
+                                     maxY: min(CameraMotionDetector.height, Int((1 - box.minY) * height) + pad))
+        }
+        let moved = motionDetector.update(luma: samples, excluding: excluding)
+        if moved { cameraMovingUntil = now + Self.cameraMotionHold }
+        let moving = now < cameraMovingUntil
+        if moving != cameraWasMoving {
+            cameraWasMoving = moving
+            log(moving
+                ? String(format: "camera motion: background moves, shift %d,%d, improvement %.2f", motionDetector.shift.x, motionDetector.shift.y, motionDetector.improvement)
+                : "camera motion: background still")
+        } else if moving, now - lastCameraMotionLog > 1 {
+            lastCameraMotionLog = now
+            log(String(format: "camera motion: shift %d,%d, improvement %.2f, still difference %.2f",
+                       motionDetector.shift.x, motionDetector.shift.y, motionDetector.improvement, motionDetector.stillDifference))
+        }
+        lock.withLock { cameraMovingFlag = moving }
+    }
+
+    /// Уменьшает кадр камеры до `CameraMotionDetector` и переводит в яркость.
+    private func lumaSamples(_ pixels: CVPixelBuffer) -> [UInt8]? {
+        guard CVPixelBufferGetPixelFormatType(pixels) == kCVPixelFormatType_32BGRA else { return nil }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixels) else { return nil }
+        let width = CVPixelBufferGetWidth(pixels)
+        let height = CVPixelBufferGetHeight(pixels)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixels)
+        let targetWidth = CameraMotionDetector.width
+        let targetHeight = CameraMotionDetector.height
+        guard width >= targetWidth, height >= targetHeight else { return nil }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        var samples = [UInt8](repeating: 0, count: targetWidth * targetHeight)
+        for y in 0..<targetHeight {
+            let sourceRow = bytes + (y * height / targetHeight) * bytesPerRow
+            for x in 0..<targetWidth {
+                let pixel = sourceRow + (x * width / targetWidth) * 4
+                let blue = Int(pixel[0]), green = Int(pixel[1]), red = Int(pixel[2])
+                samples[y * targetWidth + x] = UInt8((77 * red + 150 * green + 29 * blue) >> 8)
+            }
+        }
+        return samples
     }
 
     private func captureUptime(_ sampleBuffer: CMSampleBuffer) -> Double {
@@ -286,7 +376,9 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
     private func sendToGlasses(_ vision: GlassesVision, pixels: CVPixelBuffer, captured: Double, head: simd_quatd, speed: Double) {
         lock.withLock { frames += 1 }
-        receiveGlasses(vision.track(pixels: pixels, head: head, generation: lock.withLock { generation }),
+        let cameraMoving = lock.withLock { cameraMovingFlag }
+        receiveGlasses(vision.track(pixels: pixels, head: head, generation: lock.withLock { generation },
+                                    cameraMoving: cameraMoving),
                        captured: captured, head: head, speed: speed)
     }
 
@@ -303,6 +395,12 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             spread.add(glasses, at: Date().timeIntervalSinceReferenceDate)
         }
         let reliableFace = frame?.face == true && (frame?.score ?? 0) >= 0.75 && lastLatency >= 0 && lastLatency < 0.2
+        let cameraMoving = cameraMovingFlag
+        if let points = frame?.landmarks, let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+           let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() {
+            lastFaceBox = (minX, minY, maxX, maxY)
+            lastFaceBoxTime = captured
+        }
         if !guidedCalibrationActive && (frame?.rotationSource != lastRotationSource || !reliableFace) {
             faceYawScale.interrupt()
         }
@@ -310,22 +408,50 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         var faceTurn: SIMD2<Double>?
         if let faceRotation = frame?.faceRotation {
             var turn = headTurn(fromCameraRotation: simd_double3x3(faceRotation))
-            if !guidedCalibrationActive, reliableFace, cameraDirection != nil, abs(turn.y) < 20 * Double.pi / 180 {
+            if !guidedCalibrationActive, !cameraMoving, reliableFace, cameraDirection != nil, abs(turn.y) < 20 * Double.pi / 180 {
                 faceYawScale.add(time: captured, gyroYaw: head.yawPitch.yaw, faceYaw: turn.x)
             } else if !guidedCalibrationActive { faceYawScale.interrupt() }
             turn.x /= faceYawScale.scale
             faceTurn = turn
         }
         if !guidedCalibrationActive {
-            trackNeck(head: head, speed: speed, time: captured, arrival: arrival,
+            trackNeck(head: head, speed: speed, time: captured, arrival: arrival, cameraMoving: cameraMoving,
                       cameraTurn: faceTurn ?? frame?.turn ?? SIMD2(Double.nan, .nan)) { yaw, pitch in
                 (cameraDirection != nil || reliableFace) ? frame?.glasses.map { neckPosition(fromGlasses: $0, yaw: yaw, pitch: pitch, roll: head.sideTilt) } : nil
             }
         }
+        if !guidedCalibrationActive, cameraMoving {
+            if !headingPausedForCamera {
+                headingPausedForCamera = true
+                pendingHeadingReanchor = true
+                headingCorrector.reset()
+                lastHeadingFrame = nil
+                lastFaceHeading = -.infinity
+                faceYawScale.interrupt()
+                log("camera motion: heading and parallax frozen")
+            }
+        } else if headingPausedForCamera {
+            headingPausedForCamera = false
+        }
         var headingStep = 0.0
-        if !guidedCalibrationActive, reliableFace, let faceTurn, let cameraDirection, lastVerdict == .accepted,
-           abs(faceTurn.x) < headingCorrector.maxTurn, abs(faceTurn.y) < headingCorrector.maxTurn,
-           speed < headingCorrector.measureSpeed {
+        if !guidedCalibrationActive, headingPausedForCamera || pendingHeadingReanchor {
+            if !cameraMoving, pendingHeadingReanchor, reliableFace, let faceTurn, cameraDirection != nil,
+               lastVerdict == .accepted, speed < headingCorrector.stillSpeed,
+               abs(faceTurn.x) < headingCorrector.maxTurn, abs(faceTurn.y) < headingCorrector.maxTurn {
+                let anchored = remainder(head.yawPitch.yaw - faceTurn.x, 2 * .pi)
+                cameraDirection = anchored
+                headingCorrector.reset()
+                lastHeadingFrame = captured
+                lastFaceHeading = captured
+                pendingHeadingReanchor = false
+                rebaseNeck()
+                log(String(format: "camera motion: heading re-anchored, camera at yaw %.1f°", anchored * 180 / .pi))
+            } else {
+                lastHeadingFrame = nil
+            }
+        } else if !guidedCalibrationActive, reliableFace, let faceTurn, let cameraDirection, lastVerdict == .accepted,
+                  abs(faceTurn.x) < headingCorrector.maxTurn, abs(faceTurn.y) < headingCorrector.maxTurn,
+                  speed < headingCorrector.measureSpeed {
             let dt = lastHeadingFrame.map { min(captured - $0, 0.2) } ?? 0
             headingStep = headingCorrector.step(headYaw: head.yawPitch.yaw, cameraYaw: cameraDirection,
                                                 faceTurn: faceTurn, dt: dt, headSpeed: speed)
@@ -395,7 +521,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
     }
 
-    private func trackNeck(head: simd_quatd, speed: Double, time: Double, arrival: Double,
+    private func trackNeck(head: simd_quatd, speed: Double, time: Double, arrival: Double, cameraMoving: Bool,
                            cameraTurn: SIMD2<Double>, measure: (Double, Double) -> SIMD3<Double>?) {
         let before = currentOffset()
         let wasAccepted = lastAccepted
@@ -406,7 +532,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             }
         }
         let turn = head.yawPitch
-        let learning = cameraDirection == nil
+        let learning = cameraDirection == nil && !cameraMoving
         var yaw = cameraDirection.map { remainder(turn.yaw - $0, 2 * .pi) } ?? 0
         var pitch = referencePitch.map { turn.pitch - $0 } ?? 0
         yaw = cameraTurn.x.isFinite ? cameraTurn.x : yaw
@@ -477,6 +603,23 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         return SIMD3(middle(values.map(\.x)), middle(values.map(\.y)), middle(values.map(\.z)))
     }
 
+    /// Перезапоминает положение шеи после того, как камера поехала: смещение от старой опоры
+    /// плавно уходит в ноль, а не дёргает мир.
+    private func rebaseNeck() {
+        carry = currentOffset()
+        carryStart = ProcessInfo.processInfo.systemUptime
+        if let latest = latestEstimate {
+            referenceNeck = latest.value
+            settledNeck.reset(to: latest.value)
+        } else {
+            referenceNeck = nil
+        }
+        previousEstimate = nil
+        recentNecks.removeAll()
+        lastRaw = nil
+        lastRawZ = nil
+    }
+
     /// Запоминает опору заново: через `delay` секунд ждёт секунду, пока пользователь спокойно смотрит
     /// в камеру, и запоминает, где камера, наклон головы и положение шеи. До этого сдвиг нулевой.
     func resetReference(after delay: Double, geometryChanged: Bool = false) {
@@ -490,6 +633,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             holding = false
             glassesLearner.reset()
             settledNeck.reset()
+            headingPausedForCamera = false
+            pendingHeadingReanchor = false
             if geometryChanged {
                 faceYawScale = FaceYawScale()
                 headingCorrector = CameraYawCorrector()

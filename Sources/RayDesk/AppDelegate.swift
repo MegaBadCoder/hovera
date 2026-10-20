@@ -44,8 +44,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accessibilityTimer: Timer?
     private var warpPolicy = CursorWarpPolicy()
     private var lastCursorHit: CursorHit?
-    private var macAnchor: MacAnchor?
-    private var macAimTimeout: DispatchWorkItem?
     private var lastGazeHit: GazeHit?
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
@@ -60,6 +58,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let glassesVision = GlassesVision()
     private let watchdog = MainThreadWatchdog()
     private var glassesTrackingItem: NSMenuItem?
+    private var moveMode = false
+    private var moveModeItem: NSMenuItem?
+    private var macScreenOff = UserDefaults.standard.bool(forKey: "macScreenOff")
+    private var macOffItem: NSMenuItem?
+    private var macCurtain: NSWindow?
+    private var primaryVirtualIndex: Int? = {
+        guard let saved = UserDefaults.standard.object(forKey: "primaryVirtualIndex") as? Int, saved >= 0 else { return nil }
+        return saved
+    }()
+    private var primaryItem: NSMenuItem?
+    private var lastRawBias: SIMD3<Double>?
 
     private var wallModeItem: NSMenuItem?
     private var fovSlider: NSSlider?
@@ -74,6 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let other = runningInstanceOtherThanMe() {
+            log("another RayDesk instance is already running (pid \(other.processIdentifier)), exiting")
+            NSApp.terminate(nil)
+            return
+        }
         applyStoredLanguage()
         let info = Bundle.main.infoDictionary ?? [:]
         log("BUILD id=\(info["RayDeskBuildID"] ?? "development") commit=\(info["RayDeskCommit"] ?? "unknown") source=\(info["RayDeskSource"] ?? "unknown") executable=\(Bundle.main.executablePath ?? "unknown") tracking=glasses-coreml")
@@ -83,19 +97,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkeys()
         setupMouseTap()
 
-        guard glassesScreen()?.displayID != nil else {
-            fail(t(.alertGlassesMissing))
+        waitForGlasses(attempt: 0)
+    }
+
+    /// Экран очков появляется не мгновенно: после подключения и после смены режима дисплея система
+    /// перечисляет его с задержкой. Поэтому запуск ждёт экран, а не завершается с первого взгляда.
+    private static let glassesWaitStep = 0.5
+    private static let glassesWaitAttempts = 20
+
+    private func waitForGlasses(attempt: Int) {
+        if glassesScreen()?.displayID != nil {
+            if attempt > 0 { log("glasses screen appeared after \(attempt) checks") }
+            start()
             return
         }
+        guard attempt < Self.glassesWaitAttempts else {
+            fail(t(.alertGlassesMissing))
+            NSApp.terminate(nil)
+            return
+        }
+        if attempt == 0 {
+            log("glasses screen missing: waiting up to \(Double(Self.glassesWaitAttempts) * Self.glassesWaitStep) s")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.glassesWaitStep) { [weak self] in
+            self?.waitForGlasses(attempt: attempt + 1)
+        }
+    }
 
+    /// Перечень экранов одной строкой: видно, на каком шаге запуска пропал экран очков.
+    private func screensDescription() -> String {
+        NSScreen.screens.map { screen in
+            let id = screen.displayID.map(String.init) ?? "-"
+            return "\(screen.localizedName)[\(id) \(Int(screen.frame.width))x\(Int(screen.frame.height))]"
+        }.joined(separator: " · ")
+    }
+
+    private func start() {
         useLightGlassesMode()
+        log("screens after light mode: \(screensDescription())")
         slots = scene.screens.indices.map { ScreenSlot(index: $0) }
+        log("screens after virtual displays: \(screensDescription())")
         saveScene()
         arrangeDisplays()
+        log("screens after arrange: \(screensDescription())")
 
         loadCompassCalibration()
         loadGyroScale()
-        loadMacAnchor()
         cameraHead.turnWorld = { [filter] angle in filter.rotateWorldYaw(by: angle) }
         if UserDefaults.standard.bool(forKey: "glassesTracking") {
             glassesVision.start()
@@ -117,16 +164,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
-            do {
-                try openGlassesWindow()
-            } catch {
-                fail(String(format: t(.alertMetalFailed), "\(error)"))
-                return
-            }
-            startCaptures()
+            openGlassesWindowWhenReady(attempt: 0)
         }
 
         statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshStatus() }
+    }
+
+    /// Открывает окно панелей. Если экран очков пропал на время смены режима дисплея, попытка
+    /// повторяется: одноразовая проверка здесь давала ложное «нет дисплея» и фатальное окно.
+    private func openGlassesWindowWhenReady(attempt: Int) {
+        do {
+            try openGlassesWindow()
+            if attempt > 0 { log("glasses window opened after \(attempt) retries") }
+            applyMacScreenOff()
+            startCaptures()
+        } catch GlassesError.screenMissing {
+            guard attempt < Self.glassesWaitAttempts else {
+                fail(t(.alertGlassesMissing))
+                NSApp.terminate(nil)
+                return
+            }
+            if attempt == 0 {
+                log("glasses screen vanished before the window: retrying")
+                log("screens at retry: \(screensDescription())")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.glassesWaitStep) { [weak self] in
+                self?.openGlassesWindowWhenReady(attempt: attempt + 1)
+            }
+        } catch {
+            fail(String(format: t(.alertMetalFailed), "\(error)"))
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// Другой уже запущенный экземпляр приложения, если он есть: каждый создаёт свои виртуальные
+    /// экраны, вместе они отбирают место у очков, экран очков выпадает и панели пропадают.
+    private func runningInstanceOtherThanMe() -> NSRunningApplication? {
+        guard let id = Bundle.main.bundleIdentifier else { return nil }
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id)
+            .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+    }
+
+    /// Встроенный экран ноутбука: он остаётся экраном MacBook, даже если главным сделали панель.
+    private func builtInDisplayID() -> CGDirectDisplayID? {
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(max(count, 1)))
+        CGGetOnlineDisplayList(count, &ids, &count)
+        return ids.prefix(Int(count)).first { CGDisplayIsBuiltin($0) != 0 }
+    }
+
+    /// Границы экрана MacBook в глобальных координатах.
+    private var macBounds: CGRect {
+        builtInDisplayID().map { CGDisplayBounds($0) } ?? CGDisplayBounds(CGMainDisplayID())
+    }
+
+    /// ⌃⌥⇧B: гасит экран MacBook чёрной шторкой и убирает его из целей курсора.
+    @objc private func toggleMacScreenOff() {
+        macScreenOff.toggle()
+        UserDefaults.standard.set(macScreenOff, forKey: "macScreenOff")
+        macOffItem?.state = macScreenOff ? .on : .off
+        applyMacScreenOff()
+        updatePointerTargets(head: head)
+        warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
+        log("mac screen off: \(macScreenOff)")
+    }
+
+    private func applyMacScreenOff() {
+        guard macScreenOff, let id = builtInDisplayID(),
+              let screen = NSScreen.screens.first(where: { $0.displayID == id }) else {
+            macCurtain?.orderOut(nil)
+            macCurtain = nil
+            return
+        }
+        if macCurtain == nil {
+            let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
+            window.setFrame(screen.frame, display: true)
+            window.level = .screenSaver
+            window.backgroundColor = .black
+            window.isOpaque = true
+            window.ignoresMouseEvents = true
+            window.hasShadow = false
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+            window.orderFrontRegardless()
+            macCurtain = window
+        } else {
+            macCurtain?.setFrame(screen.frame, display: true)
+        }
+        moveCursorOffMac()
+    }
+
+    /// Уводит курсор с погашенного MacBook на панель под взглядом.
+    private func moveCursorOffMac() {
+        guard let event = CGEvent(source: nil), macBounds.contains(event.location) else { return }
+        let index = screenUnderGaze()
+        guard slots.indices.contains(index) else { return }
+        let bounds = slots[index].displayBounds
+        CGWarpMouseCursorPosition(CGPoint(x: bounds.midX, y: bounds.midY))
+        mouseTap?.noteCursorMoved(to: CGPoint(x: bounds.midX, y: bounds.midY))
     }
 
     private func glassesScreen() -> NSScreen? {
@@ -155,12 +290,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func arrangeDisplays() {
         guard let glassesID = glassesScreen()?.displayID else { return }
-        let mainBounds = CGDisplayBounds(CGMainDisplayID())
+        let mainBounds = macBounds
         let glassesBounds = CGDisplayBounds(glassesID)
         let sizes = slots.map(\.displayBounds.size)
         let result = RayDeskCore.arrangeDisplays(screenYaws: scene.screens.map(\.yaw), screenSizes: sizes, main: mainBounds, glasses: glassesBounds.size)
         var origins = zip(slots, result.screens).map { (display: $0.0.displayID, origin: $0.1) }
         origins.append((display: glassesID, origin: result.glasses))
+        if let mac = builtInDisplayID() { origins.append((display: mac, origin: mainBounds.origin)) }
+        // macOS считает главным дисплей, который занимает точку (0,0). Поэтому сдвигаем всю
+        // раскладку так, чтобы в начале координат стоял выбранный экран, а без выбора — MacBook.
+        let anchor = primaryVirtualIndex.flatMap { slots.indices.contains($0) ? result.screens[$0] : nil } ?? mainBounds.origin
+        for index in origins.indices {
+            origins[index].origin.x -= anchor.x
+            origins[index].origin.y -= anchor.y
+        }
         let current = origins.map { CGDisplayBounds($0.display).origin }
         let changed = zip(current, origins.map(\.origin)).filter { $0 != $1 }
         guard !changed.isEmpty else { return }
@@ -173,7 +316,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CGConfigureDisplayOrigin(config, target.display, Int32(target.origin.x), Int32(target.origin.y))
         }
         let status = CGCompleteDisplayConfiguration(config, .forAppOnly)
-        log("arrange displays: \(status.rawValue)")
+        log("arrange displays: \(status.rawValue), main now \(CGMainDisplayID())")
+    }
+
+    /// ⌃⌥⇧P: делает главным экран под взглядом — меню, Dock и новые окна уезжают в очки.
+    /// Повторное нажатие возвращает главным MacBook.
+    @objc private func togglePrimaryScreen() {
+        if let current = primaryVirtualIndex, slots.indices.contains(current) {
+            primaryVirtualIndex = nil
+        } else {
+            primaryVirtualIndex = screenUnderGaze()
+        }
+        UserDefaults.standard.set(primaryVirtualIndex ?? -1, forKey: "primaryVirtualIndex")
+        primaryItem?.state = primaryVirtualIndex == nil ? .off : .on
+        arrangeDisplays()
+        applyMacScreenOff()
+        log("primary screen: \(primaryVirtualIndex.map { "panel \($0 + 1)" } ?? "MacBook"), main now \(CGMainDisplayID())")
     }
 
     private func startCaptures() {
@@ -245,7 +403,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         renderer.verticalFOV = savedVerticalFOV()
         renderer.slots = slots
-        renderer.macAnchor = macAnchor
         renderer.stabilizer.level = savedStabilization()
         if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
             renderer.headPipeline.predictionSeconds = savedPrediction / 1000
@@ -356,7 +513,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastCursorHit = lastGazeHit.map { CursorHit(target: .virtual($0.screen), uv: $0.uv) }
         } else {
             lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
-            lastCursorHit = RayDeskCore.cursorHit(head: head, screens: scene.screens, mac: macAnchor)
+            var hit = RayDeskCore.cursorHit(head: head, screens: scene.screens)
+            if macScreenOff, hit?.target == .mac { hit = nil }
+            lastCursorHit = hit
         }
     }
 
@@ -419,9 +578,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("swapped screens \((source ?? target) + 1) and \(target + 1)")
     }
 
+    /// ⌃⌥Space одним нажатием берёт экран под взглядом, а вторым ставит его туда, куда смотришь:
+    /// сначала нацелились и взяли, потом перевели взгляд и нажали ещё раз.
     @objc private func placeHere() {
-        scene.place(targetScreen(), head: head)
+        if let held = scene.grabbed {
+            scene.place(held, head: head)
+            scene.toggleGrab(held, head: head)
+            saveScene()
+            arrangeDisplays()
+            log("screen \(held + 1) placed by gaze")
+            return
+        }
+        let index = screenUnderGaze()
+        scene.grabCentered(index, head: head)
         saveScene()
+        log("screen \(index + 1) picked and centered, waiting for the target")
+    }
+
+    /// Экран под взглядом: увеличенная панель, затем пересечение луча с экранами, затем ближайший по углу.
+    private func screenUnderGaze() -> Int {
+        if let focus = scene.focus { return focus.screen }
+        if let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens) { return hit.screen }
+        let gaze = head.yawPitch
+        return scene.screens.indices.min {
+            angularGap(scene.screens[$0], gaze) < angularGap(scene.screens[$1], gaze)
+        } ?? 0
+    }
+
+    private func angularGap(_ pose: ScreenPose, _ gaze: (yaw: Double, pitch: Double)) -> Double {
+        hypot(atan2(sin(pose.yaw - gaze.yaw), cos(pose.yaw - gaze.yaw)), pose.pitch - gaze.pitch)
+    }
+
+    /// Режим перемещения: стрелки двигают выбранный экран по горизонтали и вертикали, а не только
+    /// тянут его ближе и дальше.
+    @objc private func toggleMoveMode() {
+        moveMode.toggle()
+        moveModeItem?.state = moveMode ? .on : .off
+        log("move mode \(moveMode ? "on" : "off")")
+    }
+
+    private var nudgeStep: Double { 1 * .pi / 180 }
+
+    private func nudgeTargetScreen(yaw: Double = 0, pitch: Double = 0) {
+        let index = scene.grabbed ?? screenUnderGaze()
+        scene.nudge(index, yaw: yaw, pitch: pitch)
+        saveScene()
+        log(String(format: "screen %d nudged %.0f° yaw, %.0f° pitch", index + 1, scene.screens[index].yaw * 180 / .pi,
+                   scene.screens[index].pitch * 180 / .pi))
+    }
+
+    private func upArrow() {
+        if isCalibrating { adjustCalibration(pitch: 0.5); return }
+        if moveMode { nudgeTargetScreen(pitch: nudgeStep); return }
+        closer()
+    }
+
+    private func downArrow() {
+        if isCalibrating { adjustCalibration(pitch: -0.5); return }
+        if moveMode { nudgeTargetScreen(pitch: -nudgeStep); return }
+        farther()
+    }
+
+    private func leftArrow() {
+        if isCalibrating { adjustCalibration(yaw: 1); return }
+        if moveMode { nudgeTargetScreen(yaw: nudgeStep) }
+    }
+
+    private func rightArrow() {
+        if isCalibrating { adjustCalibration(yaw: -1); return }
+        if moveMode { nudgeTargetScreen(yaw: -nudgeStep) }
     }
 
     @objc private func toggleGrab() {
@@ -709,21 +934,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    private func loadMacAnchor() {
-        macAnchor = loadSetting(MacAnchor.self, key: "macAnchor.v1", name: t(.settingMacAnchor))
-    }
-
-    @objc private func captureMacAnchor() {
-        guard let renderer else { return }
-        let main = CGDisplayBounds(CGMainDisplayID())
-        let anchor = MacAnchor.captured(head: renderer.currentHead, aspect: main.width / main.height)
-        macAnchor = anchor
-        renderer.macAnchor = anchor
-        saveSetting(anchor, key: "macAnchor.v1")
-        log(String(format: "mac anchor: yaw %.1f° pitch %.1f°", anchor.pose.yaw * 180 / .pi, anchor.pose.pitch * 180 / .pi))
-        NSSound(named: "Tink")?.play()
-    }
-
     @objc private func warpCursorToGaze() {
         guard let hit = lastCursorHit else { return }
         let point = globalPoint(uv: hit.uv, in: bounds(of: hit.target))
@@ -770,39 +980,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveSetting(mount, key: "viewCalibration")
     }
 
-    @objc private func recenterWorld() {
-        guard let renderer, let anchor = macAnchor else {
-            recenterToGaze()
-            return
-        }
-        guard renderer.aimingAtMac else {
-            renderer.aimingAtMac = true
-            macAimTimeout?.cancel()
-            let timeout = DispatchWorkItem { [weak self] in self?.renderer?.aimingAtMac = false }
-            macAimTimeout = timeout
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: timeout)
-            NSSound(named: "Pop")?.play()
-            return
-        }
-        macAimTimeout?.cancel()
-        renderer.aimingAtMac = false
-        let filterYaw = filter.orientation(predictAhead: 0).yawPitch.yaw
-        let renderedYaw = renderer.currentHead.yawPitch.yaw
-        let target = remainder(anchor.pose.yaw - (renderedYaw - renderer.calibration.yaw - filterYaw), 2 * .pi)
-        logCorrection(kind: "recenter-mac", yawDegrees: remainder(anchor.pose.yaw - renderedYaw, 2 * .pi) * 180 / .pi)
-        filter.alignYaw(to: target)
-        renderer.calibration.yaw = 0
-        if renderer.headOffset != nil {
-            cameraHead.worldYawChanged(by: target - filterYaw)
-            if glassesTracking { cameraHead.resetReference(after: 0.3) }
-        }
-        NSSound(named: "Tink")?.play()
-    }
-
+    /// Ставит «вперёд» туда, куда смотрю: без запомненной точки MacBook и без маркера.
     @objc private func recenterToGaze() {
         guard let renderer else { return }
-        macAimTimeout?.cancel()
-        renderer.aimingAtMac = false
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()
@@ -954,6 +1134,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Дуга глаз при повороте головы: глаза ходят вокруг шеи и сдвигают камеру.
+    private func eyeArcEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: "eyeArc") as? Bool ?? true
+    }
+
+    @objc private func toggleEyeArc(_ sender: NSMenuItem) {
+        let enabled = !eyeArcEnabled()
+        UserDefaults.standard.set(enabled, forKey: "eyeArc")
+        sender.state = enabled ? .on : .off
+        log("eye arc \(enabled)")
+    }
+
     private var wallDepthStrength: Double {
         UserDefaults.standard.object(forKey: "wallDepthStrength") as? Double ?? (glassesTracking ? 1 : 0.25)
     }
@@ -977,7 +1169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installCameraHeadOffset(_ renderer: Renderer) {
         var referenceHead: simd_quatd?
         var generation = -1
+        var lastOffset = SIMD3<Double>.zero
         renderer.headOffset = { [cameraHead, weak self] head in
+            if cameraHead.cameraIsMoving { return lastOffset }
             if cameraHead.referenceGeneration != generation {
                 generation = cameraHead.referenceGeneration
                 referenceHead = head
@@ -985,8 +1179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var offset = cameraHead.neckOffset()
             offset.z *= self?.wallDepthStrength ?? 0.25
             let neck = worldOffset(fromCamera: offset, cameraYaw: cameraHead.cameraYaw ?? 0)
-            guard let referenceHead else { return neck }
-            return neck + eyeArcOffset(head: head, reference: referenceHead)
+            let arc = self?.eyeArcEnabled() == true ? referenceHead.map { eyeArcOffset(head: head, reference: $0) } ?? .zero : .zero
+            lastOffset = neck + arc
+            return lastOffset
         }
     }
 
@@ -1113,7 +1308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let display: CGDirectDisplayID
         switch target {
         case .virtual(let index): display = slots[index].displayID
-        case .mac: display = CGMainDisplayID()
+        case .mac: display = builtInDisplayID() ?? CGMainDisplayID()
         }
         do {
             let moved = try WindowMover.moveFrontWindow(to: display)
@@ -1338,22 +1533,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupHotkeys() {
         hotkeys.register(keyCode: kVK_Space) { [weak self] in self?.placeHere() }
         hotkeys.register(keyCode: kVK_ANSI_G) { [weak self] in self?.toggleGrab() }
-        hotkeys.register(keyCode: kVK_UpArrow) { [weak self] in
+        hotkeys.register(keyCode: kVK_UpArrow) { [weak self] in self?.upArrow() }
+        hotkeys.register(keyCode: kVK_DownArrow) { [weak self] in self?.downArrow() }
+        hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in
             guard let self else { return }
-            isCalibrating ? adjustCalibration(pitch: 0.5) : closer()
+            moveMode ? closer() : tiltBack()
         }
-        hotkeys.register(keyCode: kVK_DownArrow) { [weak self] in
+        hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in
             guard let self else { return }
-            isCalibrating ? adjustCalibration(pitch: -0.5) : farther()
+            moveMode ? farther() : tiltForward()
         }
-        hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltBack() }
-        hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.tiltForward() }
         hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnLeft() }
         hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnRight() }
         hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllBack() }
         hotkeys.register(keyCode: kVK_DownArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllForward() }
-        hotkeys.register(keyCode: kVK_LeftArrow) { [weak self] in self?.adjustCalibration(yaw: 1) }
-        hotkeys.register(keyCode: kVK_RightArrow) { [weak self] in self?.adjustCalibration(yaw: -1) }
+        hotkeys.register(keyCode: kVK_LeftArrow) { [weak self] in self?.leftArrow() }
+        hotkeys.register(keyCode: kVK_RightArrow) { [weak self] in self?.rightArrow() }
+        hotkeys.register(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.toggleMoveMode() }
+        hotkeys.register(keyCode: kVK_ANSI_B, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.toggleMacScreenOff() }
+        hotkeys.register(keyCode: kVK_ANSI_P, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.togglePrimaryScreen() }
         hotkeys.register(keyCode: kVK_ANSI_Comma) { [weak self] in self?.adjustCalibration(roll: 0.5) }
         hotkeys.register(keyCode: kVK_ANSI_Period) { [weak self] in self?.adjustCalibration(roll: -0.5) }
         hotkeys.register(keyCode: kVK_ANSI_C) { [weak self] in self?.toggleCalibration() }
@@ -1365,14 +1563,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_9) { [weak self] in self?.lessPrediction() }
         hotkeys.register(keyCode: kVK_ANSI_0) { [weak self] in self?.morePrediction() }
         hotkeys.register(keyCode: kVK_ANSI_M) { [weak self] in self?.markReference() }
-        hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterWorld() }
-        hotkeys.register(keyCode: kVK_ANSI_R, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.recenterToGaze() }
+        hotkeys.register(keyCode: kVK_ANSI_R) { [weak self] in self?.recenterToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_V) { [weak self] in self?.toggleRecording() }
         hotkeys.register(keyCode: kVK_ANSI_K, modifiers: controlKey | optionKey | shiftKey) { [weak self] in
             Task { @MainActor [weak self] in self?.startCameraCalibration() }
         }
         hotkeys.register(keyCode: kVK_ANSI_K) { [weak self] in self?.calibrateCompass() }
-        hotkeys.register(keyCode: kVK_ANSI_B) { [weak self] in self?.captureMacAnchor() }
         hotkeys.register(keyCode: kVK_ANSI_J) { [weak self] in self?.warpCursorToGaze() }
         hotkeys.register(keyCode: kVK_ANSI_RightBracket) { [weak self] in self?.widerFOV() }
         hotkeys.register(keyCode: kVK_ANSI_LeftBracket) { [weak self] in self?.narrowerFOV() }
@@ -1380,6 +1576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register(keyCode: kVK_ANSI_Z, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.toggleMeditation() }
         hotkeys.register(keyCode: kVK_ANSI_S) { [weak self] in self?.swapScreensByGaze() }
         hotkeys.register(keyCode: kVK_ANSI_A) { [weak self] in self?.arrangeInArc() }
+        hotkeys.register(keyCode: kVK_ANSI_G, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.gatherScreens() }
         hotkeys.register(keyCode: kVK_ANSI_W) { [weak self] in self?.moveWindowToGaze() }
     }
 
@@ -1399,6 +1596,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(submenu(t(.menuScreens)) { screens in
             screens.addItem(menuItem(t(.menuPlaceHere), #selector(placeHere)))
             screens.addItem(menuItem(t(.menuGrab), #selector(toggleGrab)))
+            let macOff = menuItem(t(.menuMacScreenOff), #selector(toggleMacScreenOff))
+            macOff.state = macScreenOff ? .on : .off
+            macOffItem = macOff
+            screens.addItem(macOff)
+            let primary = menuItem(t(.menuPrimaryScreen), #selector(togglePrimaryScreen))
+            primary.state = primaryVirtualIndex == nil ? .off : .on
+            primaryItem = primary
+            screens.addItem(primary)
+            let moveItem = menuItem(t(.menuMoveMode), #selector(toggleMoveMode))
+            moveItem.state = moveMode ? .on : .off
+            moveModeItem = moveItem
+            screens.addItem(moveItem)
             screens.addItem(menuItem(t(.menuFocusZoom), #selector(toggleFocusZoom)))
             screens.addItem(menuItem(t(.menuSwapScreen), #selector(swapScreensByGaze)))
             screens.addItem(.separator())
@@ -1424,9 +1633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screens.addItem(menuItem(t(.menuWindowToGaze), #selector(moveWindowToGaze)))
         })
         menu.addItem(submenu(t(.menuCentreHeading)) { center in
-            center.addItem(menuItem(t(.menuRecentreWorld), #selector(recenterWorld)))
-            center.addItem(menuItem(t(.menuRecentreToGaze), #selector(recenterToGaze)))
-            center.addItem(menuItem(t(.menuCaptureMacAnchor), #selector(captureMacAnchor)))
+            center.addItem(menuItem(t(.menuRecentreWorld), #selector(recenterToGaze)))
             center.addItem(menuItem(t(.menuMarkReference), #selector(markReference)))
             center.addItem(.separator())
             let compassItem = menuItem(t(.menuCompass), #selector(toggleCompass(_:)))
@@ -1477,6 +1684,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             depth.submenu = strengths
             camera.addItem(depth)
+            let eyeArc = menuItem(t(.menuEyeArc), #selector(toggleEyeArc(_:)))
+            eyeArc.state = eyeArcEnabled() ? .on : .off
+            camera.addItem(eyeArc)
             camera.addItem(.separator())
             let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
             debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
@@ -1631,6 +1841,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(String(format: "DIAG применён ноль %.3f %.3f %.3f · сдвиг восстановителя %.3f %.3f %.3f · доворот мира %.3f °/с · компас расходится %.1f°",
                    applied.x, applied.y, applied.z, shift.x, shift.y, shift.z,
                    filter.takeWorldRotation() * 180 / .pi, filter.compassError * 180 / .pi))
+        // Скачок выученного нуля — частая причина внезапного увода мира: пишем, когда он случился.
+        let raw = filter.gyroBias * 180 / .pi
+        if let lastRawBias, length(raw - lastRawBias) > 0.5 {
+            log(String(format: "DIAG ноль прыгнул на %.2f °/с за секунду · теперь %.2f %.2f %.2f",
+                       length(raw - lastRawBias), raw.x, raw.y, raw.z))
+        }
+        lastRawBias = raw
     }
 
     private func refreshMouseTapLine() {
@@ -1677,7 +1894,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "RayDesk"
         alert.informativeText = message
         NSApp.activate(ignoringOtherApps: true)
+        watchdog.pause()
         alert.runModal()
+        watchdog.resume()
     }
 }
 
@@ -1715,12 +1934,14 @@ extension AppDelegate: MouseTapDelegate {
 
     func cursorTarget(at point: CGPoint) -> CursorTarget? {
         if let index = screenIndex(at: point) { return .virtual(index) }
-        return CGDisplayBounds(CGMainDisplayID()).contains(point) ? .mac : nil
+        if macScreenOff, macBounds.contains(point) { return nil }
+        return macBounds.contains(point) ? .mac : nil
     }
 
     func warpTarget(cursor: CursorTarget?) -> CursorTarget? {
         guard renderer?.meditation.isActive != true, scene.focus == nil else { return nil }
-        return warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
+        let target = warpPolicy.warpTarget(cursor: cursor, buttonsDown: false, at: CACurrentMediaTime())
+        return macScreenOff && target == .mac ? nil : target
     }
 
     func remappedCursor(previous: CGPoint, proposed: CGPoint, delta: CGVector) -> CGPoint? {
@@ -1729,7 +1950,7 @@ extension AppDelegate: MouseTapDelegate {
         var preferred: Int?
         if case .virtual(let index) = lastCursorHit?.target { preferred = index }
         return RayDeskCore.remappedCursor(previous: previous, proposed: proposed, delta: delta,
-                                          panels: slots.map(\.displayBounds), main: CGDisplayBounds(CGMainDisplayID()),
+                                          panels: slots.map(\.displayBounds), main: macScreenOff ? .zero : macBounds,
                                           glasses: CGDisplayBounds(glassesID), preferredPanel: preferred)
     }
 
@@ -1737,7 +1958,7 @@ extension AppDelegate: MouseTapDelegate {
         if scene.focus != nil { return focusedCursorPoint(proposed) }
         guard let glassesID = glassesScreen()?.displayID else { return nil }
         return RayDeskCore.fencedCursor(previous: previous, proposed: proposed,
-                                        main: CGDisplayBounds(CGMainDisplayID()), glasses: CGDisplayBounds(glassesID))
+                                        main: macBounds, glasses: CGDisplayBounds(glassesID))
     }
 
     func bounds(of screen: Int) -> CGRect { slots[screen].displayBounds }
@@ -1745,7 +1966,7 @@ extension AppDelegate: MouseTapDelegate {
     func bounds(of target: CursorTarget) -> CGRect {
         switch target {
         case .virtual(let index): slots[index].displayBounds
-        case .mac: CGDisplayBounds(CGMainDisplayID())
+        case .mac: macBounds
         }
     }
 

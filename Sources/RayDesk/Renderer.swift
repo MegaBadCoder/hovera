@@ -41,8 +41,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// поэтому пауза захвата в секунды — норма. В лог попадают только длинные паузы,
     /// такие как перестроение пространств на жест Mission Control.
     private static let stallReportThreshold: TimeInterval = 8
-    var macAnchor: MacAnchor?
-    var aimingAtMac = false
     var showsScreenBorders = true
 
     var slots: [ScreenSlot] = []
@@ -269,7 +267,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        if skyAmount == 0, showsGrid || aimingAtMac {
+        if skyAmount == 0, showsGrid {
             encoder.setRenderPipelineState(gridPipeline)
             if showsGrid {
                 var gridUniforms = Uniforms(mvp: projection * viewMatrix, border: SIMD4(0.15, 0.75, 0.3, 1))
@@ -277,16 +275,6 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
                 encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gridVertexCount)
-            }
-            if let macAnchor {
-                let model = macAnchor.pose.modelMatrix
-                let corners = [SIMD4<Float>(-1, -1, 0, 1), SIMD4(1, -1, 0, 1), SIMD4(1, 1, 0, 1), SIMD4(-1, 1, 0, 1)].map { model * $0 }
-                drawLines((0..<4).flatMap { [corners[$0], corners[($0 + 1) % 4]] }, color: SIMD4(0.9, 0.7, 0.2, 1),
-                          viewProjection: projection * viewMatrix, encoder: encoder)
-            }
-            if aimingAtMac {
-                drawLines(crosshair(head: head, offset: offset), color: SIMD4(0.9, 0.7, 0.2, 1),
-                          viewProjection: projection * viewMatrix, encoder: encoder)
             }
         }
         encoder.endEncoding()
@@ -303,17 +291,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: vertices.count)
-    }
-
-    private func crosshair(head: simd_quatd, offset: SIMD3<Double>) -> [SIMD4<Float>] {
-        let distance = 0.5
-        let arm = 0.012
-        let centre = offset + head.act(SIMD3(0, 0, -distance))
-        let right = head.act(SIMD3<Double>(arm, 0, 0))
-        let up = head.act(SIMD3<Double>(0, arm, 0))
-        return [centre - right, centre + right, centre - up, centre + up].map {
-            SIMD4(Float($0.x), Float($0.y), Float($0.z), 1)
-        }
     }
 
     /// Пишет в лог, когда кадр на панели перестаёт обновляться дольше порога и когда снова оживает.

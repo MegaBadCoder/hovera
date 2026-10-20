@@ -207,7 +207,9 @@ final class GlassesVision: @unchecked Sendable {
     ///   - pixels: кадр.
     ///   - head: ориентация очков по гироскопу в момент съёмки кадра.
     ///   - generation: номер настройки камеры.
-    func track(pixels: CVPixelBuffer, head: simd_quatd, generation: Int = 0) -> GlassesFrame? {
+    ///   - cameraMoving: камера едет вместе с ноутбуком, поэтому связь осей гироскопа и камеры
+    ///     по этому кадру не учить и опору для предсказания не сбивать.
+    func track(pixels: CVPixelBuffer, head: simd_quatd, generation: Int = 0, cameraMoving: Bool = false) -> GlassesFrame? {
         lock.lock()
         defer { lock.unlock() }
         guard let mesh else { return nil }
@@ -228,6 +230,7 @@ final class GlassesVision: @unchecked Sendable {
         let small = landmarks.map { $0 / scale }
         classifier = SkinClassifier.sampled(from: image, landmarks: small) ?? classifier
         if learning {
+            guard !cameraMoving else { return frame }
             if shape == nil {
                 let span = simd_distance(landmarks[FaceMeshPoint.sides.0], landmarks[FaceMeshPoint.sides.1])
                 shape = GlassesShape(landmarks: landmarks, depth: focal * Self.templeSpan / span, fieldOfView: Self.fieldOfView)
@@ -257,14 +260,18 @@ final class GlassesVision: @unchecked Sendable {
         guard let shape, let classifier, !kept.isEmpty else { return frame }
         let fit = shape.fit(landmarks: landmarks, previous: lastFit)
         lastFit = fit
-        learnAlignment(face: fit.rotation, imu: head)
+        if !cameraMoving {
+            learnAlignment(face: fit.rotation, imu: head)
+        }
         var rotation = fit.rotation
         frame.rotationSource = t(.rotationSourceFace)
         if let anchor, let predicted = alignment.predict(anchorFace: anchor.face, anchorIMU: anchor.imu, imu: head) {
             rotation = simd_double3x3(simd_slerp(simd_quatd(predicted), simd_quatd(fit.rotation), Self.faceBlend))
             frame.rotationSource = t(.rotationSourceGyroAndFace)
         }
-        anchor = (rotation, head)
+        if !cameraMoving {
+            anchor = (rotation, head)
+        }
         frame.turn = headTurn(fromCameraRotation: fit.rotation)
         frame.faceRotation = simd_quatd(fit.rotation)
         frame.faceDepth = shape.referenceDepth / fit.scale * shape.depthScale(fieldOfView: Self.fieldOfView)

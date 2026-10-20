@@ -41,6 +41,13 @@ public struct FirmwareZeroRestorer: Sendable {
     private var lastPhase: SIMD3<Double>?
     private var steadySamples = 0
 
+    /// Начинает с накопленной поправки, например сохранённой с прошлого запуска.
+    ///
+    /// - Parameter shift: поправка к показаниям прошивки, рад/с по осям тела.
+    public mutating func seed(_ shift: SIMD3<Double>) {
+        self.shift = shift
+    }
+
     public init() {}
 
     /// Принимает показание гироскопа прошивки и возвращает его с постоянным нулём.
