@@ -62,6 +62,10 @@ public enum UIString: CaseIterable {
     case menuCameraFieldOfView
     case menuWallDepth
     case menuEyeArc
+    case menuCameraMotion
+    case cameraMotionDebug
+    case cameraMotionDebugMoving
+    case cameraMotionDebugStill
     case menuCameraDebugWindow
 
     case menuPicture
@@ -292,6 +296,10 @@ public enum UIString: CaseIterable {
         case .menuCameraFieldOfView: "Угол обзора камеры (масштаб вперёд-назад)"
         case .menuWallDepth: "Сила вперёд-назад"
         case .menuEyeArc: "Дуга глаз при повороте"
+        case .menuCameraMotion: "Движение камеры по фону"
+        case .cameraMotionDebug: "движение камеры: сдвиг %d,%d, выигрыш %.1f, %@"
+        case .cameraMotionDebugMoving: "фон едет"
+        case .cameraMotionDebugStill: "фон стоит"
         case .menuCameraDebugWindow: "Окно отладки (рамка и точки лица)"
 
         case .menuPicture: "Картинка"
@@ -513,6 +521,10 @@ public enum UIString: CaseIterable {
         case .menuCameraFieldOfView: "Camera field of view (forward/backward scale)"
         case .menuWallDepth: "Forward/backward strength"
         case .menuEyeArc: "Eye arc when turning"
+        case .menuCameraMotion: "Camera motion from the background"
+        case .cameraMotionDebug: "camera motion: shift %d,%d, improvement %.1f, %@"
+        case .cameraMotionDebugMoving: "background moves"
+        case .cameraMotionDebugStill: "background still"
         case .menuCameraDebugWindow: "Debug window (box and face points)"
 
         case .menuPicture: "Picture"

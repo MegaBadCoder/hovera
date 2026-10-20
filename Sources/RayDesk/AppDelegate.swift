@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private var primaryItem: NSMenuItem?
     private var lastRawBias: SIMD3<Double>?
+    private var cameraMotionItem: NSMenuItem?
 
     private var wallModeItem: NSMenuItem?
     private var fovSlider: NSSlider?
@@ -133,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func start() {
+        cameraHead.detectsCameraMotionEnabled = cameraMotionEnabled()
         useLightGlassesMode()
         log("screens after light mode: \(screensDescription())")
         slots = scene.screens.indices.map { ScreenSlot(index: $0) }
@@ -1148,6 +1150,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Сравнивать ли кадры фона, чтобы ловить поездку ноутбука.
+    private func cameraMotionEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: "cameraMotion") as? Bool ?? true
+    }
+
+    @objc private func toggleCameraMotion(_ sender: NSMenuItem) {
+        let enabled = !cameraMotionEnabled()
+        UserDefaults.standard.set(enabled, forKey: "cameraMotion")
+        cameraHead.detectsCameraMotionEnabled = enabled
+        sender.state = enabled ? .on : .off
+        log("camera motion from background \(enabled)")
+    }
+
     /// Дуга глаз при повороте головы: глаза ходят вокруг шеи и сдвигают камеру.
     private func eyeArcEnabled() -> Bool {
         UserDefaults.standard.object(forKey: "eyeArc") as? Bool ?? true
@@ -1702,6 +1717,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             eyeArc.state = eyeArcEnabled() ? .on : .off
             camera.addItem(eyeArc)
             camera.addItem(.separator())
+            let motionItem = menuItem(t(.menuCameraMotion), #selector(toggleCameraMotion(_:)))
+            motionItem.state = cameraMotionEnabled() ? .on : .off
+            cameraMotionItem = motionItem
+            camera.addItem(motionItem)
             let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
             debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
             camera.addItem(debugItem)

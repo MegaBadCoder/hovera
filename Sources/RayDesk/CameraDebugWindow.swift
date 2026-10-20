@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import QuartzCore
+import RayDeskCore
 import RayDeskLocalization
 
 final class CameraDebugWindow {
@@ -9,6 +10,8 @@ final class CameraDebugWindow {
     private let boxLayer = CAShapeLayer()
     private let pointsLayer = CAShapeLayer()
     private let glassesLayer = CAShapeLayer()
+    private let motionLayer = CAShapeLayer()
+    private let motionBoxLayer = CAShapeLayer()
     private let textLayer = CATextLayer()
 
     init(session: AVCaptureSession, on screen: NSScreen?) {
@@ -27,7 +30,7 @@ final class CameraDebugWindow {
         preview.frame = view.bounds
         preview.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(preview)
-        for layer in [boxLayer, pointsLayer, glassesLayer] {
+        for layer in [boxLayer, pointsLayer, glassesLayer, motionLayer, motionBoxLayer] {
             layer.isGeometryFlipped = true
             layer.frame = view.bounds
             layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -37,6 +40,12 @@ final class CameraDebugWindow {
         boxLayer.lineWidth = 3
         pointsLayer.fillColor = NSColor.systemYellow.cgColor
         glassesLayer.fillColor = NSColor.systemTeal.cgColor
+        motionLayer.fillColor = NSColor.systemOrange.cgColor
+        motionLayer.strokeColor = NSColor.systemOrange.cgColor
+        motionLayer.lineWidth = 2
+        motionBoxLayer.strokeColor = NSColor.systemRed.withAlphaComponent(0.8).cgColor
+        motionBoxLayer.lineWidth = 1.5
+        motionBoxLayer.lineDashPattern = [4, 3]
         textLayer.frame = NSRect(x: 12, y: 12, width: size.width - 24, height: 118)
         textLayer.isWrapped = true
         textLayer.autoresizingMask = [.layerWidthSizable]
@@ -66,6 +75,7 @@ final class CameraDebugWindow {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
+        updateMotion(observation)
         let glassesDots = CGMutablePath()
         for point in observation.glassesPoints {
             let p = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: point.x, y: 1 - point.y))
@@ -75,7 +85,7 @@ final class CameraDebugWindow {
         guard let face = observation.face else {
             boxLayer.path = nil
             pointsLayer.path = nil
-            textLayer.string = observation.glassesNote ?? t(.cameraNoteNoFace)
+            textLayer.string = (observation.glassesNote ?? t(.cameraNoteNoFace)) + motionText(observation)
             return
         }
         let rect = preview.layerRectConverted(fromMetadataOutputRect: CGRect(x: face.minX, y: 1 - face.maxY, width: face.width, height: face.height))
@@ -96,7 +106,50 @@ final class CameraDebugWindow {
         let degree = 180 / Double.pi
         textLayer.string = String(format: t(.cameraDebugReadings),
                                           neck.x, neck.y, neck.z, observation.turn.x * degree, observation.turn.y * degree, face.width,
-                                          verdictText(observation.verdict)) + (observation.glassesNote.map { "\n " + $0 } ?? "")
+                                          verdictText(observation.verdict)) + (observation.glassesNote.map { "\n " + $0 } ?? "") + motionText(observation)
+    }
+
+    /// Рисует область сравнения фона: точки, которые реально участвуют в сравнении, и найденный сдвиг.
+    private func updateMotion(_ observation: CameraObservation) {
+        guard observation.motionEnabled else {
+            motionLayer.path = nil
+            motionBoxLayer.path = nil
+            return
+        }
+        let path = CGMutablePath()
+        let step = 8
+        let margin = CameraMotionDetector.search + 1
+        let width = CameraMotionDetector.width, height = CameraMotionDetector.height
+        let excluded = observation.motionExclusion.map { rect in
+            MotionRegion(minX: Int((rect.minX * Double(width)).rounded()),
+                         minY: Int(((1 - rect.maxY) * Double(height)).rounded()),
+                         maxX: Int((rect.maxX * Double(width)).rounded()),
+                         maxY: Int(((1 - rect.minY) * Double(height)).rounded()))
+        }
+        for y in stride(from: margin, to: height - margin, by: step) {
+            for x in stride(from: margin, to: width - margin, by: step) {
+                if let excluded, x >= excluded.minX, x < excluded.maxX, y >= excluded.minY, y < excluded.maxY { continue }
+                let point = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: Double(x) / Double(width),
+                                                                                        y: 1 - Double(y) / Double(height)))
+                path.addEllipse(in: CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2))
+            }
+        }
+        let center = preview.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: 0.5, y: 0.5))
+        let scale = preview.bounds.width / Double(width) * 5
+        let tip = CGPoint(x: center.x + Double(observation.motionShift.x) * scale,
+                          y: center.y - Double(observation.motionShift.y) * scale)
+        path.move(to: center)
+        path.addLine(to: tip)
+        motionLayer.path = path
+        motionBoxLayer.path = observation.motionExclusion.map { CGPath(rect: preview.layerRectConverted(fromMetadataOutputRect: $0), transform: nil) }
+    }
+
+    /// Строка о движении фона для текстового слоя окна отладки.
+    private func motionText(_ observation: CameraObservation) -> String {
+        guard observation.motionEnabled else { return "" }
+        let state = observation.motionMoving ? t(.cameraMotionDebugMoving) : t(.cameraMotionDebugStill)
+        return "\n" + String(format: t(.cameraMotionDebug), observation.motionShift.x, observation.motionShift.y,
+                             observation.motionImprovement, state)
     }
 
     private func verdictText(_ verdict: CameraFrameVerdict) -> String {

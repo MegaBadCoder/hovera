@@ -30,6 +30,16 @@ struct CameraObservation {
     var glassesNote: String?
     var calibrationSample: GuidedCameraCalibration.Sample?
     var referenceGeneration: Int = 0
+    /// Сдвиг фона, найденный детектором движения камеры, пиксели уменьшенного кадра.
+    var motionShift = SIMD2<Int>(repeating: 0)
+    /// Насколько найденный сдвиг объясняет кадр лучше, чем его отсутствие, единицы яркости.
+    var motionImprovement = 0.0
+    /// Движение камеры зафиксировано прямо сейчас.
+    var motionMoving = false
+    /// Область кадра, исключённая из сравнения фона (лицо), доли кадра, начало внизу слева.
+    var motionExclusion: CGRect?
+    /// Сравнение фона включено.
+    var motionEnabled = true
 }
 
 struct CameraHeadReading {
@@ -105,6 +115,8 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     private var cameraMovingFlag = false
     private var motionHits = 0
     private var lastHeadSpeed = 0.0
+    private var motionExclusion: MotionRegion?
+    private var detectsCameraMotion = true
     private var cameraWasMoving = false
     private var lastCameraMotionLog = 0.0
     private static let cameraMotionHold = 0.7
@@ -223,6 +235,20 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     /// описывают движение ноутбука, а не головы.
     var cameraIsMoving: Bool { lock.withLock { cameraMovingFlag } }
 
+    /// Сравнивать ли кадры фона, чтобы ловить поездку ноутбука; по умолчанию да.
+    var detectsCameraMotionEnabled: Bool {
+        get { lock.withLock { detectsCameraMotion } }
+        set {
+            lock.withLock {
+                detectsCameraMotion = newValue
+                motionHits = 0
+                cameraMovingUntil = 0
+                cameraMovingFlag = false
+                motionDetector.reset()
+            }
+        }
+    }
+
     func start(completion: @escaping @MainActor (Error?) -> Void) {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self else { return }
@@ -335,6 +361,11 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                      maxX: min(CameraMotionDetector.width, Int(box.maxX * width) + pad),
                                      maxY: min(CameraMotionDetector.height, Int((1 - box.minY) * height) + pad))
         }
+        guard lock.withLock({ detectsCameraMotion }) else {
+            motionHits = 0
+            return
+        }
+        motionExclusion = excluding
         let moved = motionDetector.update(luma: samples, excluding: excluding)
         motionHits = moved ? motionHits + 1 : 0
         if motionHits >= Self.cameraMotionConfirm { cameraMovingUntil = now + Self.cameraMotionHold }
@@ -516,6 +547,16 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                                                 learnedFrames: frame?.learnedFrames ?? 0,
                                                 glassesNote: fullNote)
             observation.referenceGeneration = referenceGeneration
+            observation.motionShift = motionDetector.shift
+            observation.motionImprovement = motionDetector.improvement
+            observation.motionMoving = lock.withLock { cameraMovingFlag }
+            observation.motionEnabled = lock.withLock { detectsCameraMotion }
+            observation.motionExclusion = motionExclusion.map { region in
+                CGRect(x: Double(region.minX) / Double(CameraMotionDetector.width),
+                       y: 1 - Double(region.maxY) / Double(CameraMotionDetector.height),
+                       width: Double(region.maxX - region.minX) / Double(CameraMotionDetector.width),
+                       height: Double(region.maxY - region.minY) / Double(CameraMotionDetector.height))
+            }
             if let faceRotation = frame?.faceRotation, let position = frame?.glasses, frame?.face == true {
                 let rawTurn = headTurn(fromCameraRotation: simd_double3x3(faceRotation))
                 let headTurn = head.yawPitch
