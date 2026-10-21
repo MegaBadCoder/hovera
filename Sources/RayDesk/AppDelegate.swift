@@ -189,7 +189,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             applyMacScreenOff()
             startCaptures()
             if UserDefaults.standard.bool(forKey: "calibrationAutoStart") {
-                UserDefaults.standard.set(false, forKey: "calibrationAutoStart")
                 startCalibrationSession()
             }
         } catch GlassesError.screenMissing {
@@ -1225,6 +1224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopCalibrationSession() {
+        UserDefaults.standard.set(false, forKey: "calibrationAutoStart")
         calibrationFile?.closeFile()
         calibrationFile = nil
         if let calibrationActivity {
