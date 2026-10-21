@@ -71,6 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastRawBias: SIMD3<Double>?
     private var cameraMotionItem: NSMenuItem?
     private var calibrationFile: FileHandle?
+    private var calibrationActivity: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
     private var calibrationItem: NSMenuItem?
     private var calibrationStarted: Date?
 
@@ -166,6 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.noteScreenParametersChanged()
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleWake()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
@@ -469,6 +474,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         screenChangeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// После пробуждения дисплей очков может вернуться позже остальных: ждём его и пересобираем окно.
+    private func handleWake() {
+        log("wake: screens \(screensDescription())")
+        screenParametersSettled()
+        waitForGlassesAfterWake(attempt: 0)
+    }
+
+    private func waitForGlassesAfterWake(attempt: Int) {
+        guard attempt < 20 else {
+            log("wake: glasses screen did not return")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            if self.glassesScreen() != nil {
+                self.screenParametersSettled()
+                log("wake: glasses screen is back")
+            } else {
+                self.waitForGlassesAfterWake(attempt: attempt + 1)
+            }
+        }
     }
 
     private func screenParametersSettled() {
@@ -1176,6 +1204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handle.seekToEndOfFile()
         calibrationFile = handle
         calibrationStarted = Date()
+        calibrationActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+            reason: "calibration session")
         sender.state = .on
         signal(String(format: t(.signalCalibrationStarted), url.lastPathComponent), symbol: "waveform.path.ecg", seconds: 10)
         log("calibration session: \(url.path)")
@@ -1184,6 +1215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopCalibrationSession() {
         calibrationFile?.closeFile()
         calibrationFile = nil
+        if let calibrationActivity {
+            ProcessInfo.processInfo.endActivity(calibrationActivity)
+            self.calibrationActivity = nil
+        }
         calibrationStarted = nil
         calibrationItem?.state = .off
         signal(t(.signalCalibrationStopped), symbol: "waveform.path.ecg", seconds: 6)

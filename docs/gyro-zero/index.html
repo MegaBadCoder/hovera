@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hovera — как учится ноль гироскопа</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121923;
+    --ink: #e6edf5;
+    --muted: #8ba0b8;
+    --accent: #5eead4;
+    --accent2: #f0b35b;
+    --line: #24303f;
+    --code: #0f1620;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header.hero { max-width: 1080px; margin: 0 auto; padding: 64px 24px 24px; }
+  .kicker { color: var(--accent); letter-spacing: .18em; text-transform: uppercase; font-size: 12px; }
+  h1 { font-size: clamp(30px, 4.6vw, 52px); line-height: 1.08; margin: 14px 0 10px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); font-size: 19px; max-width: 780px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 24px 96px; }
+  section { margin-top: 56px; }
+  h2 { font-size: 26px; margin: 0 0 10px; letter-spacing: -.01em; }
+  h3 { font-size: 18px; margin: 26px 0 8px; color: var(--accent); }
+  p { margin: 10px 0; color: #c6d3e2; }
+  .muted { color: var(--muted); }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px 24px; margin: 18px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+  .eq {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 15px; line-height: 1.9;
+    background: var(--code); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto;
+    color: #d7e3f1;
+  }
+  .eq .c { color: var(--muted); }
+  .eq .a { color: var(--accent); }
+  .eq .b { color: var(--accent2); }
+  code { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 14px; }
+  ul { margin: 8px 0 8px 20px; padding: 0; color: #c6d3e2; }
+  li { margin: 5px 0; }
+  .table { width: 100%; border-collapse: collapse; font-size: 15px; margin-top: 8px; }
+  .table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .table th { color: var(--muted); font-weight: 500; }
+  /* ---- lab ---- */
+  .lab { display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px; margin-top: 18px; }
+  @media (max-width: 960px) { .lab { grid-template-columns: 1fr; } }
+  .stage { position: relative; background: #060a0f; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; height: 480px; }
+  .stage canvas { display: block; width: 100%; height: 100%; }
+  .hud { position: absolute; left: 14px; bottom: 12px; display: block; font-size: 12.5px; line-height: 1.45; white-space: nowrap; font-family: ui-monospace, Menlo, monospace; color: #cfe0f0; background: rgba(6,10,15,.72); border: 1px solid #1b2735; border-radius: 10px; padding: 10px 12px; pointer-events: none; }
+  .hud b { color: var(--accent); font-weight: 600; }
+  .hud .warn { color: #f87171; }
+  .controls { display: grid; gap: 12px; align-content: start; }
+  .ctl { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .ctl label { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); }
+  .ctl output { color: var(--ink); font-family: ui-monospace, Menlo, monospace; }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    background: #1b2735; color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
+    padding: 9px 14px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.on { background: #153b34; border-color: var(--accent); color: var(--accent); }
+  button:active { transform: translateY(1px); }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 10px; margin-top: 18px; }
+  .chart canvas { display: block; width: 100%; height: 190px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); padding: 6px 6px 0; }
+  .dot { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .src { font-size: 13px; color: var(--muted); }
+  .src a { color: var(--accent); text-decoration: none; }
+  footer { max-width: 1080px; margin: 0 auto; padding: 24px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="kicker">Hovera · внутренности трекинга</div>
+  <h1>Как учится ноль гироскопа</h1>
+  <p class="lede">Почему мир уезжает, что такое выученный ноль, как прошивка RayNeo тихо его сбрасывает, и как всё это выглядит в матрицах и фильтрах. Внизу — живая лаборатория.</p>
+</header>
+<main>
+<section>
+  <h2>1. Модель датчика</h2>
+  <p>Гироскоп отдаёт не настоящую угловую скорость, а сумму: реального вращения, смещения нуля, шума и подарков прошивки.</p>
+  <div class="eq">
+    <span class="a">ω<sub>изм</sub></span>(t) = <span class="a">ω<sub>ист</sub></span>(t) + <span class="b">b</span>(T) + <span class="c">n</span>(t) + <span class="b">f</span>(t)
+  </div>
+  <ul>
+    <li><b>b(T)</b> — смещение нуля, зависит от температуры и экземпляра: <span class="eq" style="display:inline-block;padding:2px 8px">b(T) = a + k·(T − T<sub>0</sub>)</span></li>
+    <li><b>n(t)</b> — шум, случайное блуждание;</li>
+    <li><b>f(t)</b> — ступеньки прошивки: она сама вычитает среднее за 2 с, если решила, что очки лежат, и делает это даже во время медленного поворота.</li>
+  </ul>
+  <p class="muted">Решётка показаний прошивки — шаг 0.035 °/с. Именно по нему восстановитель вычисляет, что прошивка «поправила» ноль.</p>
+</section>
+
+<section>
+  <h2>2. Интегрирование ориентации</h2>
+  <p>Поворот мира — это кватернион. За шаг он обновляется произведением с приращением, а матрица поворота получается из кватерниона.</p>
+  <div class="grid2">
+    <div class="card">
+      <h3>Кватернион</h3>
+      <div class="eq">
+        q<sub>n+1</sub> = q<sub>n</sub> ⊗ exp(½ · θ)<br>
+        θ = ω dt,  exp(½θ) = (cos θ/2, sin θ/2 · u)
+      </div>
+      <p class="muted">Если в ω остался <b>b</b>, каждая итерация поворачивает мир на лишний угол — это и есть увод.</p>
+    </div>
+    <div class="card">
+      <h3>Матрица</h3>
+      <div class="eq">
+        R(q) = I + 2w[v]<sub>×</sub> + 2[v]<sub>×</sub><sup>2</sup><br>
+        view = R(q)<sup>−1</sup> · translate(−o)
+      </div>
+      <p class="muted">Смещение оставляет ошибку по курсу: dψ/dt = b<sub>ост</sub> (°/с), за минуту — 60·b<sub>ост</sub>.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>3. Выученный ноль: как и когда</h2>
+  <p>Фильтр оценивает смещение по окнам покоя. Покой — это не «низкая скорость», а <b>низкий разброс</b> сырых показаний: плавный поворот головы может выглядеть как почти ноль, поэтому его отсекают окном.</p>
+  <div class="grid2">
+    <div class="card">
+      <h3>Окно покоя (0.5 с)</h3>
+      <ul>
+        <li>разброс гироскопа &lt; 1.2 °/с;</li>
+        <li>разброс ускорения &lt; 0.02 g;</li>
+        <li>с компасом — поле и гравитация не крутились вокруг окна (~3 с).</li>
+      </ul>
+      <p class="muted">Тогда среднее окна — кандидат в оценку нуля.</p>
+    </div>
+    <div class="card">
+      <h3>Обучение</h3>
+      <div class="eq">
+        b ← b + α · (mean<sub>окно</sub> − b)<br>
+        α = 1 − exp(−dt / τ),  τ = 3…5 с
+      </div>
+      <p class="muted">Оценка меняется плавно и только в покое. Вне покоя — стоит на месте.</p>
+    </div>
+  </div>
+  <p>В коде это <span class="src"><a href="../../Sources/RayDeskCore/StillnessBiasLearner.swift">StillnessBiasLearner</a></span> и <span class="src"><a href="../../Sources/RayDeskCore/VectorBiasLearner.swift">VectorBiasLearner</a></span>; значения сохраняются в <code>gyroBias.v1</code> каждые 30 секунд.</p>
+</section>
+
+<section>
+  <h2>4. Прошивка против восстановителя</h2>
+  <p>Прошивка RayNeo пересчитывает свой ноль сама — в наших логах это случается примерно каждые 5 секунд. Если отменить эту ступеньку, курс сохраняется; если нет — мир уезжает на несколько °/с.</p>
+  <div class="grid2">
+    <div class="card">
+      <h3>Что делает прошивка</h3>
+      <div class="eq">
+        offset += mean(ω за 2 с) ⇒ ω<sub>f</sub> = ω − offset
+      </div>
+      <p>Ступенька видна как смена фазы решётки: (ω / 0.035 °/с) mod 1.</p>
+    </div>
+    <div class="card">
+      <h3>Что делает восстановитель</h3>
+      <div class="eq">
+        jump = −(mean(ω<sub>f</sub>) + shift)<br>
+        shift += snap(jump),  ω = ω<sub>f</sub> − shift
+      </div>
+      <p class="muted">Поправка держит ноль в той системе, в которой живёт выученный <b>b</b>. Поэтому при старте восстановитель идёт с нуля, а ноль переучивается.</p>
+    </div>
+  </div>
+  <p>Код: <span class="src"><a href="../../Sources/RayDeskCore/FirmwareZeroRestorer.swift">FirmwareZeroRestorer</a></span>, применение — <span class="src"><a href="../../Sources/RayDeskCore/OrientationFilter.swift">OrientationFilter.update</a></span>.</p>
+</section>
+
+<section>
+  <h2>5. Компас и камера</h2>
+  <p>Абсолютную привязку по курсу дают только поле и камера. Оба источника поправляют мир <b>ограниченно быстро</b>, чтобы не дёргать картинку:</p>
+  <div class="eq">
+    |dψ/dt| ≤ <span class="a">0.15 °/с</span> в покое, ≤ <span class="a">2 °/с</span> при движении;<br>
+    компас: rate = clamp(k · error), ошибка больше 15° — не доверяем.
+  </div>
+  <p class="muted">Камера меряет курс по лицу и очкам, но пока голова отвернулась дальше ~35° или движется быстрее, измерение не обновляется.</p>
+</section>
+
+<section>
+  <h2>6. Температура и калибровка</h2>
+  <p>По нашим логам (73 тысячи секунд) наклон по осям разный, и это ровно то, что заводская калибровка XREAL делает заранее:</p>
+  <table class="table">
+    <tr><th>ось</th><th>наклон k</th><th>что это значит</th></tr>
+    <tr><td>X</td><td>≈ 0.000 °/с на °C</td><td>температура не влияет</td></tr>
+    <tr><td>Y</td><td>≈ 0.000 °/с на °C</td><td>не влияет</td></tr>
+    <tr><td>Z</td><td><b>−0.012 °/с на °C</b></td><td>от −0.04 при 23 °C до −0.21 при 38.5 °C</td></tr>
+  </table>
+  <p>Если таблицу не знать, учитель догоняет ноль минутами; если знать — ноль ставится по текущей температуре сразу, а учитель только доводит якорь сессии.</p>
+  <div class="card">
+    <h3>Сколько это в градусах</h3>
+    <table class="table">
+      <tr><th>остаток нуля</th><th>увод мира</th><th>за 10 минут</th></tr>
+      <tr><td>0.02 °/с</td><td>1.2 °/мин</td><td>12°</td></tr>
+      <tr><td>0.10 °/с</td><td>6 °/мин</td><td>60°</td></tr>
+      <tr><td>0.30 °/с</td><td>18 °/мин</td><td>180°</td></tr>
+      <tr><td>прогрев 25→40 °C без компенсации</td><td>≈ 0.18 °/с</td><td>≈ 11 °/мин</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>7. Живая лаборатория</h2>
+  <p>Слева — экран в мире. Он стоит на месте, а уезжает <b>оценка курса</b>: когда ноль не скомпенсирован, экран уходит вбок сферой, как в жизни. Оранжевая точка — неподвижная метка мира: если она уезжает от центра экрана, это и есть увод. Справа — параметры и учитель.</p>
+  <div class="lab">
+    <div class="stage" id="stage">
+      <div class="hud" id="hud"></div>
+    </div>
+    <div class="controls">
+      <div class="ctl">
+        <label>Истинный ноль при 25 °C <output id="bTrueOut">0.10 °/с</output></label>
+        <input id="bTrue" type="range" min="-0.5" max="0.5" step="0.01" value="0.1">
+      </div>
+      <div class="ctl">
+        <label>Температура <output id="tempOut">25 °C</output></label>
+        <input id="temp" type="range" min="20" max="45" step="0.5" value="25">
+      </div>
+      <div class="ctl">
+        <label>Шум гироскопа <output id="noiseOut">0.02 °/с</output></label>
+        <input id="noise" type="range" min="0" max="0.15" step="0.005" value="0.02">
+      </div>
+      <div class="ctl">
+        <label>Компенсация</label>
+        <div class="row" id="modeRow">
+          <button data-mode="off">Выкл</button>
+          <button data-mode="learner" class="on">Учитель</button>
+          <button data-mode="table">Учитель + таблица</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Проверки</label>
+        <div class="row">
+          <button id="firmware" class="on">Пересчёт нуля прошивкой</button>
+          <button id="pause">Пауза</button>
+          <button id="reset">Сброс</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Голова</label>
+        <p class="muted" style="font-size:12px;margin:6px 0 0">Потяните мышью прямо по сцене: влево-вправо — поворот головы, вверх-вниз — наклон. Пока голова движется быстрее 2 °/с, учитель не учится.</p>
+      </div>
+    </div>
+  </div>
+  <div class="chart">
+    <div class="legend">
+      <span><span class="dot" style="background:#f0b35b"></span>истинный ноль</span>
+      <span><span class="dot" style="background:#5eead4"></span>оценка учителя</span>
+      <span><span class="dot" style="background:#a78bfa"></span>увод мира, °</span>
+    </div>
+    <canvas id="chart" width="1000" height="190"></canvas>
+  </div>
+</section>
+
+<section>
+  <h2>8. Что из этого в Hovera</h2>
+  <ul>
+    <li>Учитель нуля: <span class="src"><a href="../../Sources/RayDeskCore/StillnessBiasLearner.swift">StillnessBiasLearner</a></span>, <span class="src"><a href="../../Sources/RayDeskCore/VectorBiasLearner.swift">VectorBiasLearner</a></span>.</li>
+    <li>Восстановитель нуля прошивки: <span class="src"><a href="../../Sources/RayDeskCore/FirmwareZeroRestorer.swift">FirmwareZeroRestorer</a></span>.</li>
+    <li>Интегрирование и поправки: <span class="src"><a href="../../Sources/RayDeskCore/OrientationFilter.swift">OrientationFilter</a></span>, компас — <span class="src"><a href="../../Sources/RayDeskCore/CameraAlignment.swift">CameraAlignment</a></span>.</li>
+    <li>Калибровочная сессия пишет температуру и ноль раз в секунду: пункт «Камера → Калибровочная сессия (прогрев)».</li>
+  </ul>
+</section>
+</main>
+<footer>Hovera · интерактивная презентация. Three.js загружается локально из этой папки.</footer>
+<script src="./three.min.js"></script>
+<script src="./lab.js"></script>
+</body>
+</html>
