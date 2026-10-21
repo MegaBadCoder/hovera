@@ -70,6 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var primaryItem: NSMenuItem?
     private var lastRawBias: SIMD3<Double>?
     private var cameraMotionItem: NSMenuItem?
+    private var calibrationFile: FileHandle?
+    private var calibrationItem: NSMenuItem?
+    private var calibrationStarted: Date?
 
     private var wallModeItem: NSMenuItem?
     private var fovSlider: NSSlider?
@@ -363,6 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        calibrationFile?.closeFile()
+        calibrationFile = nil
         frameLink?.invalidate()
         if recorder.isRecording {
             let done = DispatchSemaphore(value: 0)
@@ -1155,6 +1160,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.object(forKey: "cameraMotion") as? Bool ?? true
     }
 
+    /// Начинает и останавливает запись калибровочной сессии: раз в секунду температура, ноль,
+    /// поправка восстановителя и скорость головы — по ним строится таблица ноль(T).
+    @objc private func toggleCalibrationSession(_ sender: NSMenuItem) {
+        if calibrationFile != nil {
+            stopCalibrationSession()
+            sender.state = .off
+            return
+        }
+        let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("calibration-\(Int(Date().timeIntervalSinceReferenceDate)).csv")
+        FileManager.default.createFile(atPath: url.path, contents: "time,temp,biasX,biasY,biasZ,shiftX,shiftY,shiftZ,speed,compassError,restored\n".data(using: .utf8))
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        handle.seekToEndOfFile()
+        calibrationFile = handle
+        calibrationStarted = Date()
+        sender.state = .on
+        signal(String(format: t(.signalCalibrationStarted), url.lastPathComponent), symbol: "waveform.path.ecg", seconds: 10)
+        log("calibration session: \(url.path)")
+    }
+
+    private func stopCalibrationSession() {
+        calibrationFile?.closeFile()
+        calibrationFile = nil
+        calibrationStarted = nil
+        calibrationItem?.state = .off
+        signal(t(.signalCalibrationStopped), symbol: "waveform.path.ecg", seconds: 6)
+    }
+
+    private func writeCalibrationRow() {
+        guard let calibrationFile, let started = calibrationStarted else { return }
+        if Date().timeIntervalSince(started) > 5400 {
+            stopCalibrationSession()
+            return
+        }
+        let bias = filter.gyroBias * 180 / .pi
+        let shift = filter.firmwareZeroShift * 180 / .pi
+        let line = String(format: "%.3f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.1f,%d\n",
+                          Date().timeIntervalSinceReferenceDate, imu?.temperature ?? .nan,
+                          bias.x, bias.y, bias.z, shift.x, shift.y, shift.z,
+                          filter.angularSpeed * 180 / .pi, filter.compassError * 180 / .pi,
+                          filter.restoredFirmwareUpdates)
+        calibrationFile.write(line.data(using: .utf8) ?? Data())
+    }
+
     @objc private func toggleCameraMotion(_ sender: NSMenuItem) {
         let enabled = !cameraMotionEnabled()
         UserDefaults.standard.set(enabled, forKey: "cameraMotion")
@@ -1721,6 +1771,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             motionItem.state = cameraMotionEnabled() ? .on : .off
             cameraMotionItem = motionItem
             camera.addItem(motionItem)
+            let calibrationItem = menuItem(t(.menuCalibrationSession), #selector(toggleCalibrationSession(_:)))
+            calibrationItem.state = calibrationFile != nil ? .on : .off
+            self.calibrationItem = calibrationItem
+            camera.addItem(calibrationItem)
             let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
             debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
             camera.addItem(debugItem)
@@ -1869,6 +1923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + (filter.magnetometerCalibration == nil ? t(.statusCompassOff) : String(format: t(.statusCompassError), filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? t(.statusFieldChanged) : ""))
         log(statusText + String(format: t(.statusDiagnostics), compass,
                                                                imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
+        writeCalibrationRow()
         let applied = filter.appliedGyroBias * 180 / .pi
         let shift = filter.firmwareZeroShift * 180 / .pi
         log(String(format: "DIAG применён ноль %.3f %.3f %.3f · сдвиг восстановителя %.3f %.3f %.3f · доворот мира %.3f °/с · компас расходится %.1f°",

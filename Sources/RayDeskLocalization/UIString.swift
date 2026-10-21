@@ -63,6 +63,9 @@ public enum UIString: CaseIterable {
     case menuWallDepth
     case menuEyeArc
     case menuCameraMotion
+    case menuCalibrationSession
+    case signalCalibrationStarted
+    case signalCalibrationStopped
     case cameraMotionDebug
     case cameraMotionDebugMoving
     case cameraMotionDebugStill
@@ -297,6 +300,9 @@ public enum UIString: CaseIterable {
         case .menuWallDepth: "Сила вперёд-назад"
         case .menuEyeArc: "Дуга глаз при повороте"
         case .menuCameraMotion: "Движение камеры по фону"
+        case .menuCalibrationSession: "Калибровочная сессия (прогрев)"
+        case .signalCalibrationStarted: "Запись калибровочной сессии: %@"
+        case .signalCalibrationStopped: "Запись калибровочной сессии остановлена"
         case .cameraMotionDebug: "движение камеры: сдвиг %d,%d, выигрыш %.1f, %@"
         case .cameraMotionDebugMoving: "фон едет"
         case .cameraMotionDebugStill: "фон стоит"
@@ -522,6 +528,9 @@ public enum UIString: CaseIterable {
         case .menuWallDepth: "Forward/backward strength"
         case .menuEyeArc: "Eye arc when turning"
         case .menuCameraMotion: "Camera motion from the background"
+        case .menuCalibrationSession: "Calibration session (warm-up)"
+        case .signalCalibrationStarted: "Calibration session recording: %@"
+        case .signalCalibrationStopped: "Calibration session recording stopped"
         case .cameraMotionDebug: "camera motion: shift %d,%d, improvement %.1f, %@"
         case .cameraMotionDebugMoving: "background moves"
         case .cameraMotionDebugStill: "background still"

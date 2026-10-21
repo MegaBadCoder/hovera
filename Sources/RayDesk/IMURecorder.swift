@@ -9,7 +9,7 @@ final class IMURecorder {
     private var fileStarted = Date()
     private let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
     private static let fileSeconds = 1800.0
-    private static let keptFiles = 4
+    private static let keptHours = 24.0
 
     func record(_ sample: IMUSample) {
         let degree = 180 / Double.pi
@@ -44,9 +44,10 @@ final class IMURecorder {
             fileStarted = Date()
             let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                 .filter { $0.lastPathComponent.hasPrefix("imu-") }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            for old in files.dropLast(IMURecorder.keptFiles) {
-                try FileManager.default.removeItem(at: old)
+            let cutoff = Date().addingTimeInterval(-IMURecorder.keptHours * 3600)
+            for old in files {
+                let modified = (try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if modified < cutoff { try? FileManager.default.removeItem(at: old) }
             }
             log("imu recording: \(url.lastPathComponent)")
         } catch {
