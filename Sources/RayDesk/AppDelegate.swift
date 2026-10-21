@@ -188,6 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if attempt > 0 { log("glasses window opened after \(attempt) retries") }
             applyMacScreenOff()
             startCaptures()
+            if UserDefaults.standard.bool(forKey: "calibrationAutoStart") {
+                UserDefaults.standard.set(false, forKey: "calibrationAutoStart")
+                startCalibrationSession()
+            }
         } catch GlassesError.screenMissing {
             guard attempt < Self.glassesWaitAttempts else {
                 fail(t(.alertGlassesMissing))
@@ -1196,20 +1200,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.state = .off
             return
         }
+        if startCalibrationSession() {
+            sender.state = .on
+        }
+    }
+
+    @discardableResult
+    private func startCalibrationSession() -> Bool {
         let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("calibration-\(Int(Date().timeIntervalSinceReferenceDate)).csv")
         FileManager.default.createFile(atPath: url.path, contents: "time,temp,biasX,biasY,biasZ,shiftX,shiftY,shiftZ,speed,compassError,restored\n".data(using: .utf8))
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return false }
         handle.seekToEndOfFile()
         calibrationFile = handle
         calibrationStarted = Date()
         calibrationActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleDisplaySleepDisabled, .idleSystemSleepDisabled],
             reason: "calibration session")
-        sender.state = .on
+        calibrationItem?.state = .on
         signal(String(format: t(.signalCalibrationStarted), url.lastPathComponent), symbol: "waveform.path.ecg", seconds: 10)
         log("calibration session: \(url.path)")
+        return true
     }
 
     private func stopCalibrationSession() {
