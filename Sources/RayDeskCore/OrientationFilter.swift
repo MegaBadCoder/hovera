@@ -24,6 +24,10 @@ public final class OrientationFilter: @unchecked Sendable {
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
     private var restorer = FirmwareZeroRestorer()
+    /// Наклон нуля по температуре, рад/с на °C, по осям тела: из калибровочной сессии.
+    public var biasTemperatureSlope = SIMD3<Double>(repeating: 0)
+    /// Температура, при которой наклон отсчитывается, °C.
+    public var biasTemperatureReference = 25.0
     private var restoring = true
     private var learningWithCompass = false
     private var worldRotationSinceRead = 0.0
@@ -160,16 +164,19 @@ public final class OrientationFilter: @unchecked Sendable {
     ///   - dt: время с предыдущего отсчёта, секунды; вызовы с `dt <= 0` или
     ///     `dt >= 0.1` игнорируются.
     public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, dt: Double) {
-        update(gyro: gyro, accel: accel, magnetometer: nil, dt: dt)
+        update(gyro: gyro, accel: accel, magnetometer: nil, temperature: nil, dt: dt)
     }
 
     /// То же, что `update(gyro:accel:dt:)`, плюс показание магнитометра по осям тела
     /// (сырые единицы) для компаса; `nil` — в этом отсчёте поля нет.
-    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, magnetometer: SIMD3<Double>?, dt: Double) {
+    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, magnetometer: SIMD3<Double>?, temperature: Double? = nil, dt: Double) {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
-        let gyro = (restoring ? restorer.restore(gyro) : gyro) * scale
+        var gyro = (restoring ? restorer.restore(gyro) : gyro) * scale
+        if let temperature, biasTemperatureSlope != .zero, temperature.isFinite {
+            gyro -= biasTemperatureSlope * (temperature - biasTemperatureReference)
+        }
         sampleCount &+= 1
 
         let accelNorm = length(accel)

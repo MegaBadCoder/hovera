@@ -157,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let restoresFirmwareZero = UserDefaults.standard.bool(forKey: "restoreFirmwareZero")
         filter.restoresFirmwareZero = restoresFirmwareZero
+        loadGyroTemperatureSlope()
         // Восстановитель начинает со сдвига ноль, поэтому выученный с ним ноль к новому запуску не подходит.
         if !restoresFirmwareZero { loadGyroBias() }
         imu = GlassesIMU(filter: filter)
@@ -914,6 +915,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .waitingForRest:
             break
         }
+    }
+
+    /// Наклон нуля по температуре из калибровочной сессии: он убирает уход при прогреве.
+    private func loadGyroTemperatureSlope() {
+        let raw = UserDefaults.standard.array(forKey: "gyroBiasSlope.v1") ?? []
+        let values = raw.compactMap { value -> Double? in
+            if let number = value as? NSNumber { return number.doubleValue }
+            if let text = value as? String { return Double(text) }
+            return nil
+        }
+        guard values.count == 3 else {
+            log("gyro temperature slope: not calibrated")
+            return
+        }
+        filter.biasTemperatureSlope = SIMD3(values[0], values[1], values[2]) * .pi / 180
+        log(String(format: "gyro temperature slope: %.4f %.4f %.4f °/s на °C", values[0], values[1], values[2]))
     }
 
     private func loadGyroBias() {

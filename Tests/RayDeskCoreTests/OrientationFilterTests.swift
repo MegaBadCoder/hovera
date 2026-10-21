@@ -234,3 +234,26 @@ private func settle(_ filter: OrientationFilter, gravityInHead: SIMD3<Double>, s
     #expect(abs(after.yaw + 25 * degree) < 1e-9)
     #expect(abs(after.pitch - before.pitch) < 1e-9)
 }
+
+@Test func temperatureSlopeKeepsThePictureStill() {
+    func drift(compensating: Bool, slopeDegrees: Double) -> Double {
+        let filter = OrientationFilter()
+        let slope = SIMD3<Double>(0, slopeDegrees, 0) * .pi / 180
+        if compensating {
+            filter.biasTemperatureSlope = slope
+            filter.biasTemperatureReference = 25
+        }
+        let samples = 10000
+        for i in 0..<samples {
+            let temperature = 25 + 10 * Double(i) / Double(samples)
+            let bias = slope * (temperature - 25)
+            filter.update(gyro: bias, accel: SIMD3(0, 1, 0), magnetometer: nil, temperature: temperature, dt: 0.002)
+        }
+        return abs(filter.orientation(predictAhead: 0).yawPitch.yaw) * 180 / .pi
+    }
+    let compensated = drift(compensating: true, slopeDegrees: -0.05)
+    let plain = drift(compensating: false, slopeDegrees: -0.05)
+    print("temperature compensation: compensated \(compensated)°, plain \(plain)°")
+    #expect(compensated < 1)
+    #expect(plain > compensated + 1)
+}

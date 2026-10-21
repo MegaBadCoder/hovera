@@ -108,7 +108,7 @@ final class GlassesIMU {
         temperature = sample.temperature
         recorder?.record(sample)
         sampleSink?(sample)
-        filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer, dt: sample.dt)
+        filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer, temperature: sample.temperature, dt: sample.dt)
         counterLock.lock()
         samplesSinceLastRead += 1
         if let magnetometer = sample.magnetometer, compassFitter != nil {
