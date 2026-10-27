@@ -30,6 +30,14 @@ public struct VectorBiasLearner {
     /// Текущая оценка смещения нуля по осям тела, рад/с.
     public private(set) var bias: SIMD3<Double>
 
+    /// Сдвигает оценку нуля, не сбрасывая накопленное окно: так она переезжает вместе
+    /// с поправкой восстановителя, в чьей системе координат живёт.
+    ///
+    /// - Parameter delta: приращение оценки, рад/с по осям тела.
+    public mutating func shiftBias(by delta: SIMD3<Double>) {
+        bias += delta
+    }
+
     private var blocks: [Block] = []
     private var current = Block()
 

@@ -81,3 +81,24 @@ private func slowHead(_ i: Int) -> SIMD3<Double> {
     }
     #expect(moving.restoredFirmwareUpdates == 1)
 }
+
+@Test func seededShiftKeepsTheWorldStill() {
+    func orientation(afterSeeding shift: SIMD3<Double>?) -> simd_quatd {
+        let filter = OrientationFilter()
+        let gyro = SIMD3<Double>(0.02, -0.01, 0.03) * .pi / 180
+        for _ in 0..<4000 {
+            filter.update(gyro: gyro, accel: SIMD3(0, 1, 0), magnetometer: nil, dt: 0.002)
+        }
+        if let shift {
+            filter.seedFirmwareZeroShift(shift)
+        }
+        for _ in 0..<4000 {
+            filter.update(gyro: gyro, accel: SIMD3(0, 1, 0), magnetometer: nil, dt: 0.002)
+        }
+        return filter.orientation(predictAhead: 0)
+    }
+    let control = orientation(afterSeeding: nil)
+    let shifted = orientation(afterSeeding: SIMD3<Double>(1.5, -0.8, 0.6) * .pi / 180)
+    let difference = 2 * acos(min(1, abs(simd_dot(control.vector, shifted.vector)))) * 180 / .pi
+    #expect(difference < 0.5)
+}

@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var primaryItem: NSMenuItem?
     private var lastRawBias: SIMD3<Double>?
     private var cameraMotionItem: NSMenuItem?
+    private var didAlignSceneOnStart = false
     private var calibrationFile: FileHandle?
     private var calibrationActivity: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
@@ -427,6 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
             updatePointerTargets(head: head)
+            self.alignSceneOnStart(head: head)
             guard self.renderer?.meditation.isActive != true else { return }
             warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
         }
@@ -1050,6 +1052,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Ставит «вперёд» туда, куда смотрю: без запомненной точки MacBook и без маркера.
+    /// На старте мир инициализируется с нуля, а экраны лежат в нём со старыми углами:
+    /// поворачиваем мир так, чтобы центр раскладки оказался перед глазами, и не приходится
+    /// ловить его кнопкой возврата.
+    private func alignSceneOnStart(head: simd_quatd) {
+        guard !didAlignSceneOnStart else { return }
+        didAlignSceneOnStart = true
+        let angles = scene.screens.map(\.yaw)
+        guard !angles.isEmpty else { return }
+        let sumSin = angles.reduce(0) { $0 + sin($1) } / Double(angles.count)
+        let sumCos = angles.reduce(0) { $0 + cos($1) } / Double(angles.count)
+        let center = atan2(sumSin, sumCos)
+        let delta = remainder(center - head.yawPitch.yaw, 2 * .pi)
+        guard abs(delta) > 2 * .pi / 180 else { return }
+        filter.rotateWorldYaw(by: delta)
+        if renderer?.headOffset != nil {
+            cameraHead.worldYawChanged(by: delta)
+            if glassesTracking { cameraHead.resetReference(after: 0.3) }
+        }
+        log(String(format: "startup alignment: scene center %.0f°, head %.0f°, world turned %.0f°",
+                   center * 180 / .pi, head.yawPitch.yaw * 180 / .pi, delta * 180 / .pi))
+    }
+
     @objc private func recenterToGaze() {
         guard let renderer else { return }
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw

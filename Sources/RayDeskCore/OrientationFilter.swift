@@ -24,6 +24,8 @@ public final class OrientationFilter: @unchecked Sendable {
     private var fieldDiffersFromCalibration = false
     private var biasLearner = StillnessBiasLearner()
     private var restorer = FirmwareZeroRestorer()
+    /// Последняя восстановленная угловая скорость: по её скачку гасим сбойный пересчёт прошивки.
+    private var previousRestoredRate: SIMD3<Double>?
     /// Наклон нуля по температуре, рад/с на °C, по осям тела: из калибровочной сессии.
     public var biasTemperatureSlope = SIMD3<Double>(repeating: 0)
     /// Температура, при которой наклон отсчитывается, °C.
@@ -72,6 +74,12 @@ public final class OrientationFilter: @unchecked Sendable {
         get { lock.withLock { restoring } }
         set {
             lock.withLock {
+                guard restoring != newValue else { return }
+                if !newValue, restorer.shift != .zero {
+                    let shift = restorer.shift
+                    vectorLearner.shiftBias(by: shift)
+                    biasLearner.shiftBias(by: shift)
+                }
                 restoring = newValue
                 restorer = FirmwareZeroRestorer()
             }
@@ -173,10 +181,21 @@ public final class OrientationFilter: @unchecked Sendable {
         guard dt > 0, dt < 0.1 else { return }
         lock.lock()
         defer { lock.unlock() }
+        let restoredUpdatesBefore = restorer.restoredUpdates
         var gyro = (restoring ? restorer.restore(gyro) : gyro) * scale
         if let temperature, biasTemperatureSlope != .zero, temperature.isFinite {
             gyro -= biasTemperatureSlope * (temperature - biasTemperatureReference)
         }
+        var learnerRate = gyro
+        if restoring, restorer.restoredUpdates != restoredUpdatesBefore, let previousRestoredRate {
+            let jump = gyro - previousRestoredRate
+            if length(jump) > 0.3 * .pi / 180 {
+                vectorLearner.shiftBias(by: jump)
+                biasLearner.shiftBias(by: jump)
+                learnerRate = gyro - jump
+            }
+        }
+        previousRestoredRate = gyro
         sampleCount &+= 1
 
         let accelNorm = length(accel)
@@ -191,10 +210,10 @@ public final class OrientationFilter: @unchecked Sendable {
 
         var w = gyro
         if let compass, !learningWithCompass {
-            vectorLearner.add(gyro: gyro, accel: accel, field: magnetometer.map { $0 - compass.center }, dt: dt)
+            vectorLearner.add(gyro: learnerRate, accel: accel, field: magnetometer.map { $0 - compass.center }, dt: dt)
             w -= vectorLearner.bias
         } else {
-            biasLearner.add(gyro: gyro, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
+            biasLearner.add(gyro: learnerRate, accelNorm: accelNorm, magnetometer: magnetometer, dt: dt)
             w -= biasLearner.bias
         }
         omega = w
@@ -330,7 +349,13 @@ public final class OrientationFilter: @unchecked Sendable {
     /// - Parameter shift: поправка восстановителя, рад/с по осям тела.
     public func seedFirmwareZeroShift(_ shift: SIMD3<Double>) {
         lock.lock()
+        let previous = restorer.shift
         restorer.seed(shift)
+        let delta = shift - previous
+        if delta != .zero {
+            vectorLearner.shiftBias(by: -delta)
+            biasLearner.shiftBias(by: -delta)
+        }
         lock.unlock()
     }
 
