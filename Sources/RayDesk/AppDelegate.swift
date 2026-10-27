@@ -141,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start() {
         cameraHead.detectsCameraMotionEnabled = cameraMotionEnabled()
+        log("camera motion from background \(cameraMotionEnabled() ? "on" : "off")")
         useLightGlassesMode()
         log("screens after light mode: \(screensDescription())")
         slots = scene.screens.indices.map { ScreenSlot(index: $0) }
@@ -1229,7 +1230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Сравнивать ли кадры фона, чтобы ловить поездку ноутбука.
     private func cameraMotionEnabled() -> Bool {
-        UserDefaults.standard.object(forKey: "cameraMotion") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "cameraMotion") as? Bool ?? false
     }
 
     /// Начинает и останавливает запись калибровочной сессии: раз в секунду температура, ноль,
