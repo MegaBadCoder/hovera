@@ -52,6 +52,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     var nextTargetTime: Double?
     /// Измеренная поправка «заявленное время кадра → показанный кадр».
     let presentation = PresentationClock()
+    /// Внешняя ориентация от трекера очков (VITURE): если задана и вернёт значение,
+    /// фильтр, калибровка и стабилизатор не применяются — VIO уже даёт готовую позу.
+    var externalOrientation: ((Double) -> simd_quatd?)?
     /// Подстраивать ли горизонт предсказания по фактической ошибке прошлых кадров.
     var adaptivePrediction = false
     private var tuner = PredictionTuner()
@@ -210,11 +213,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
         let presentTime = presentation.presentTime(target: targetTime)
-        if adaptivePrediction {
-            evaluatePendingPrediction()
+        let external = externalOrientation?(presentTime)
+        let head: simd_quatd
+        if let external {
+            head = external
+        } else {
+            if adaptivePrediction {
+                evaluatePendingPrediction()
+            }
+            head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
+            rememberPrediction(for: presentTime)
         }
-        let head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
-        rememberPrediction(for: presentTime)
         let frameSeconds = min(now - lastFrameTime, 0.1)
         meditation.advance(by: frameSeconds)
         let breathingTarget = breathingEnabled ? 1.0 : 0.0

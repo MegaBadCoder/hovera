@@ -17,7 +17,7 @@ import Testing
     ]
     let chosen = chooseGlassesDisplayMode(modes, family: .viture)
     #expect(chosen?.pointHeight == 1200)
-    #expect(chosen?.refreshRate == 60)
+    #expect(chosen?.refreshRate == 120)
 }
 
 @Test func rayNeoUsesItsNativePanelMode() {
@@ -39,10 +39,15 @@ import Testing
     #expect(chooseGlassesDisplayMode(modes, family: .viture) == nil)
 }
 
-@Test func refreshRateNearestToSixtyWins() {
-    let modes = [
+@Test func refreshRateNearestToTheTargetWins() {
+    let rayNeo = [
+        DisplayModeOption(pointWidth: 1920, pointHeight: 1080, pixelWidth: 1920, pixelHeight: 1080, refreshRate: 120),
+        DisplayModeOption(pointWidth: 1920, pointHeight: 1080, pixelWidth: 1920, pixelHeight: 1080, refreshRate: 60),
+    ]
+    #expect(chooseGlassesDisplayMode(rayNeo, family: .rayNeo)?.refreshRate == 60)
+    let viture = [
         DisplayModeOption(pointWidth: 1920, pointHeight: 1200, pixelWidth: 1920, pixelHeight: 1200, refreshRate: 120),
         DisplayModeOption(pointWidth: 1920, pointHeight: 1200, pixelWidth: 1920, pixelHeight: 1200, refreshRate: 90),
     ]
-    #expect(chooseGlassesDisplayMode(modes, family: .viture)?.refreshRate == 90)
+    #expect(chooseGlassesDisplayMode(viture, family: .viture)?.refreshRate == 120)
 }

@@ -415,10 +415,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.viture = tracker
                     log(String(format: "VITURE: трекер запущен (%@, product id 0x%04X)",
                                tracker.productName ?? "модель неизвестна", tracker.productID))
+                    self.installVitureOrientation()
                 }
             } catch {
                 DispatchQueue.main.async { log("VITURE: трекер не запустился — \(error)") }
             }
+        }
+    }
+
+    /// Отдаёт рендеру ориентацию VITURE с предсказанием к моменту показа кадра.
+    private func installVitureOrientation() {
+        renderer?.externalOrientation = { [weak self] presentTime in
+            guard let self, let viture = self.viture else { return nil }
+            let predictTime = max(0, min(0.05, presentTime - CACurrentMediaTime()))
+            return viture.pose(predictTime: predictTime)?.orientation
         }
     }
 
@@ -428,6 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard viture.isConnected else {
             viture.stop()
             self.viture = nil
+            renderer?.externalOrientation = nil
             log("VITURE: очки отключились, трекинг остановлен")
             return
         }
@@ -1149,6 +1160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func recenterToGaze() {
         guard let renderer else { return }
+        if let viture {
+            log("VITURE: recenter \(viture.recenter() ? "выполнен" : "не удался")")
+            return
+        }
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
         filter.alignYawToZero()

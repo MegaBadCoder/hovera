@@ -15,6 +15,14 @@ public enum GlassesDisplayFamily: String, Sendable {
         case .viture: (1920, 1200)
         }
     }
+
+    /// Частота панели, к которой стремимся: у VITURE Luma Ultra панель 120 Гц.
+    public var targetRefreshRate: Double {
+        switch self {
+        case .rayNeo: 60
+        case .viture: 120
+        }
+    }
 }
 
 /// Один режим дисплея очков, как его видит macOS.
@@ -50,7 +58,7 @@ public func glassesDisplayFamily(forDisplayName name: String) -> GlassesDisplayF
 /// Выбирает режим дисплея очков, в котором картинка выводится без масштабирования.
 ///
 /// Режим должен быть без HiDPI и дублей: точки совпадают с пикселями, родное
-/// разрешение панели, 60 Гц — целевая частота. Масштабированные режимы macOS
+/// разрешение панели, частота ближе к целевой для семейства. Масштабированные режимы macOS
 /// (когда точек меньше, чем пикселей) не годятся: картинка прошла бы через
 /// даунсемплинг системы и потеряла резкость.
 ///
@@ -68,5 +76,5 @@ public func chooseGlassesDisplayMode(_ modes: [DisplayModeOption], family: Glass
                 && mode.pixelWidth == native.width
                 && mode.pixelHeight == native.height
         }
-        .min { abs($0.refreshRate - 60) < abs($1.refreshRate - 60) }
+        .min { abs($0.refreshRate - family.targetRefreshRate) < abs($1.refreshRate - family.targetRefreshRate) }
 }

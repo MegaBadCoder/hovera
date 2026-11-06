@@ -123,3 +123,34 @@ Approach: сначала обёртка SDK и проверки без очко�
 - PH1 -> IF1 @ Sources/VitureSDK
 - PH2 IF1 -> IF2 @ Sources/RayDesk/VitureTracker.swift
 - PH3 IF2 -> @ Sources/RayDesk/Renderer.swift
+
+## Verify
+
+Result: passed (PH1–PH3 на уровне кода и тестов; живая проверка в очках — отложена, VITURE к машине не подключены)
+
+- CK1 (IV1) — сборка и запуск без `libglasses.dylib`: зависимость только через `dlopen`, в `Package.swift` нет линковки с SDK; тест `missingLibraryReportsEveryPathItTried` — held.
+- CK2 (IV2) — оси позы: `ViturePose` декодирует `[px,py,pz,qw,qx,qy,qz]` в `SIMD3`/`simd_quatd` без переворота, roundtrip через `floats` проверен — held.
+- CK3 (IV3) — 6DoF включается в `VitureTracker.start` до `initialize` — held по коду, живая проверка статуса позы нужна.
+- CK4 (IV4) — `recenterToGaze` на VITURE зовёт `resetOrigin`, калибровка сетки и `alignYawToZero` не выполняются, значит pitch/roll не трогаются — held по коду.
+- CK5 (IV5) — ошибки SDK ловятся в `startVitureTracking` и пишутся в лог; `VitureTracker.start` возвращает `nil`, если очков нет — held.
+- CK6 (PC1) — при отсутствии очков `externalOrientation` не ставится, рендер идёт прежним путём — held.
+- CK7 — 120 Гц: выбор режима для VITURE идёт к 120, для RayNeo остаётся 60 (`refreshRateNearestToTheTargetWins`) — held.
+- CK8 — полный набор тестов 318 зелёный — held.
+- CK9 (UK1–UK3, AS2, AS3) — реальная частота IMU-колбэка, поведение при отключении очков, потокобезопасность `get_gl_pose` и предсказание в шкале SDK — deferred: нужны подключённые VITURE.
+
+Smoke: `swift build --disable-sandbox` — собирается; `swift test --disable-sandbox` — 318 тестов; `dlopen` официального SDK отдаёт `GetVersionString() == 2.4.2`.
+
+Goal: proxy only — код готов к живой проверке, но 6DoF-мир, дрожание и горизонт в очках ещё не наблюдались.
+
+### Deviations from plan
+
+- Позиция из 6DoF не подключена к рендеру в PH3: сначала нужно вживую сверить знаки и масштаб осей SDK с тем, что ожидает `viewMatrix`; перенесено в PH4 вместе с камерой очков.
+- Колбэк IMU Carina не регистрируется: поза берётся опросом `get_gl_pose_carina` с `predict_time`, чего достаточно до живой проверки (UK1 всё равно не выяснен).
+
+## Conclusion
+
+Сделаны три шага из четырёх: загрузчик SDK, жизненный цикл трекера, поза в рендере и переключение панели VITURE на 120 Гц. RayNeo-путь не изменён: всё VITURE-специфичное включается только при найденных очках и загруженном SDK.
+
+Что осталось:
+- живая проверка: подключить VITURE, собрать из worktree, посмотреть `VITURE pose:` в логе, оценить дрейф/дрожание, recenter и 120 Гц;
+- PH4: позиция 6DoF в рендере (после сверки знаков) и камера очков как источник камерной опоры.
