@@ -52,6 +52,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     var nextTargetTime: Double?
     /// Измеренная поправка «заявленное время кадра → показанный кадр».
     let presentation = PresentationClock()
+    /// Подстраивать ли горизонт предсказания по фактической ошибке прошлых кадров.
+    var adaptivePrediction = false
+    private var tuner = PredictionTuner()
+    private var pendingPrediction: (time: Double, orientation: simd_quatd, angularVelocity: SIMD3<Double>)?
 
     private(set) var currentHeadOffset = SIMD3<Double>.zero
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
@@ -205,7 +209,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView, targetTime: Double) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
-        let head = headPipeline.renderedOrientation(at: presentation.presentTime(target: targetTime), frameInterval: now - lastFrameTime)
+        let presentTime = presentation.presentTime(target: targetTime)
+        if adaptivePrediction {
+            evaluatePendingPrediction()
+        }
+        let head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
+        rememberPrediction(for: presentTime)
         let frameSeconds = min(now - lastFrameTime, 0.1)
         meditation.advance(by: frameSeconds)
         let breathingTarget = breathingEnabled ? 1.0 : 0.0
@@ -324,6 +333,24 @@ final class Renderer: NSObject, MTKViewDelegate {
         if let started = stallStarted.removeValue(forKey: slot.index), now - started > Self.stallReportThreshold {
             log(String(format: "screen %d: capture alive again after %.1f s", slot.index + 1, now - started))
         }
+    }
+
+    private func rememberPrediction(for presentTime: Double) {
+        guard adaptivePrediction else {
+            pendingPrediction = nil
+            return
+        }
+        let horizon = headPipeline.predictionHorizon(at: presentTime)
+        let predicted = headPipeline.calibration.apply(to: filter.orientation(predictAhead: horizon))
+        pendingPrediction = (presentTime, predicted, filter.angularVelocity)
+    }
+
+    private func evaluatePendingPrediction() {
+        guard let pending = pendingPrediction else { return }
+        pendingPrediction = nil
+        let actual = headPipeline.calibration.apply(to: filter.orientation(atUptime: pending.time))
+        tuner.observe(predicted: pending.orientation, actual: actual, angularVelocity: pending.angularVelocity)
+        headPipeline.predictionBias = tuner.value
     }
 
     private func uploadLatestFrame(slot: ScreenSlot, commandBuffer: MTLCommandBuffer) -> (retained: CVMetalTexture?, live: Bool) {

@@ -56,3 +56,15 @@ private func filterWithSample(at time: Double, yawRate: Double = 0) -> Orientati
     let difference = rendered * expected.inverse
     #expect(abs(2 * acos(min(1, abs(difference.real)))) < 1e-6)
 }
+
+@Test func predictionBiasShiftsTheHorizon() {
+    let pipeline = HeadPipeline(filter: filterWithSample(at: 100))
+    pipeline.predictionBias = 0.003
+    #expect(abs(pipeline.predictionHorizon(at: 100.005) - 0.008) < 1e-9)
+}
+
+@Test func predictionBiasNeverPushesPastTheCap() {
+    let pipeline = HeadPipeline(filter: filterWithSample(at: 100))
+    pipeline.predictionBias = 0.5
+    #expect(abs(pipeline.predictionHorizon(at: 100.005) - pipeline.maxPrediction) < 1e-12)
+}

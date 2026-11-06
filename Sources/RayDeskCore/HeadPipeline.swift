@@ -11,6 +11,8 @@ public final class HeadPipeline {
     public var predictionSeconds = 0.018
     /// Наибольший горизонт предсказания, секунды.
     public var maxPrediction = 0.020
+    /// Поправка к горизонту от фактической ошибки предсказания, секунды; плюс — дальше.
+    public var predictionBias = 0.0
 
     public init(filter: OrientationFilter) {
         self.filter = filter
@@ -34,14 +36,14 @@ public final class HeadPipeline {
     ///
     /// - Parameter frameInterval: время с прошлого кадра, секунды.
     public func renderedOrientation(frameInterval: Double) -> simd_quatd {
-        stabilizer.filter(calibration.apply(to: filter.orientation(predictAhead: predictionSeconds)), dt: frameInterval)
+        stabilizer.filter(calibration.apply(to: filter.orientation(predictAhead: predictionSeconds + predictionBias)), dt: frameInterval)
     }
 
     /// Насколько вперёд предсказывать ориентацию для кадра в `presentTime`, секунды.
     ///
     /// - Parameter presentTime: момент, к которому кадр будет показан, секунды.
     public func predictionHorizon(at presentTime: Double) -> Double {
-        guard let sampleTime = filter.latestSampleTime else { return predictionSeconds }
-        return min(maxPrediction, max(0, presentTime - sampleTime))
+        guard let sampleTime = filter.latestSampleTime else { return predictionSeconds + predictionBias }
+        return min(maxPrediction, max(0, presentTime - sampleTime + predictionBias))
     }
 }

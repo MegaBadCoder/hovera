@@ -435,6 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
             renderer.headPipeline.predictionSeconds = savedPrediction / 1000
         }
+        renderer.adaptivePrediction = UserDefaults.standard.bool(forKey: "adaptivePrediction")
         renderer.breathingEnabled = UserDefaults.standard.bool(forKey: "meditationBreathing")
         renderer.onFrame = { [weak self] head in
             guard let self else { return }
@@ -2024,6 +2025,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                                imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
         if let offset = renderer?.presentation.offset {
             log(String(format: "DIAG кадр показан на %.1f мс позже заявленного времени", offset * 1000))
+        }
+        if let renderer, renderer.adaptivePrediction {
+            log(String(format: "DIAG поправка предсказания %+.1f мс", renderer.headPipeline.predictionBias * 1000))
         }
         writeCalibrationRow()
         let applied = filter.appliedGyroBias * 180 / .pi

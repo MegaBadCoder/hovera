@@ -282,6 +282,13 @@ public final class OrientationFilter: @unchecked Sendable {
         return history[(historyNext + Self.historySize - 1) % Self.historySize].time
     }
 
+    /// Текущая угловая скорость головы по осям тела, рад/с.
+    public var angularVelocity: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return omega
+    }
+
     /// Текущая угловая скорость головы, рад/с.
     public var angularSpeed: Double {
         lock.lock()
