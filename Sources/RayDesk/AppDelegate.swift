@@ -415,7 +415,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.viture = tracker
                     log(String(format: "VITURE: трекер запущен (%@, product id 0x%04X)",
                                tracker.productName ?? "модель неизвестна", tracker.productID))
-                    self.installVitureOrientation()
+                    tracker.recenter()
+                    log("VITURE: опора мира поставлена в текущее положение и курс")
+                    self.installViturePose()
                 }
             } catch {
                 DispatchQueue.main.async { log("VITURE: трекер не запустился — \(error)") }
@@ -423,13 +425,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Отдаёт рендеру ориентацию VITURE с предсказанием к моменту показа кадра.
-    private func installVitureOrientation() {
-        renderer?.externalOrientation = { [weak self] presentTime in
+    /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
+    private func installViturePose() {
+        renderer?.externalPose = { [weak self] presentTime in
             guard let self, let viture = self.viture else { return nil }
             let predictTime = max(0, min(0.05, presentTime - CACurrentMediaTime()))
-            return viture.pose(predictTime: predictTime)?.orientation
+            guard let pose = viture.pose(predictTime: predictTime) else { return nil }
+            return (pose.orientation, pose.position)
         }
+        log("VITURE: внешняя поза (ориентация и положение) установлена в рендер")
     }
 
     /// Пишет в лог позу VITURE и останавливает трекер, если очки отключились.
@@ -438,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard viture.isConnected else {
             viture.stop()
             self.viture = nil
-            renderer?.externalOrientation = nil
+            renderer?.externalPose = nil
             log("VITURE: очки отключились, трекинг остановлен")
             return
         }
@@ -449,10 +453,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let yawPitch = pose.orientation.yawPitch
         let roll = atan2(2 * (pose.orientation.real * pose.orientation.imag.z + pose.orientation.imag.x * pose.orientation.imag.y),
                          1 - 2 * (pose.orientation.imag.y * pose.orientation.imag.y + pose.orientation.imag.z * pose.orientation.imag.z))
-        log(String(format: "VITURE pose: yaw %+.1f° pitch %+.1f° roll %+.1f° · позиция %+.2f %+.2f %+.2f м · %@",
+        log(String(format: "VITURE pose: yaw %+.1f° pitch %+.1f° roll %+.1f° · позиция %+.2f %+.2f %+.2f м · %@ · в рендере %@ · предсказание не поддержано %d",
                    yawPitch.yaw * 180 / .pi, yawPitch.pitch * 180 / .pi, roll * 180 / .pi,
                    pose.position.x, pose.position.y, pose.position.z,
-                   pose.isStable ? "стабильна" : "нестабильна"))
+                   pose.isStable ? "стабильна" : "нестабильна",
+                   renderer?.usedExternalOrientation == true ? "да" : "нет",
+                   viture.predictionFailureCount))
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -524,6 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderFrontRegardless()
         self.window = window
         self.renderer = renderer
+        if viture != nil {
+            installViturePose()
+        }
         restartFrameLink()
         if UserDefaults.standard.bool(forKey: "wallMode"), let wallModeItem {
             toggleWallMode(wallModeItem)

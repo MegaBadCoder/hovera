@@ -52,9 +52,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     var nextTargetTime: Double?
     /// Измеренная поправка «заявленное время кадра → показанный кадр».
     let presentation = PresentationClock()
-    /// Внешняя ориентация от трекера очков (VITURE): если задана и вернёт значение,
-    /// фильтр, калибровка и стабилизатор не применяются — VIO уже даёт готовую позу.
-    var externalOrientation: ((Double) -> simd_quatd?)?
+    /// Внешняя поза от трекера очков (VITURE): ориентация и положение в мировых осях.
+    /// Если задана и вернёт значение, свой фильтр и калибровка сетки не применяются —
+    /// позу считает VIO на очках, к ней добавляется только стабилизация микродвижений.
+    var externalPose: ((Double) -> (orientation: simd_quatd, position: SIMD3<Double>)?)?
+    /// `true`, если последний кадр нарисован по внешней ориентации, а не по фильтру.
+    private(set) var usedExternalOrientation = false
     /// Подстраивать ли горизонт предсказания по фактической ошибке прошлых кадров.
     var adaptivePrediction = false
     private var tuner = PredictionTuner()
@@ -213,10 +216,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
         let presentTime = presentation.presentTime(target: targetTime)
-        let external = externalOrientation?(presentTime)
+        let external = externalPose?(presentTime)
+        usedExternalOrientation = external != nil
         let head: simd_quatd
         if let external {
-            head = external
+            head = headPipeline.stabilizedExternal(external.orientation, dt: now - lastFrameTime)
         } else {
             if adaptivePrediction {
                 evaluatePendingPrediction()
@@ -231,7 +235,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         lastFrameTime = now
         currentHead = head
         scene.tick(head: head)
-        currentHeadOffset = headFollower.follow(headOffset?(head) ?? .zero, dt: frameSeconds)
+        let baseOffset = external?.position ?? headOffset?(head) ?? .zero
+        currentHeadOffset = headFollower.follow(baseOffset, dt: frameSeconds)
         onFrame?(head)
 
         guard let commandBuffer = queue.makeCommandBuffer() else { return }

@@ -68,3 +68,24 @@ private func filterWithSample(at time: Double, yawRate: Double = 0) -> Orientati
     pipeline.predictionBias = 0.5
     #expect(abs(pipeline.predictionHorizon(at: 100.005) - pipeline.maxPrediction) < 1e-12)
 }
+
+@Test func externalOrientationIsPassedThroughWhenStabilizationIsOff() {
+    let pipeline = HeadPipeline(filter: filterWithSample(at: 100))
+    pipeline.stabilizer = OrientationStabilizer(level: .off)
+    let external = simd_normalize(simd_quatd(ix: 0.1, iy: 0.2, iz: 0.3, r: 0.9))
+    let output = pipeline.stabilizedExternal(external, dt: 1.0 / 120)
+    let difference = output * external.inverse
+    #expect(abs(2 * acos(min(1, abs(difference.real)))) < 1e-6)
+}
+
+@Test func externalOrientationIsSmoothedWhenStabilizationIsOn() {
+    let pipeline = HeadPipeline(filter: filterWithSample(at: 100))
+    pipeline.stabilizer = OrientationStabilizer(level: .strong)
+    var output = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
+    for step in 0..<120 {
+        let pulse = simd_quatd(angle: (step.isMultiple(of: 2) ? 0.002 : -0.002), axis: SIMD3(0, 1, 0))
+        output = pipeline.stabilizedExternal(pulse, dt: 1.0 / 120)
+    }
+    let angle = 2 * acos(min(1, abs(output.real)))
+    #expect(angle < 0.001)
+}

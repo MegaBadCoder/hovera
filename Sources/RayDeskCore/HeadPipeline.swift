@@ -41,6 +41,17 @@ public final class HeadPipeline {
         stabilizer.filter(calibration.apply(to: filter.orientation(predictAhead: predictionSeconds + predictionBias)), dt: frameInterval)
     }
 
+    /// Стабилизирует внешнюю ориентацию (VITURE) тем же фильтром, что и свой трекинг.
+    ///
+    /// Калибровка сетки и предсказание не применяются: поза уже посчитана SDK ко времени показа.
+    ///
+    /// - Parameters:
+    ///   - orientation: ориентация от внешнего трекера.
+    ///   - dt: время с прошлого кадра, секунды.
+    public func stabilizedExternal(_ orientation: simd_quatd, dt: Double) -> simd_quatd {
+        stabilizer.filter(orientation, dt: dt)
+    }
+
     /// Насколько вперёд предсказывать ориентацию для кадра в `presentTime`, секунды.
     ///
     /// - Parameter presentTime: момент, к которому кадр будет показан, секунды.

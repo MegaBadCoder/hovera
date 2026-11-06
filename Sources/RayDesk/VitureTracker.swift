@@ -31,6 +31,7 @@ final class VitureTracker {
     private var lastPose: ViturePose?
     private var lastPoseTime: Double = 0
     private var stopped = false
+    private var predictFailures = 0
 
     private init(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?) {
         self.library = library
@@ -82,10 +83,22 @@ final class VitureTracker {
         lock.lock()
         defer { lock.unlock() }
         guard !stopped else { return nil }
-        guard let pose = device.pose(predictTime: predictTime) else { return lastPose }
+        var pose = device.pose(predictTime: predictTime)
+        if pose == nil, predictTime != 0 {
+            predictFailures += 1
+            pose = device.pose(predictTime: 0)
+        }
+        guard let pose else { return lastPose }
         lastPose = pose
         lastPoseTime = ProcessInfo.processInfo.systemUptime
         return pose
+    }
+
+    /// Сколько раз SDK не отдал позу с предсказанием и пришлось брать текущую.
+    var predictionFailureCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return predictFailures
     }
 
     /// Возраст последней полученной позы, секунды; `nil`, если позы ещё не было.
