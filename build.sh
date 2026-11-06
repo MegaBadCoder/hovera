@@ -63,5 +63,15 @@ with path.open('wb') as file:
 BUILDINFO
 
 IDENTITY=${SIGN_IDENTITY:-$(security find-identity -p codesigning -v | awk -F'"' '/Apple Development/ {print $2; exit}')}
+
+# Официальный SDK VITURE кладём рядом с исполняемым файлом: libglasses ищет
+# libcarina_vio через @loader_path и грузится из Frameworks, если он там есть.
+SDK_DIR=${VITURE_SDK_DIR:-Vendor/viture/aarch64}
+if [[ -f "$SDK_DIR/libglasses.dylib" ]]; then
+  mkdir -p "$APP/Contents/Frameworks"
+  cp "$SDK_DIR/libglasses.dylib" "$SDK_DIR/libcarina_vio.dylib" "$APP/Contents/Frameworks/"
+  codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Frameworks/libcarina_vio.dylib" "$APP/Contents/Frameworks/libglasses.dylib"
+fi
+
 codesign --force --sign "${IDENTITY:--}" "$APP"
 echo "Готово: $APP"
