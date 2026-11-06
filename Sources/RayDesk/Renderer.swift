@@ -48,6 +48,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     var draggingScreen: Int?
     var snappedNeighbor: Int?
     var onFrame: ((simd_quatd) -> Void)?
+    /// Время, на которое заявляет кадр дисплейный линк, секунды; `nil` — считать «сейчас + кадр».
+    var nextTargetTime: Double?
+    /// Измеренная поправка «заявленное время кадра → показанный кадр».
+    let presentation = PresentationClock()
 
     private(set) var currentHeadOffset = SIMD3<Double>.zero
     private(set) var currentHead = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
@@ -193,6 +197,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private static let nebulaMapSize = 1024
 
     func draw(in view: MTKView) {
+        let target = nextTargetTime ?? CACurrentMediaTime() + 1.0 / 60
+        nextTargetTime = nil
+        draw(in: view, targetTime: target)
+    }
+
+    func draw(in view: MTKView, targetTime: Double) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
         let head = headPipeline.renderedOrientation(frameInterval: now - lastFrameTime)
@@ -279,6 +289,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         encoder.endEncoding()
 
+        drawable.addPresentedHandler { [presentation] drawable in
+            presentation.observe(target: targetTime, presented: drawable.presentedTime)
+        }
         commandBuffer.present(drawable)
         commandBuffer.addCompletedHandler { _ in _ = retainedFrames }
         commandBuffer.commit()

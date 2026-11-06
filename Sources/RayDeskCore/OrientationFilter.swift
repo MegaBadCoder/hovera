@@ -273,6 +273,15 @@ public final class OrientationFilter: @unchecked Sendable {
         return later.orientation
     }
 
+    /// Время самого нового отсчёта в истории, секунды в шкале `ProcessInfo.systemUptime`;
+    /// `nil`, пока отсчётов не было.
+    public var latestSampleTime: Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard historyCount > 0 else { return nil }
+        return history[(historyNext + Self.historySize - 1) % Self.historySize].time
+    }
+
     /// Текущая угловая скорость головы, рад/с.
     public var angularSpeed: Double {
         lock.lock()

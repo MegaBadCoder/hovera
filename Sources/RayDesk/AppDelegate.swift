@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var glassesView: MTKView?
     private var frameLink: CADisplayLink?
+    /// Сколько кадров пришло без заявленного времени от дисплейного линка.
+    private var missingTargetFrames = 0
     private var frameLinkDisplay: CGDirectDisplayID?
     private var frameLinkSize: CGSize = .zero
     private var screenChangeWork: DispatchWorkItem?
@@ -373,6 +375,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func renderFrame() {
         lastRenderedFrame = CACurrentMediaTime()
+        if let target = frameLink?.targetTimestamp, target > 0 {
+            renderer?.nextTargetTime = target
+        } else {
+            missingTargetFrames += 1
+            if missingTargetFrames % 300 == 1 {
+                log("display link: no targetTimestamp, the frame time falls back to now + one frame")
+            }
+        }
         glassesView?.draw()
     }
 
@@ -2012,6 +2022,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + (filter.magnetometerCalibration == nil ? t(.statusCompassOff) : String(format: t(.statusCompassError), filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? t(.statusFieldChanged) : ""))
         log(statusText + String(format: t(.statusDiagnostics), compass,
                                                                imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
+        if let offset = renderer?.presentation.offset {
+            log(String(format: "DIAG кадр показан на %.1f мс позже заявленного времени", offset * 1000))
+        }
         writeCalibrationRow()
         let applied = filter.appliedGyroBias * 180 / .pi
         let shift = filter.firmwareZeroShift * 180 / .pi
