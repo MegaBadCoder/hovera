@@ -7,8 +7,10 @@ public final class HeadPipeline {
     public let filter: OrientationFilter
     public var calibration = ViewCalibration()
     public var stabilizer = OrientationStabilizer(level: .off)
+    /// Предсказание по умолчанию, секунды: путь без времени показа и точка отсчёта ручной поправки.
+    public static let defaultPredictionSeconds = 0.018
     /// На сколько вперёд предсказывать ориентацию, секунды; путь без времени показа кадра.
-    public var predictionSeconds = 0.018
+    public var predictionSeconds = HeadPipeline.defaultPredictionSeconds
     /// Наибольший горизонт предсказания, секунды.
     public var maxPrediction = 0.020
     /// Поправка к горизонту от фактической ошибки предсказания, секунды; плюс — дальше.

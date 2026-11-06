@@ -434,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer.stabilizer.level = savedStabilization()
         if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
             renderer.headPipeline.predictionSeconds = savedPrediction / 1000
+            renderer.headPipeline.predictionBias = savedPrediction / 1000 - HeadPipeline.defaultPredictionSeconds
         }
         renderer.adaptivePrediction = UserDefaults.standard.bool(forKey: "adaptivePrediction")
         renderer.breathingEnabled = UserDefaults.standard.bool(forKey: "meditationBreathing")
@@ -1663,10 +1664,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func lessPrediction() { changePrediction(by: -5) }
     private func changePrediction(by milliseconds: Double) {
         guard let renderer else { return }
-        let value = min(80, max(0, renderer.headPipeline.predictionSeconds * 1000 + milliseconds))
-        renderer.headPipeline.predictionSeconds = value / 1000
-        UserDefaults.standard.set(value, forKey: "predictionMs")
-        log(String(format: "prediction %.0f ms", value))
+        let limit = 45.0
+        let bias = min(limit, max(-limit, renderer.headPipeline.predictionBias * 1000 + milliseconds)) / 1000
+        renderer.headPipeline.predictionBias = bias
+        let fallback = renderer.headPipeline.predictionSeconds + bias
+        UserDefaults.standard.set(fallback * 1000, forKey: "predictionMs")
+        log(String(format: "prediction: поправка %+.0f ms, запасной путь %.0f ms", bias * 1000, fallback * 1000))
     }
     @objc private func widerFOV() { changeFOV(by: 0.5) }
     @objc private func narrowerFOV() { changeFOV(by: -0.5) }
