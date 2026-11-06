@@ -55,3 +55,13 @@ import simd
     let devices = VitureUSB.connectedDevices()
     #expect(devices.allSatisfy { $0.productID > 0 })
 }
+
+@Test func cacheDirectoryIsCreatedUnderTheGivenBase() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("viture-sdk-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: base) }
+    let path = try #require(VitureLibrary.cacheDirectory(base: base))
+    #expect(path.hasSuffix("RayDesk/viture"))
+    var isDirectory: ObjCBool = false
+    #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory))
+    #expect(isDirectory.boolValue)
+}

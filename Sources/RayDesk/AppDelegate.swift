@@ -6,6 +6,7 @@ import QuartzCore
 import AVFoundation
 import simd
 import RayDeskCore
+import VitureSDK
 import RayDeskLocalization
 
 private let sceneDefaultsKey = "screens.v2"
@@ -16,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let filter = OrientationFilter()
     private let hotkeys = Hotkeys()
     private var imu: GlassesIMU?
+    /// Трекер VITURE, если очки подключены и официальный SDK загрузился.
+    private var viture: VitureTracker?
     private var slots: [ScreenSlot] = []
     private var window: NSWindow?
     private var glassesView: MTKView?
@@ -170,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             imu?.recorder = IMURecorder()
         }
         imu?.start()
+        startVitureTracking()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.noteScreenParametersChanged()
@@ -394,7 +398,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         glassesView?.draw()
     }
 
+    /// Пробует поднять трекер VITURE в фоне: SDK грузит VIO и может занять сотни миллисекунд.
+    private func startVitureTracking() {
+        guard !VitureUSB.connectedDevices().isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                guard let tracker = try VitureTracker.start() else {
+                    DispatchQueue.main.async { log("VITURE: устройство есть, но трекер не создан") }
+                    return
+                }
+                DispatchQueue.main.async {
+                    guard let self else {
+                        tracker.stop()
+                        return
+                    }
+                    self.viture = tracker
+                    log(String(format: "VITURE: трекер запущен (%@, product id 0x%04X)",
+                               tracker.productName ?? "модель неизвестна", tracker.productID))
+                }
+            } catch {
+                DispatchQueue.main.async { log("VITURE: трекер не запустился — \(error)") }
+            }
+        }
+    }
+
+    /// Пишет в лог позу VITURE и останавливает трекер, если очки отключились.
+    private func logViturePose() {
+        guard let viture else { return }
+        guard viture.isConnected else {
+            viture.stop()
+            self.viture = nil
+            log("VITURE: очки отключились, трекинг остановлен")
+            return
+        }
+        guard let pose = viture.pose() else {
+            log("VITURE: SDK не отдаёт позу")
+            return
+        }
+        let yawPitch = pose.orientation.yawPitch
+        let roll = atan2(2 * (pose.orientation.real * pose.orientation.imag.z + pose.orientation.imag.x * pose.orientation.imag.y),
+                         1 - 2 * (pose.orientation.imag.y * pose.orientation.imag.y + pose.orientation.imag.z * pose.orientation.imag.z))
+        log(String(format: "VITURE pose: yaw %+.1f° pitch %+.1f° roll %+.1f° · позиция %+.2f %+.2f %+.2f м · %@",
+                   yawPitch.yaw * 180 / .pi, yawPitch.pitch * 180 / .pi, roll * 180 / .pi,
+                   pose.position.x, pose.position.y, pose.position.z,
+                   pose.isStable ? "стабильна" : "нестабильна"))
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        viture?.stop()
+        viture = nil
         calibrationFile?.closeFile()
         calibrationFile = nil
         frameLink?.invalidate()
@@ -2021,6 +2073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(cameraHoldsHeading ? "compass paused: camera reference owns heading (including temporary tracking loss)" : "compass resumed")
         }
         logCameraHead()
+        logViturePose()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
         if let renderer { showVerticalFOV(renderer.verticalFOV) }

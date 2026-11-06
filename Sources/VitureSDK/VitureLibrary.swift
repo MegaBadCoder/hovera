@@ -86,6 +86,24 @@ public final class VitureLibrary: @unchecked Sendable {
         return paths
     }
 
+    /// Каталог, куда SDK кладёт кеш калибровки; создаётся при необходимости.
+    ///
+    /// - Returns: `~/Library/Caches/RayDesk/viture` либо `nil`, если каталог не создать.
+    public static func defaultCacheDirectory() -> String? {
+        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        return cacheDirectory(base: base)
+    }
+
+    static func cacheDirectory(base: URL) -> String? {
+        let directory = base.appendingPathComponent("RayDesk/viture", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return directory.path
+        } catch {
+            return nil
+        }
+    }
+
     /// Загружает SDK из первого существующего пути.
     ///
     /// - Parameter searchPaths: кандидаты в порядке приоритета; по умолчанию `defaultSearchPaths()`.
