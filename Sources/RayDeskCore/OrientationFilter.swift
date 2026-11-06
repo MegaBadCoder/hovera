@@ -14,6 +14,8 @@ public final class OrientationFilter: @unchecked Sendable {
     private var omega = SIMD3<Double>(repeating: 0)
     private var accumulatedTravel = RotationTravel(total: 0, yaw: 0)
     private var initialized = false
+    /// Курс, который надо сохранить при следующей инициализации наклона после сброса, рад.
+    private var resetYaw: Double?
     private(set) var sampleCount = 0
     private var compass: MagnetometerCalibration?
     private var magneticReferences: [SIMD2<Int>: Double] = [:]
@@ -149,8 +151,13 @@ public final class OrientationFilter: @unchecked Sendable {
     }
 
     /// Сбрасывает фильтр к неинициализированному состоянию и забывает опору компаса.
+    ///
+    /// Курс мира при этом сохраняется: при следующем отсчёте наклон берётся заново по
+    /// гравитации, а yaw остаётся тем же, что был до сброса. Так переподключение очков и
+    /// ручная калибровка не поворачивают экраны вокруг головы.
     public func reset() {
         lock.lock()
+        resetYaw = q.yawPitch.yaw
         initialized = false
         restorer = FirmwareZeroRestorer()
         magneticReferences = [:]
@@ -162,8 +169,9 @@ public final class OrientationFilter: @unchecked Sendable {
     /// Добавляет один отсчёт IMU в фильтр.
     ///
     /// Первый вызов с валидным (не нулевым) ускорением только
-    /// инициализирует ориентацию по направлению гравитации (yaw = 0) и не
-    /// меняет `omega`. Последующие вызовы интегрируют угловую скорость и
+    /// инициализирует наклон по направлению гравитации, сохраняя прежний курс
+    /// (после `reset()` — курс на момент сброса), и не меняет `omega`.
+    /// Последующие вызовы интегрируют угловую скорость и
     /// корректируют её по измеренному "верху" акселерометра.
     ///
     /// - Parameters:
@@ -203,8 +211,9 @@ public final class OrientationFilter: @unchecked Sendable {
             guard accelNorm > 0.1 else { return }
             q = simd_quatd(from: normalize(accel), to: SIMD3(0, 1, 0))
             let yp = q.yawPitch
-            q = simd_quatd(angle: -yp.yaw, axis: SIMD3(0, 1, 0)) * q
+            q = simd_quatd(angle: (resetYaw ?? 0) - yp.yaw, axis: SIMD3(0, 1, 0)) * q
             initialized = true
+            resetYaw = nil
             return
         }
 

@@ -257,3 +257,37 @@ private func settle(_ filter: OrientationFilter, gravityInHead: SIMD3<Double>, s
     #expect(compensated < 1)
     #expect(plain > compensated + 1)
 }
+
+@Test func resetKeepsWorldYaw() {
+    let filter = OrientationFilter()
+    filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: 0.002)
+    let rate = SIMD3(0.0, Double.pi / 2, 0.0)
+    for _ in 0..<Int(1.0 / 0.002) {
+        filter.update(gyro: rate, accel: SIMD3(0, 1, 0), dt: 0.002)
+    }
+    let before = filter.orientation(predictAhead: 0).yawPitch.yaw
+    filter.reset()
+    for _ in 0..<10 {
+        filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: 0.002)
+    }
+    let after = filter.orientation(predictAhead: 0).yawPitch.yaw
+    #expect(abs(after - before) < 0.5 * degree)
+}
+
+@Test func resetKeepsYawWhileRelevelingTilt() {
+    let filter = OrientationFilter()
+    filter.update(gyro: .zero, accel: SIMD3(0, 1, 0), dt: 0.002)
+    let rate = SIMD3(0.0, Double.pi / 3, 0.0)
+    for _ in 0..<Int(1.0 / 0.002) {
+        filter.update(gyro: rate, accel: SIMD3(0, 1, 0), dt: 0.002)
+    }
+    let before = filter.orientation(predictAhead: 0).yawPitch.yaw
+    filter.reset()
+    let tilted = simd_normalize(SIMD3(0.0, cos(20 * degree), sin(20 * degree)))
+    for _ in 0..<10 {
+        filter.update(gyro: .zero, accel: tilted, dt: 0.002)
+    }
+    let after = filter.orientation(predictAhead: 0).yawPitch
+    #expect(abs(after.yaw - before) < 0.5 * degree)
+    #expect(abs(abs(after.pitch) - 20 * degree) < 5 * degree)
+}
