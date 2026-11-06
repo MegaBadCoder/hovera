@@ -283,17 +283,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func glassesScreen() -> NSScreen? {
-        NSScreen.screens.first { $0.localizedName.localizedCaseInsensitiveContains("SmartGlasses") || $0.localizedName.localizedCaseInsensitiveContains("RayNeo") }
+        NSScreen.screens.first { RayDeskCore.glassesDisplayFamily(forDisplayName: $0.localizedName) != nil }
     }
 
     private func useLightGlassesMode() {
-        guard let id = glassesScreen()?.displayID, let current = CGDisplayCopyDisplayMode(id) else { return }
+        guard let screen = glassesScreen(),
+              let family = RayDeskCore.glassesDisplayFamily(forDisplayName: screen.localizedName),
+              let id = screen.displayID,
+              let current = CGDisplayCopyDisplayMode(id) else { return }
         let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
-        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []).filter {
-            $0.width == 1920 && $0.height == 1080 && $0.pixelWidth == 1920 && $0.pixelHeight == 1080 && $0.isUsableForDesktopGUI()
+        let candidates = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []).map { mode in
+            (option: DisplayModeOption(pointWidth: mode.width, pointHeight: mode.height,
+                                       pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight,
+                                       refreshRate: mode.refreshRate, usableForDesktop: mode.isUsableForDesktopGUI()),
+             mode: mode)
         }
-        guard let target = modes.min(by: { abs($0.refreshRate - 60) < abs($1.refreshRate - 60) }) else {
-            log("glasses display: no plain 1920x1080 mode")
+        guard let chosen = chooseGlassesDisplayMode(candidates.map(\.option), family: family),
+              let target = candidates.first(where: { $0.option == chosen })?.mode else {
+            log("glasses display: no plain mode for \(family.rawValue)")
             return
         }
         guard current.pixelWidth != target.pixelWidth || current.pixelHeight != target.pixelHeight
@@ -302,8 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
         CGConfigureDisplayWithDisplayMode(config, id, target, nil)
         let result = CGCompleteDisplayConfiguration(config, .forSession)
-        log(String(format: "glasses display: %dx%d pixels @%.0f Hz -> %dx%d @%.0f Hz (%d)", current.pixelWidth, current.pixelHeight,
-                   current.refreshRate, target.pixelWidth, target.pixelHeight, target.refreshRate, result.rawValue))
+        log(String(format: "glasses display (\(family.rawValue)): %dx%d pixels @%.0f Hz -> %dx%d @%.0f Hz (%d)",
+                   current.pixelWidth, current.pixelHeight, current.refreshRate,
+                   target.pixelWidth, target.pixelHeight, target.refreshRate, result.rawValue))
     }
 
     private func arrangeDisplays() {

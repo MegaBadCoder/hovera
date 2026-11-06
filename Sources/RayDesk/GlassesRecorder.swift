@@ -13,8 +13,8 @@ final class GlassesRecorder: NSObject, SCStreamDelegate, SCRecordingOutputDelega
             throw RecorderError.displayNotFound
         }
         let config = SCStreamConfiguration()
-        config.width = 1920
-        config.height = 1080
+        config.width = display.width
+        config.height = display.height
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.showsCursor = false
 
