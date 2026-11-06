@@ -8,3 +8,5 @@ tmp/
 output/
 docs/paper/
 .DS_Store
+
+Vendor/
