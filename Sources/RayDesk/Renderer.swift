@@ -205,7 +205,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView, targetTime: Double) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
-        let head = headPipeline.renderedOrientation(frameInterval: now - lastFrameTime)
+        let head = headPipeline.renderedOrientation(at: presentation.presentTime(target: targetTime), frameInterval: now - lastFrameTime)
         let frameSeconds = min(now - lastFrameTime, 0.1)
         meditation.advance(by: frameSeconds)
         let breathingTarget = breathingEnabled ? 1.0 : 0.0

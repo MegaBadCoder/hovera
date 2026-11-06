@@ -44,7 +44,8 @@ enum TrackingReplay {
             references.append(reference)
             rates.append(length(gyro))
             while time >= nextFrame {
-                let rendered = pipeline.renderedOrientation(frameInterval: 1 / frameRate)
+                let presentTime = (filter.latestSampleTime ?? time) + pipeline.predictionSeconds
+                let rendered = pipeline.renderedOrientation(at: presentTime, frameInterval: 1 / frameRate)
                 frames.append((nextFrame, rendered, lastGyro))
                 if let compass, let magnetometer {
                     let world = rendered.act(magnetometer - compass.center)
