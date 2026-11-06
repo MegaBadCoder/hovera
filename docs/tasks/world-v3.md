@@ -216,3 +216,44 @@ Approach: сначала честное время показа (измерен�
 - PH1 -> IF1, IF3 @ Sources/RayDeskCore/PresentationClock.swift, Sources/RayDeskCore/OrientationFilter.swift
 - PH2 IF1, IF3 -> IF2 @ Sources/RayDeskCore/HeadPipeline.swift, Sources/RayDesk/Renderer.swift
 - PH3 IF2 -> @ Sources/RayDeskCore/PredictionTuner.swift, Sources/RayDesk/AppDelegate.swift
+
+## Verify
+
+Result: passed (с двумя оговорками, обе требуют сессии в очках)
+
+Happy-path:
+- CK1 — поза считается ко времени показа: горизонт равен расстоянию от последнего отсчёта IMU до `presentTime`, зажатому сверху 20 мс — held (`horizonIsTheDistanceToThePresentTime`, `horizonStopsAtTheCapEvenAfterAStall`).
+- CK2 — кадр без `targetTimestamp` не ломает предсказание, а падает на прежние 18 мс — held (`pathWithoutPresentTimeKeepsTheOldPrediction`, fallback в `Renderer.draw(in:)`).
+
+Negative:
+- CK3 — отрицательная и абсурдно большая поправка времени показа не уводят картинку — held (`offsetIsClampedToTheAllowedRange`: 0…`maxOffset`).
+- CK4 — NaN и бесконечность в измерениях презентации игнорируются и не портят офсет — held (`nonFiniteMeasurementsAreIgnored`, добавлен после атаки на `observe`).
+- CK5 — простой IMU на 100 мс не разгоняет предсказание — held (потолок в `predictionHorizon`).
+- CK6 — адаптивная поправка не учится по устаревшему кадру (после простоя больше 0,25 с) и сбрасывается в 0 при выключении флага — held после правки; до неё кадр после простоя мог испортить оценку — исправлено в `Renderer.evaluatePendingPrediction` / `rememberPrediction`.
+
+Invariants / assumptions:
+- CK7 (IV2) — путь без времени показа совпадает с прежним поведением — held.
+- CK8 (IV3) — горизонт неотрицателен и не больше `maxPrediction` — held (`horizonNeverGoesBackwards`, `predictionBiasNeverPushesPastTheCap`).
+- CK9 (IV6) — при выключенной стабилизации выход равен предсказанию фильтра — held (`stabilizedOutputEqualsFilterPredictionWhenStabilizationIsOff`).
+- CK10 (PC1) — метрики стенда не изменились: head-turns 0,019° / −2,04 мс, carousel 0,022° / −1,78 мс / 1,51° — held (до/после совпадают; реплей подаёт синтетическое время показа, эквивалентное прежнему горизонту).
+- CK11 (AS2, UK1) — шапка времени IMU и фактический офсет презентации на дисплее очков — deferred: нужна живая сессия, RayNeo сейчас не подключён. Что смотреть: `DIAG кадр показан на … мс` и стабильность оценки (разброс офсета от кадра к кадру).
+
+Interfaces:
+- CK12 (IF1/IF2/IF3) — вызовы соответствуют объявленным сигнатурам: `presentation.presentTime(target:)` в `Renderer`, `renderedOrientation(at:frameInterval:)` в `Renderer`, `latestSampleTime` внутри `HeadPipeline` — held (сверено по вызовам).
+
+Smoke: `swift build --disable-sandbox` — собирается; `swift test --disable-sandbox` — 305 тестов зелёные.
+
+Goal: proxy only — измерение задержки и «прибитости» в очках ещё не проводилось, задача `present-time-pose` закрыта только на уровне кода и стенда. Живая проверка: сессия в RayNeo, один раз посмотреть офсет и поправку в логе, сравнить хвост на 60 Гц до/после.
+
+Notes:
+- `presentedHandler` приходит с фонового потока Metal: `PresentationClock` под замком, гонка проверена стресс-тестом.
+- При падении на fallback-время (`now + кадр`) измеренный офсет за несколько кадров подтягивается к 0 (поправка считается от заведомо неверного target). На дисплее очков `targetTimestamp` есть, поэтому путь редкий; при необходимости лечится счётчиком подряд идущих fallback-кадров.
+- Адаптивная поправка живёт в `Renderer`, а не в `AppDelegate`, как планировалось: там же известно время показа и есть доступ к фильтру. `AppDelegate` только включает флаг `adaptivePrediction` и печатает поправку в DIAG.
+
+## Conclusion
+
+Outcome: поза для кадра считается ко времени показа с потолком 20 мс, поправка «заявленное время → фотоны» измеряется и видна в логе, адаптивная подстройка горизонта готова и выключена по умолчанию. Мир после переподключения очков больше не поворачивается.
+
+Invariants: IV1 проверен тестами `resetKeepsWorldYaw` / `resetKeepsYawWhileRelevelingTilt`; IV2, IV3, IV6 — тестами этой задачи; IV4, IV5 — будущие задачи `glasses-slip`, `camera-anchor`.
+
+Что осталось до «мира»: чистый IMU (курс, наклон, подпись места), мёртвая зона, камерная опора — по дизайну это отдельные задачи, план готов для следующей.

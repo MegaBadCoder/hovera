@@ -52,3 +52,12 @@ import Testing
     #expect(offset >= 0)
     #expect(offset <= clock.maxOffset)
 }
+
+@Test func nonFiniteMeasurementsAreIgnored() {
+    let clock = PresentationClock()
+    clock.observe(target: .nan, presented: 1)
+    clock.observe(target: 1, presented: .infinity)
+    #expect(clock.offset == nil)
+    clock.observe(target: 1, presented: 1.006)
+    #expect(abs((clock.offset ?? 0) - 0.006) < 1e-9)
+}

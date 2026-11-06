@@ -338,6 +338,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func rememberPrediction(for presentTime: Double) {
         guard adaptivePrediction else {
             pendingPrediction = nil
+            headPipeline.predictionBias = 0
             return
         }
         let horizon = headPipeline.predictionHorizon(at: presentTime)
@@ -348,6 +349,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func evaluatePendingPrediction() {
         guard let pending = pendingPrediction else { return }
         pendingPrediction = nil
+        guard CACurrentMediaTime() - pending.time < 0.25 else { return }
         let actual = headPipeline.calibration.apply(to: filter.orientation(atUptime: pending.time))
         tuner.observe(predicted: pending.orientation, actual: actual, angularVelocity: pending.angularVelocity)
         headPipeline.predictionBias = tuner.value
