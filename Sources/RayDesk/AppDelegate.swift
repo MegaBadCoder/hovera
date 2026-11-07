@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var imu: GlassesIMU?
     /// Трекер VITURE, если очки подключены и официальный SDK загрузился.
     private var viture: VitureTracker?
+    /// Когда в следующий раз пробовать поднять трекер VITURE после неудачи или потери очков.
+    private var vitureRetryAt: TimeInterval = 0
+    /// Идёт попытка поднять трекер; второй параллельной попытки быть не должно.
+    private var vitureStarting = false
     private var slots: [ScreenSlot] = []
     private var window: NSWindow?
     private var glassesView: MTKView?
@@ -400,7 +404,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Пробует поднять трекер VITURE в фоне: SDK грузит VIO и может занять сотни миллисекунд.
     private func startVitureTracking() {
+        guard !vitureStarting else { return }
         guard !VitureUSB.connectedDevices().isEmpty else { return }
+        vitureStarting = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 guard let tracker = try VitureTracker.start() else {
@@ -412,6 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         tracker.stop()
                         return
                     }
+                    self.vitureStarting = false
                     self.viture = tracker
                     log(String(format: "VITURE: трекер запущен (%@, product id 0x%04X)",
                                tracker.productName ?? "модель неизвестна", tracker.productID))
@@ -420,9 +427,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.installViturePose()
                 }
             } catch {
-                DispatchQueue.main.async { log("VITURE: трекер не запустился — \(error)") }
+                DispatchQueue.main.async {
+                    self?.vitureStarting = false
+                    self?.vitureRetryAt = CACurrentMediaTime() + 3
+                    log("VITURE: трекер не запустился — \(error)")
+                }
             }
         }
+    }
+
+    /// Раз в секунду проверяет, что трекер VITURE жив: переподключение очков и сон
+    /// останавливают поток данных SDK, и без перезапуска картинка становится статичной.
+    private func watchVitureTracking() {
+        if let viture {
+            guard viture.isConnected else {
+                viture.stop()
+                self.viture = nil
+                renderer?.externalPose = nil
+                vitureRetryAt = CACurrentMediaTime() + 1
+                log("VITURE: очки отключились, трекинг остановлен")
+                return
+            }
+            if let age = viture.poseAge, age > 2 {
+                viture.stop()
+                self.viture = nil
+                renderer?.externalPose = nil
+                vitureRetryAt = CACurrentMediaTime() + 1
+                log(String(format: "VITURE: поза не приходит %.1f с, перезапускаю трекер", age))
+            }
+            return
+        }
+        guard CACurrentMediaTime() >= vitureRetryAt, !VitureUSB.connectedDevices().isEmpty else { return }
+        startVitureTracking()
     }
 
     /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
@@ -438,14 +474,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Пишет в лог позу VITURE и останавливает трекер, если очки отключились.
     private func logViturePose() {
+        watchVitureTracking()
         guard let viture else { return }
-        guard viture.isConnected else {
-            viture.stop()
-            self.viture = nil
-            renderer?.externalPose = nil
-            log("VITURE: очки отключились, трекинг остановлен")
-            return
-        }
         guard let pose = viture.pose() else {
             log("VITURE: SDK не отдаёт позу")
             return
@@ -587,6 +617,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// После пробуждения дисплей очков может вернуться позже остальных: ждём его и пересобираем окно.
     private func handleWake() {
         log("wake: screens \(screensDescription())")
+        viture?.stop()
+        viture = nil
+        renderer?.externalPose = nil
+        vitureRetryAt = CACurrentMediaTime() + 2
+        if !VitureUSB.connectedDevices().isEmpty {
+            log("VITURE: после пробуждения трекер будет перезапущен")
+        }
         screenParametersSettled()
         waitForGlassesAfterWake(attempt: 0)
     }
