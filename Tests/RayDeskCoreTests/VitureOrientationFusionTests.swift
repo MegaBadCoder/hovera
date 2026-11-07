@@ -49,3 +49,14 @@ private let yawAxis = SIMD3<Double>(0, 1, 0)
     }
     #expect(abs(fusion.gyroBias.x - 0.01) < 0.002)
 }
+
+
+@Test func gyroBiasIsLearnedFromStillnessWithoutStableVIO() {
+    var fusion = VitureOrientationFusion()
+    let bias = SIMD3<Double>(0, 0.02, 0)
+    for step in 0...3000 {
+        _ = fusion.update(pose: simd_quatd(ix: 0, iy: 0, iz: 0, r: 1), stable: false, gyro: bias,
+                          time: Double(step) / 200, still: true)
+    }
+    #expect(abs(fusion.gyroBias.y - 0.02) < 0.004)
+}

@@ -34,6 +34,8 @@ final class VitureTracker {
     private var predictFailures = 0
     private var driftMeter = PoseDriftMeter()
     private var fusion = VitureOrientationFusion()
+    /// С какого момента голова стоит по гироскопу: нужно для обучения нуля в темноте.
+    private var gyroStillSince: Double?
     private var previousForRate: (time: Double, orientation: simd_quatd)?
 
     private let imuLock = NSLock()
@@ -108,8 +110,14 @@ final class VitureTracker {
         guard let pose else { return lastPose }
         let now = ProcessInfo.processInfo.systemUptime
         let gyro = latestIMU.map { radiansPerSecond($0.angularVelocity) }
+        if let gyro, length(gyro) < 0.03 {
+            if gyroStillSince == nil { gyroStillSince = now }
+        } else {
+            gyroStillSince = nil
+        }
+        let stillForBias = gyroStillSince.map { now - $0 > 2 } ?? false
         let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro,
-                                  time: now, predictAhead: predictTime)
+                                  time: now, still: stillForBias)
         var result = pose
         if let fused {
             result.orientation = fused
@@ -189,6 +197,7 @@ final class VitureTracker {
     func recenter() -> Bool {
         guard let current = pose(predictTime: 0) else { return false }
         fusion.reset()
+        gyroStillSince = nil
         return device.resetOrigin(to: current)
     }
 

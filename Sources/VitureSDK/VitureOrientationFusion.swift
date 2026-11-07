@@ -40,10 +40,11 @@ public struct VitureOrientationFusion: Sendable {
     ///   - stable: статус устойчивости VIO.
     ///   - gyro: угловая скорость по осям тела, рад/с; `nil`, если IMU ещё не пришёл.
     ///   - time: время отсчёта, секунды.
-    ///   - predictAhead: на сколько вперёд уже предсказана поза, секунды (для оценки dt).
+    ///   - still: голова стоит по гироскопу; в темноте это единственный признак покоя,
+    ///     потому что VIO там может быть неустойчив постоянно.
     /// - Returns: ориентация для кадра.
     public mutating func update(pose: simd_quatd?, stable: Bool, gyro: SIMD3<Double>?, time: Double,
-                                predictAhead: Double = 0) -> simd_quatd? {
+                                still: Bool = false) -> simd_quatd? {
         let dt = lastUpdate.map { max(0, min(0.1, time - $0)) } ?? 0
         lastUpdate = time
 
@@ -67,7 +68,7 @@ public struct VitureOrientationFusion: Sendable {
 
         if let gyro, dt > 0 {
             var rate = gyro
-            if stable, length(gyro) < biasLearnSpeed {
+            if (stable || still), length(gyro) < biasLearnSpeed {
                 let alpha = 1 - exp(-dt / max(0.01, biasTimeConstant))
                 bias += (gyro - bias) * alpha
             }
