@@ -109,7 +109,7 @@ final class VitureTracker {
         defer { lock.unlock() }
         guard !stopped, let lastPose else { return nil }
         guard predictTime > 0, let imu = latestIMU else { return lastPose }
-        let rate = radiansPerSecond(imu.angularVelocity) - fusion.gyroBias
+        let rate = VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(imu.angularVelocity)) - fusion.gyroBias
         return lastPose.extrapolated(by: predictTime, rate: rate)
     }
 
@@ -139,7 +139,7 @@ final class VitureTracker {
         }
         lock.unlock()
         guard let pose else { return }
-        let gyro: SIMD3<Double>? = latestIMU.map { sample in radiansPerSecond(sample.angularVelocity) }
+        let gyro: SIMD3<Double>? = latestIMU.map { sample in VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(sample.angularVelocity)) }
         if let gyro, length(gyro) < 0.03 {
             lock.lock()
             if gyroStillSince == nil { gyroStillSince = now }
@@ -177,16 +177,6 @@ final class VitureTracker {
             lastConnectionCheck = now
             connected = VitureUSB.connectedDevices().contains { $0.productID == productID }
         }
-    }
-
-    /// Переводит угловую скорость SDK в радианы в секунду.
-    ///
-    /// Единицы IMU-колбэка в документации не заданы (UK1): если значения приходят
-    /// в градусах, они выходят за разумный диапазон радиан и пересчитываются.
-    private func radiansPerSecond(_ values: SIMD3<Double>) -> SIMD3<Double> {
-        let magnitude = length(values)
-        guard magnitude.isFinite, magnitude > 0.001 else { return values }
-        return magnitude > 20 ? values * .pi / 180 : values
     }
 
     /// Крен ориентации в радианах.
