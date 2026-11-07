@@ -47,6 +47,12 @@ final class VitureTracker {
     /// добавляет свой ноль и может кренить мир при неверных осях IMU. Включается
     /// флагом `vitureGyroFusion`, когда VIO теряет устойчивость в темноте.
     private var usesFusion = UserDefaults.standard.bool(forKey: "vitureGyroFusion")
+    /// Предсказывать позу экстраполяцией гироскопа между отсчётами.
+    ///
+    /// По умолчанию выключено: поза и так приходит 120 раз в секунду, а
+    /// экстраполяция с неверными осями или нулём гироскопа добавляет картинке
+    /// ложное движение. Включается флагом `vitureExtrapolation`.
+    private var usesExtrapolation = UserDefaults.standard.object(forKey: "vitureExtrapolation") as? Bool ?? true
 
     private let imuLock = NSLock()
     private var imuSample: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)?
@@ -114,7 +120,7 @@ final class VitureTracker {
         lock.lock()
         defer { lock.unlock() }
         guard !stopped, let lastPose else { return nil }
-        guard predictTime > 0, let imu = latestIMU else { return lastPose }
+        guard usesExtrapolation, predictTime > 0, let imu = latestIMU else { return lastPose }
         let rate = VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(imu.angularVelocity)) - fusion.gyroBias
         return lastPose.extrapolated(by: predictTime, rate: rate)
     }

@@ -480,13 +480,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    delta * 180 / .pi, scene.centerYaw * 180 / .pi))
     }
 
+    /// Сдвиг картинки по положению головы из VIO.
+    ///
+    /// По умолчанию выключен: VIO на неподвижной голове гуляет на сантиметры,
+    /// и вся сцена начинает «плавать». Включается флагом `vitureSixDofPosition`,
+    /// когда нужен настоящий параллакс.
+    private var usesSixDofPosition: Bool {
+        UserDefaults.standard.bool(forKey: "vitureSixDofPosition")
+    }
+
     /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
     private func installViturePose() {
         renderer?.externalPose = { [weak self] presentTime in
             guard let self, let viture = self.viture else { return nil }
             let predictTime = max(0, min(0.05, presentTime - CACurrentMediaTime()))
             guard let pose = viture.pose(predictTime: predictTime) else { return nil }
-            return (pose.orientation, pose.position)
+            return (pose.orientation, usesSixDofPosition ? pose.position : .zero)
         }
         log("VITURE: внешняя поза (ориентация и положение) установлена в рендер")
     }
