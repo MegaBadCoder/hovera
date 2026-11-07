@@ -37,6 +37,10 @@ final class VitureTracker {
     /// С какого момента голова стоит по гироскопу: нужно для обучения нуля в темноте.
     private var gyroStillSince: Double?
     private var previousForRate: (time: Double, orientation: simd_quatd)?
+    private var pollTimer: DispatchSourceTimer?
+    private let pollQueue = DispatchQueue(label: "raydesk.viture.poll", qos: .userInteractive)
+    private var connected = true
+    private var lastConnectionCheck: Double = 0
 
     private let imuLock = NSLock()
     private var imuSample: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)?
@@ -69,6 +73,7 @@ final class VitureTracker {
         } else {
             do {
                 sdk = try VitureLibrary.load(searchPaths: searchPaths)
+                sdk.retainForProcessLifetime()
             } catch {
                 throw StartError.sdkUnavailable("\(error)")
             }
@@ -91,6 +96,7 @@ final class VitureTracker {
         guard device.start() else {
             throw StartError.startupFailed("start", code: -1)
         }
+        tracker.startPolling()
         return tracker
     }
 
@@ -101,46 +107,76 @@ final class VitureTracker {
     func pose(predictTime: Double = 0) -> ViturePose? {
         lock.lock()
         defer { lock.unlock() }
-        guard !stopped else { return nil }
-        var pose = device.pose(predictTime: predictTime)
-        if pose == nil, predictTime != 0 {
-            predictFailures += 1
-            pose = device.pose(predictTime: 0)
-        }
-        guard let pose else { return lastPose }
+        guard !stopped, let lastPose else { return nil }
+        guard predictTime > 0, let imu = latestIMU else { return lastPose }
+        let rate = radiansPerSecond(imu.angularVelocity) - fusion.gyroBias
+        return lastPose.extrapolated(by: predictTime, rate: rate)
+    }
+
+    /// Запускает опрос позы в отдельном потоке.
+    ///
+    /// Позу нельзя спрашивать с главного потока: SDK иногда застревает на USB,
+    /// а главный поток рисует кадр и держит виртуальные дисплеи — его остановка
+    /// и есть «картинка тормозит» и срабатывание watchdog.
+    private func startPolling() {
+        let timer = DispatchSource.makeTimerSource(queue: pollQueue)
+        timer.schedule(deadline: .now(), repeating: 1.0 / 120.0)
+        timer.setEventHandler { [weak self] in self?.poll() }
+        timer.resume()
+        pollTimer = timer
+    }
+
+    private func poll() {
+        lock.lock()
+        let stopped = self.stopped
+        lock.unlock()
+        guard !stopped else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        let gyro = latestIMU.map { radiansPerSecond($0.angularVelocity) }
+        let pose = device.pose(predictTime: 0)
+        lock.lock()
+        if pose == nil {
+            predictFailures += 1
+        }
+        lock.unlock()
+        guard let pose else { return }
+        let gyro: SIMD3<Double>? = latestIMU.map { sample in radiansPerSecond(sample.angularVelocity) }
         if let gyro, length(gyro) < 0.03 {
+            lock.lock()
             if gyroStillSince == nil { gyroStillSince = now }
+            lock.unlock()
         } else {
+            lock.lock()
             gyroStillSince = nil
+            lock.unlock()
         }
+        lock.lock()
         let stillForBias = gyroStillSince.map { now - $0 > 2 } ?? false
-        let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro,
-                                  time: now, still: stillForBias)
+        lock.unlock()
+        let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro, time: now, still: stillForBias)
         var result = pose
-        if let fused {
-            result.orientation = fused
-        }
+        if let fused { result.orientation = fused }
+        lock.lock()
         if !pose.isStable, let previous = lastPose {
             result.position = previous.position
         }
-        lastPose = result
-        lastPoseTime = now
-        let fusedPose = result
-        let previous = previousForRate
-        previousForRate = (now, fusedPose.orientation)
-        if let previous {
+        if let previous = previousForRate {
             let dt = now - previous.time
             if dt > 1e-6, dt < 0.5 {
-                let delta = 2 * acos(min(1, abs(simd_dot(fusedPose.orientation.vector, previous.orientation.vector))))
-                let yawPitch = fusedPose.orientation.yawPitch
-                let roll = Self.roll(of: fusedPose.orientation)
+                let delta = 2 * acos(min(1, abs(simd_dot(result.orientation.vector, previous.orientation.vector))))
+                let yawPitch = result.orientation.yawPitch
+                let roll = Self.roll(of: result.orientation)
                 driftMeter.add(time: now, yaw: yawPitch.yaw * 180 / .pi, pitch: yawPitch.pitch * 180 / .pi,
                                roll: roll * 180 / .pi, angularSpeed: delta / dt)
             }
         }
-        return pose
+        previousForRate = (now, result.orientation)
+        lastPose = result
+        lastPoseTime = now
+        lock.unlock()
+        if now - lastConnectionCheck > 2 {
+            lastConnectionCheck = now
+            connected = VitureUSB.connectedDevices().contains { $0.productID == productID }
+        }
     }
 
     /// Переводит угловую скорость SDK в радианы в секунду.
@@ -153,34 +189,34 @@ final class VitureTracker {
         return magnitude > 20 ? values * .pi / 180 : values
     }
 
-    private func store(imu acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double) {
-        imuLock.lock()
-        imuSample = (acceleration, angularVelocity, time)
-        imuLock.unlock()
-    }
-
-    /// Увод мира на неподвижной голове, градусы в минуту по осям; `nil`, пока окно не набрано.
-    var driftPerMinute: (yaw: Double, pitch: Double, roll: Double)? {
-        driftMeter.driftPerMinute
-    }
-
-    /// Длительность окна измерения увода, секунды.
-    var driftSpan: Double {
-        driftMeter.measuredSpan
-    }
-
-    /// Выученный ноль гироскопа, рад/с.
-    var gyroBias: SIMD3<Double> {
-        fusion.gyroBias
-    }
-
     /// Крен ориентации в радианах.
     private static func roll(of orientation: simd_quatd) -> Double {
         atan2(2 * (orientation.real * orientation.imag.z + orientation.imag.x * orientation.imag.y),
               1 - 2 * (orientation.imag.y * orientation.imag.y + orientation.imag.z * orientation.imag.z))
     }
 
-    /// Сколько раз SDK не отдал позу с предсказанием и пришлось брать текущую.
+    /// Увод мира на неподвижной голове, градусы в минуту по осям; `nil`, пока окно не набрано.
+    var driftPerMinute: (yaw: Double, pitch: Double, roll: Double)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return driftMeter.driftPerMinute
+    }
+
+    /// Длительность окна измерения увода, секунды.
+    var driftSpan: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return driftMeter.measuredSpan
+    }
+
+    /// Выученный ноль гироскопа, рад/с.
+    var gyroBias: SIMD3<Double> {
+        lock.lock()
+        defer { lock.unlock() }
+        return fusion.gyroBias
+    }
+
+    /// Сколько раз SDK не отдал позу; для диагностики.
     var predictionFailureCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -193,6 +229,12 @@ final class VitureTracker {
         defer { lock.unlock() }
         guard lastPose != nil else { return nil }
         return ProcessInfo.processInfo.systemUptime - lastPoseTime
+    }
+
+    private func store(imu acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double) {
+        imuLock.lock()
+        imuSample = (acceleration, angularVelocity, time)
+        imuLock.unlock()
     }
 
     /// Переносит опору мира в текущее положение и курс.
@@ -218,6 +260,8 @@ final class VitureTracker {
 
     /// Останавливает трекинг. Повторный запуск требует нового трекера.
     func stop() {
+        pollTimer?.cancel()
+        pollTimer = nil
         lock.lock()
         guard !stopped else {
             lock.unlock()
@@ -230,6 +274,8 @@ final class VitureTracker {
 
     /// `true`, если очки ещё видны в USB.
     var isConnected: Bool {
-        VitureUSB.connectedDevices().contains { $0.productID == productID }
+        lock.lock()
+        defer { lock.unlock() }
+        return connected
     }
 }

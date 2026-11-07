@@ -73,3 +73,15 @@ import simd
     #expect(turned.position == pose.position)
     #expect(turned.timestamp == pose.timestamp)
 }
+
+@Test func extrapolationTurnsThePoseForward() {
+    let pose = ViturePose(position: .zero, orientation: simd_quatd(ix: 0, iy: 0, iz: 0, r: 1), timestamp: 0, isStable: true)
+    let moved = pose.extrapolated(by: 0.1, rate: SIMD3(0, 1, 0))
+    #expect(abs(moved.orientation.yawPitch.yaw - 0.1) < 1e-6)
+}
+
+@Test func extrapolationWithoutRateKeepsThePose() {
+    let pose = ViturePose(position: SIMD3(1, 2, 3), orientation: simd_quatd(ix: 0, iy: 0, iz: 0, r: 1), timestamp: 0, isStable: true)
+    let same = pose.extrapolated(by: 0.2, rate: .zero)
+    #expect(same == pose)
+}

@@ -55,3 +55,19 @@ public struct ViturePose: Equatable, Sendable {
          Float(orientation.real), Float(orientation.imag.x), Float(orientation.imag.y), Float(orientation.imag.z)]
     }
 }
+
+extension ViturePose {
+    /// Экстраполирует ориентацию вперёд по угловой скорости.
+    ///
+    /// - Parameters:
+    ///   - seconds: на сколько вперёд, секунды.
+    ///   - rate: угловая скорость по осям тела, рад/с.
+    /// - Returns: поза с повёрнутой ориентацией; положение и метка времени не меняются.
+    public func extrapolated(by seconds: Double, rate: SIMD3<Double>) -> ViturePose {
+        let speed = length(rate)
+        guard speed > 1e-6, seconds > 0 else { return self }
+        var copy = self
+        copy.orientation = simd_normalize(orientation * simd_quatd(angle: speed * seconds, axis: rate / speed))
+        return copy
+    }
+}

@@ -143,8 +143,19 @@ public final class VitureLibrary: @unchecked Sendable {
         isProductIDValidFunction = try symbol("xr_device_provider_is_product_id_valid", as: ProductPredicateFunction.self)
     }
 
-    deinit {
-        dlclose(handle)
+    /// Загруженные библиотеки живут до конца процесса.
+    ///
+    /// `dlclose` вызывал падение при выходе: SDK держит собственные статические
+    /// объекты и потоки, и их уничтожение в произвольный момент роняет процесс.
+    private static let loadedLock = NSLock()
+    nonisolated(unsafe) private static var loaded: [VitureLibrary] = []
+
+
+    /// Оставляет библиотеку загруженной до конца процесса.
+    public func retainForProcessLifetime() {
+        Self.loadedLock.lock()
+        Self.loaded.append(self)
+        Self.loadedLock.unlock()
     }
 
     /// Создаёт дескриптор устройства.
