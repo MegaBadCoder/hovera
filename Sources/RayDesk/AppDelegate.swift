@@ -476,10 +476,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// сохранённые углы раскладки не копят сдвиг от запуска к запуску.
     private func alignVitureOrigin() {
         guard let viture, let pose = viture.pose(predictTime: 0) else { return }
-        let headYaw = pose.orientation.yawPitch.yaw
-        let delta = scene.centerYaw - headYaw
-        viture.resetOrigin(to: pose.rotatedYaw(by: delta))
-        log(String(format: "VITURE: опора развёрнута на %.0f°, чтобы раскладка была перед взглядом", delta * 180 / .pi))
+        // reset_origin ставит опору в переданную позу, поэтому относительный курс
+        // становится равен минус повороту: чтобы взгляд смотрел в центр раскладки,
+        // опору надо развернуть на минус этот центр.
+        let delta = remainder(-scene.centerYaw, 2 * .pi)
+        guard viture.resetOrigin(to: pose.rotatedYaw(by: delta)) else { return }
+        log(String(format: "VITURE: опора развёрнута на %.0f°, чтобы взгляд смотрел в центр раскладки (%.0f°)",
+                   delta * 180 / .pi, scene.centerYaw * 180 / .pi))
     }
 
     /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
@@ -1244,11 +1247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func recenterToGaze() {
         guard let renderer else { return }
         if let viture {
-            let ok = viture.recenter()
-            if ok {
-                alignVitureOrigin()
-            }
-            log("VITURE: recenter \(ok ? "выполнен" : "не удался"), раскладка выровнена по взгляду")
+            alignVitureOrigin()
+            log("VITURE: Recenter — опора поставлена по текущему взгляду")
             return
         }
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
