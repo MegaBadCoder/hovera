@@ -70,6 +70,7 @@ public enum UIString: CaseIterable {
     case cameraMotionDebugMoving
     case cameraMotionDebugStill
     case menuCameraDebugWindow
+    case menuHandsCamera
 
     case menuPicture
     case menuTogglePicture
@@ -307,6 +308,7 @@ public enum UIString: CaseIterable {
         case .cameraMotionDebugMoving: "фон едет"
         case .cameraMotionDebugStill: "фон стоит"
         case .menuCameraDebugWindow: "Окно отладки (рамка и точки лица)"
+        case .menuHandsCamera: "Камера очков: руки"
 
         case .menuPicture: "Картинка"
         case .menuTogglePicture: "Скрыть / показать картинку   ⌃⌥H"
@@ -535,6 +537,7 @@ public enum UIString: CaseIterable {
         case .cameraMotionDebugMoving: "background moves"
         case .cameraMotionDebugStill: "background still"
         case .menuCameraDebugWindow: "Debug window (box and face points)"
+        case .menuHandsCamera: "Glasses camera: hands"
 
         case .menuPicture: "Picture"
         case .menuTogglePicture: "Hide / show the picture   ⌃⌥H"

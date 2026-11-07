@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var snapNeighbor: Int?
     private let meditationAudio = MeditationAudio()
     private var cameraDebugWindow: CameraDebugWindow?
+    private var handCamera: HandCamera?
+    private var handWindow: HandPreviewWindow?
+    private var lastHandsLog: TimeInterval = 0
     private static let debugObserver = "camera-debug-window"
     private static let outlineObserver = "glasses-outline-window"
     private var cameraCalibrationWindow: CameraCalibrationWindow?
@@ -191,6 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshStatus() }
+
+        if UserDefaults.standard.bool(forKey: "handsCameraAutoStart") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.toggleHandsCamera(NSMenuItem())
+            }
+        }
     }
 
     /// Открывает окно панелей. Если экран очков пропал на время смены режима дисплея, попытка
@@ -505,6 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         viture?.stop()
         viture = nil
+        handCamera?.stop()
+        handCamera = nil
         calibrationFile?.closeFile()
         calibrationFile = nil
         frameLink?.invalidate()
@@ -1229,6 +1240,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cameraHead.worldYawChanged(by: -yaw)
             if glassesTracking { cameraHead.resetReference(after: 0.3) }
         }
+    }
+
+    @objc private func toggleHandsCamera(_ sender: NSMenuItem) {
+        if handCamera != nil {
+            handCamera?.stop()
+            handCamera = nil
+            handWindow?.orderOut(nil)
+            sender.state = .off
+            log("hands camera off")
+            return
+        }
+        let camera = HandCamera()
+        camera.onFrame = { [weak self] frame in
+            guard let self else { return }
+            if handWindow == nil {
+                handWindow = HandPreviewWindow()
+            }
+            if handWindow?.isVisible != true {
+                handWindow?.orderFront(nil)
+            }
+            handWindow?.update(frame: frame, framesPerSecond: handCamera?.framesPerSecond ?? 0)
+            let now = CACurrentMediaTime()
+            if now - lastHandsLog > 5 {
+                lastHandsLog = now
+                log(String(format: "hands: %.1f к/с · рук %d · кадр %d×%d", handCamera?.framesPerSecond ?? 0,
+                           frame.hands.count, frame.width, frame.height))
+            }
+        }
+        do {
+            try camera.start()
+        } catch {
+            log("hands camera: \(error.localizedDescription)")
+            return
+        }
+        handCamera = camera
+        sender.state = .on
+        log("hands camera on: \(camera.deviceName)")
     }
 
     @MainActor @objc private func startCameraCalibration() {
@@ -2013,6 +2061,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
             debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
             camera.addItem(debugItem)
+            let handsItem = menuItem(t(.menuHandsCamera), #selector(toggleHandsCamera(_:)))
+            handsItem.state = handWindow?.isVisible == true ? .on : .off
+            camera.addItem(handsItem)
         })
         menu.addItem(submenu(t(.menuPicture)) { picture in
             picture.autoenablesItems = false
