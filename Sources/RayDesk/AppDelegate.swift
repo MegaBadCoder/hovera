@@ -494,6 +494,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        imu.acceleration.x, imu.acceleration.y, imu.acceleration.z,
                        imu.angularVelocity.x, imu.angularVelocity.y, imu.angularVelocity.z, imu.time))
         }
+        let bias = viture.gyroBias * 180 / .pi
+        log(String(format: "VITURE fusion: ноль ω %+.2f %+.2f %+.2f °/с", bias.x, bias.y, bias.z))
         if let drift = viture.driftPerMinute {
             log(String(format: "VITURE увод мира за %.0f с покоя: yaw %+.2f · pitch %+.2f · roll %+.2f °/мин",
                        viture.driftSpan, drift.yaw, drift.pitch, drift.roll))

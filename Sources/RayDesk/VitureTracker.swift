@@ -169,6 +169,11 @@ final class VitureTracker {
         driftMeter.measuredSpan
     }
 
+    /// Выученный ноль гироскопа, рад/с.
+    var gyroBias: SIMD3<Double> {
+        fusion.gyroBias
+    }
+
     /// Крен ориентации в радианах.
     private static func roll(of orientation: simd_quatd) -> Double {
         atan2(2 * (orientation.real * orientation.imag.z + orientation.imag.x * orientation.imag.y),
