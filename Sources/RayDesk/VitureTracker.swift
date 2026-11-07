@@ -201,9 +201,19 @@ final class VitureTracker {
     @discardableResult
     func recenter() -> Bool {
         guard let current = pose(predictTime: 0) else { return false }
+        return resetOrigin(to: current)
+    }
+
+    /// Переносит опору мира в заданную позу.
+    ///
+    /// Наклон к гравитации SDK не трогает: горизонт после этого остаётся верным.
+    ///
+    /// - Parameter pose: поза, которая станет началом координат.
+    @discardableResult
+    func resetOrigin(to pose: ViturePose) -> Bool {
         fusion.reset()
         gyroStillSince = nil
-        return device.resetOrigin(to: current)
+        return device.resetOrigin(to: pose)
     }
 
     /// Останавливает трекинг. Повторный запуск требует нового трекера.

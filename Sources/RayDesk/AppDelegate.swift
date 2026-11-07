@@ -470,6 +470,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startVitureTracking()
     }
 
+    /// Ставит начало координат VITURE так, чтобы центр раскладки был прямо перед взглядом.
+    ///
+    /// Экранные позы при этом не меняются: поворот живёт в опоре трекинга, поэтому
+    /// сохранённые углы раскладки не копят сдвиг от запуска к запуску.
+    private func alignVitureOrigin() {
+        guard let viture, let pose = viture.pose(predictTime: 0) else { return }
+        let headYaw = pose.orientation.yawPitch.yaw
+        let delta = scene.centerYaw - headYaw
+        viture.resetOrigin(to: pose.rotatedYaw(by: delta))
+        log(String(format: "VITURE: опора развёрнута на %.0f°, чтобы раскладка была перед взглядом", delta * 180 / .pi))
+    }
+
     /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
     private func installViturePose() {
         renderer?.externalPose = { [weak self] presentTime in
@@ -1215,10 +1227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let delta = remainder(center - head.yawPitch.yaw, 2 * .pi)
         guard abs(delta) > 2 * .pi / 180 else { return }
         if renderer?.externalPose != nil {
-            scene.rotateWorld(by: -delta)
-            saveScene()
-            log(String(format: "startup alignment (VITURE): scene center %.0f°, head %.0f°, scene turned %.0f°",
-                       center * 180 / .pi, head.yawPitch.yaw * 180 / .pi, -delta * 180 / .pi))
+            alignVitureOrigin()
+            log(String(format: "startup alignment (VITURE): scene center %.0f°, head %.0f°",
+                       center * 180 / .pi, head.yawPitch.yaw * 180 / .pi))
             return
         }
         filter.rotateWorldYaw(by: delta)
@@ -1235,9 +1246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let viture {
             let ok = viture.recenter()
             if ok {
-                let delta = remainder(head.yawPitch.yaw - scene.centerYaw, 2 * .pi)
-                scene.rotateWorld(by: delta)
-                saveScene()
+                alignVitureOrigin()
             }
             log("VITURE: recenter \(ok ? "выполнен" : "не удался"), раскладка выровнена по взгляду")
             return
@@ -1728,6 +1737,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func turnAll(by angle: Double) {
+        scene.rotateWorld(by: angle)
+        saveScene()
+        log(String(format: "layout pan %.0f°", scene.centerYaw * 180 / .pi))
+    }
+
     @objc private func turnLeft() {
         turnTargetScreen(by: turnStep)
     }
@@ -1915,6 +1930,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             moveMode ? farther() : tiltForward()
         }
+        hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.turnAll(by: self?.turnStep ?? 0) }
+        hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.turnAll(by: -(self?.turnStep ?? 0)) }
         hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnLeft() }
         hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnRight() }
         hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllBack() }

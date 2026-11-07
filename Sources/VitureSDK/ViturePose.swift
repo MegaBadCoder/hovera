@@ -36,6 +36,19 @@ public struct ViturePose: Equatable, Sendable {
                   isStable: isStable)
     }
 
+    /// Поворачивает ориентацию вокруг мировой вертикали.
+    ///
+    /// Нужен, чтобы поставить начало координат трекинга так, чтобы центр раскладки
+    /// экранов оказался прямо перед текущим взглядом.
+    ///
+    /// - Parameter angle: угол, радианы, плюс — влево.
+    /// - Returns: поза с повёрнутой ориентацией; положение и метка времени не меняются.
+    public func rotatedYaw(by angle: Double) -> ViturePose {
+        var copy = self
+        copy.orientation = simd_normalize(simd_quatd(angle: angle, axis: SIMD3(0, 1, 0)) * orientation)
+        return copy
+    }
+
     /// Поза в виде массива для `xr_device_provider_reset_origin_carina`.
     public var floats: [Float] {
         [Float(position.x), Float(position.y), Float(position.z),

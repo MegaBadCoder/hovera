@@ -65,3 +65,11 @@ import simd
     #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory))
     #expect(isDirectory.boolValue)
 }
+
+@Test func rotatingYawTurnsTheHeadingAndKeepsPosition() {
+    let pose = ViturePose(position: SIMD3(1, 2, 3), orientation: simd_quatd(ix: 0, iy: 0, iz: 0, r: 1), timestamp: 5, isStable: true)
+    let turned = pose.rotatedYaw(by: .pi / 2)
+    #expect(abs(turned.orientation.yawPitch.yaw - .pi / 2) < 1e-6)
+    #expect(turned.position == pose.position)
+    #expect(turned.timestamp == pose.timestamp)
+}
