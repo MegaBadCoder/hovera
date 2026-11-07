@@ -33,6 +33,7 @@ final class VitureTracker {
     private var stopped = false
     private var predictFailures = 0
     private var driftMeter = PoseDriftMeter()
+    private var fusion = VitureOrientationFusion()
     private var previousForRate: (time: Double, orientation: simd_quatd)?
 
     private let imuLock = NSLock()
@@ -81,13 +82,13 @@ final class VitureTracker {
         guard device.initialize(cacheDirectory: VitureLibrary.defaultCacheDirectory()) else {
             throw StartError.startupFailed("initialize", code: -1)
         }
-        guard device.start() else {
-            throw StartError.startupFailed("start", code: -1)
-        }
         let tracker = VitureTracker(library: library, device: device, productID: productID, productName: productName)
         device.registerCallbacks(imu: { acceleration, angularVelocity, time in
             tracker.store(imu: acceleration, angularVelocity: angularVelocity, time: time)
         })
+        guard device.start() else {
+            throw StartError.startupFailed("start", code: -1)
+        }
         return tracker
     }
 
@@ -105,22 +106,43 @@ final class VitureTracker {
             pose = device.pose(predictTime: 0)
         }
         guard let pose else { return lastPose }
-        lastPose = pose
         let now = ProcessInfo.processInfo.systemUptime
+        let gyro = latestIMU.map { radiansPerSecond($0.angularVelocity) }
+        let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro,
+                                  time: now, predictAhead: predictTime)
+        var result = pose
+        if let fused {
+            result.orientation = fused
+        }
+        if !pose.isStable, let previous = lastPose {
+            result.position = previous.position
+        }
+        lastPose = result
         lastPoseTime = now
+        let fusedPose = result
         let previous = previousForRate
-        previousForRate = (now, pose.orientation)
+        previousForRate = (now, fusedPose.orientation)
         if let previous {
             let dt = now - previous.time
             if dt > 1e-6, dt < 0.5 {
-                let delta = 2 * acos(min(1, abs(simd_dot(pose.orientation.vector, previous.orientation.vector))))
-                let yawPitch = pose.orientation.yawPitch
-                let roll = Self.roll(of: pose.orientation)
+                let delta = 2 * acos(min(1, abs(simd_dot(fusedPose.orientation.vector, previous.orientation.vector))))
+                let yawPitch = fusedPose.orientation.yawPitch
+                let roll = Self.roll(of: fusedPose.orientation)
                 driftMeter.add(time: now, yaw: yawPitch.yaw * 180 / .pi, pitch: yawPitch.pitch * 180 / .pi,
                                roll: roll * 180 / .pi, angularSpeed: delta / dt)
             }
         }
         return pose
+    }
+
+    /// Переводит угловую скорость SDK в радианы в секунду.
+    ///
+    /// Единицы IMU-колбэка в документации не заданы (UK1): если значения приходят
+    /// в градусах, они выходят за разумный диапазон радиан и пересчитываются.
+    private func radiansPerSecond(_ values: SIMD3<Double>) -> SIMD3<Double> {
+        let magnitude = length(values)
+        guard magnitude.isFinite, magnitude > 0.001 else { return values }
+        return magnitude > 20 ? values * .pi / 180 : values
     }
 
     private func store(imu acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double) {
@@ -166,6 +188,7 @@ final class VitureTracker {
     @discardableResult
     func recenter() -> Bool {
         guard let current = pose(predictTime: 0) else { return false }
+        fusion.reset()
         return device.resetOrigin(to: current)
     }
 
