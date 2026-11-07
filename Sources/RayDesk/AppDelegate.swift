@@ -2160,7 +2160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(statusText + String(format: t(.statusDiagnostics), compass,
                                                                imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
         if let offset = renderer?.presentation.offset {
-            log(String(format: "DIAG кадр показан на %.1f мс позже заявленного времени", offset * 1000))
+            log(String(format: "DIAG кадр показан на %.1f мс позже заявленного · горизонт предсказания %.1f мс",
+                       offset * 1000, (renderer?.lastPredictionHorizon ?? 0) * 1000))
         }
         if let renderer, renderer.adaptivePrediction {
             log(String(format: "DIAG поправка предсказания %+.1f мс", renderer.headPipeline.predictionBias * 1000))

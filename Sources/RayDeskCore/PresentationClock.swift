@@ -10,6 +10,9 @@ import Foundation
 /// Измерения приходят с фонового потока Metal, поэтому класс потокобезопасен.
 public final class PresentationClock: @unchecked Sendable {
     /// Наибольшая поправка, которая принимается в расчёт, секунды.
+    ///
+    /// Задержка композитора на дисплее очков доходит до 30 мс и больше; меньший
+    /// потолок просто скрывал реальное значение от предсказания.
     public let maxOffset: Double
     /// Доля нового измерения в сглаженной поправке.
     public let smoothing: Double
@@ -20,7 +23,7 @@ public final class PresentationClock: @unchecked Sendable {
     /// - Parameters:
     ///   - maxOffset: потолок поправки, секунды.
     ///   - smoothing: доля нового измерения в сглаженной поправке, 0…1.
-    public init(maxOffset: Double = 0.030, smoothing: Double = 0.1) {
+    public init(maxOffset: Double = 0.060, smoothing: Double = 0.1) {
         self.maxOffset = maxOffset
         self.smoothing = smoothing
     }

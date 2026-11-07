@@ -58,6 +58,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     var externalPose: ((Double) -> (orientation: simd_quatd, position: SIMD3<Double>)?)?
     /// `true`, если последний кадр нарисован по внешней ориентации, а не по фильтру.
     private(set) var usedExternalOrientation = false
+    /// Горизонт предсказания последнего кадра, секунды.
+    private(set) var lastPredictionHorizon = 0.0
     /// Подстраивать ли горизонт предсказания по фактической ошибке прошлых кадров.
     var adaptivePrediction = false
     private var tuner = PredictionTuner()
@@ -225,6 +227,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             if adaptivePrediction {
                 evaluatePendingPrediction()
             }
+            lastPredictionHorizon = headPipeline.predictionHorizon(at: presentTime)
             head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
             rememberPrediction(for: presentTime)
         }
