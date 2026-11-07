@@ -41,6 +41,12 @@ final class VitureTracker {
     private let pollQueue = DispatchQueue(label: "raydesk.viture.poll", qos: .userInteractive)
     private var connected = true
     private var lastConnectionCheck: Double = 0
+    /// Держать ориентацию гироскопом между устойчивыми позами VIO.
+    ///
+    /// По умолчанию выключено: поза VIO и так быстрая и без дрожи, а гироскоп
+    /// добавляет свой ноль и может кренить мир при неверных осях IMU. Включается
+    /// флагом `vitureGyroFusion`, когда VIO теряет устойчивость в темноте.
+    private var usesFusion = UserDefaults.standard.bool(forKey: "vitureGyroFusion")
 
     private let imuLock = NSLock()
     private var imuSample: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)?
@@ -152,9 +158,13 @@ final class VitureTracker {
         lock.lock()
         let stillForBias = gyroStillSince.map { now - $0 > 2 } ?? false
         lock.unlock()
-        let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro, time: now, still: stillForBias)
         var result = pose
-        if let fused { result.orientation = fused }
+        if usesFusion {
+            let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro, time: now, still: stillForBias)
+            if let fused { result.orientation = fused }
+        } else {
+            fusion.update(pose: nil, stable: false, gyro: gyro, time: now, still: stillForBias)
+        }
         lock.lock()
         if !pose.isStable, let previous = lastPose {
             result.position = previous.position
