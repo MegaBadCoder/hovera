@@ -459,6 +459,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    pose.isStable ? "стабильна" : "нестабильна",
                    renderer?.usedExternalOrientation == true ? "да" : "нет",
                    viture.predictionFailureCount))
+        if let imu = viture.latestIMU {
+            log(String(format: "VITURE imu: a %+.2f %+.2f %+.2f · ω %+.3f %+.3f %+.3f · %.3f с",
+                       imu.acceleration.x, imu.acceleration.y, imu.acceleration.z,
+                       imu.angularVelocity.x, imu.angularVelocity.y, imu.angularVelocity.z, imu.time))
+        }
+        if let drift = viture.driftPerMinute {
+            log(String(format: "VITURE увод мира за %.0f с покоя: yaw %+.2f · pitch %+.2f · roll %+.2f °/мин",
+                       viture.driftSpan, drift.yaw, drift.pitch, drift.roll))
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

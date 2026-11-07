@@ -32,6 +32,18 @@ final class VitureTracker {
     private var lastPoseTime: Double = 0
     private var stopped = false
     private var predictFailures = 0
+    private var driftMeter = PoseDriftMeter()
+    private var previousForRate: (time: Double, orientation: simd_quatd)?
+
+    private let imuLock = NSLock()
+    private var imuSample: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)?
+
+    /// Последний сырой IMU-отсчёт: ускорение и угловая скорость, как их отдал SDK.
+    var latestIMU: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)? {
+        imuLock.lock()
+        defer { imuLock.unlock() }
+        return imuSample
+    }
 
     private init(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?) {
         self.library = library
@@ -72,7 +84,11 @@ final class VitureTracker {
         guard device.start() else {
             throw StartError.startupFailed("start", code: -1)
         }
-        return VitureTracker(library: library, device: device, productID: productID, productName: productName)
+        let tracker = VitureTracker(library: library, device: device, productID: productID, productName: productName)
+        device.registerCallbacks(imu: { acceleration, angularVelocity, time in
+            tracker.store(imu: acceleration, angularVelocity: angularVelocity, time: time)
+        })
+        return tracker
     }
 
     /// Текущая поза очков.
@@ -90,8 +106,43 @@ final class VitureTracker {
         }
         guard let pose else { return lastPose }
         lastPose = pose
-        lastPoseTime = ProcessInfo.processInfo.systemUptime
+        let now = ProcessInfo.processInfo.systemUptime
+        lastPoseTime = now
+        let previous = previousForRate
+        previousForRate = (now, pose.orientation)
+        if let previous {
+            let dt = now - previous.time
+            if dt > 1e-6, dt < 0.5 {
+                let delta = 2 * acos(min(1, abs(simd_dot(pose.orientation.vector, previous.orientation.vector))))
+                let yawPitch = pose.orientation.yawPitch
+                let roll = Self.roll(of: pose.orientation)
+                driftMeter.add(time: now, yaw: yawPitch.yaw * 180 / .pi, pitch: yawPitch.pitch * 180 / .pi,
+                               roll: roll * 180 / .pi, angularSpeed: delta / dt)
+            }
+        }
         return pose
+    }
+
+    private func store(imu acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double) {
+        imuLock.lock()
+        imuSample = (acceleration, angularVelocity, time)
+        imuLock.unlock()
+    }
+
+    /// Увод мира на неподвижной голове, градусы в минуту по осям; `nil`, пока окно не набрано.
+    var driftPerMinute: (yaw: Double, pitch: Double, roll: Double)? {
+        driftMeter.driftPerMinute
+    }
+
+    /// Длительность окна измерения увода, секунды.
+    var driftSpan: Double {
+        driftMeter.measuredSpan
+    }
+
+    /// Крен ориентации в радианах.
+    private static func roll(of orientation: simd_quatd) -> Double {
+        atan2(2 * (orientation.real * orientation.imag.z + orientation.imag.x * orientation.imag.y),
+              1 - 2 * (orientation.imag.y * orientation.imag.y + orientation.imag.z * orientation.imag.z))
     }
 
     /// Сколько раз SDK не отдал позу с предсказанием и пришлось брать текущую.
