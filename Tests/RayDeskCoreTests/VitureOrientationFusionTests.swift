@@ -60,3 +60,18 @@ private let yawAxis = SIMD3<Double>(0, 1, 0)
     }
     #expect(abs(fusion.gyroBias.y - 0.02) < 0.004)
 }
+
+@Test func poseCorrectionsAreIgnoredWhileTheHeadIsMovingFast() {
+    var fusion = VitureOrientationFusion()
+    let start = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
+    _ = fusion.update(pose: start, stable: true, gyro: .zero, time: 0)
+    let drifted = simd_quatd(angle: 0.3, axis: yawAxis)
+    let rate = SIMD3<Double>(0, 2.0, 0)
+    var output = start
+    for step in 1...60 {
+        output = fusion.update(pose: drifted, stable: true, gyro: rate, time: Double(step) / 120) ?? output
+    }
+    let yaw = output.yawPitch.yaw
+    #expect(yaw > 0.5)
+    #expect(abs(yaw - 0.3) > 0.1)
+}

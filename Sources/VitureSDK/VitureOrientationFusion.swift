@@ -10,7 +10,9 @@ import simd
 /// устойчивая поза VIO медленно подтягивает её к себе.
 public struct VitureOrientationFusion: Sendable {
     /// Постоянная времени подтягивания к устойчивой позе VIO, секунды.
-    public var poseTimeConstant = 0.5
+    public var poseTimeConstant = 1.5
+    /// Выше этой угловой скорости поза VIO не подмешивается: на ходу она отстаёт и дрожит.
+    public var correctionSpeed = 10 * Double.pi / 180
     /// Ниже этой угловой скорости гироскоп считается стоящим и уточняется его ноль, рад/с.
     public var biasLearnSpeed = 0.05
     /// Постоянная времени обучения нуля гироскопа, секунды.
@@ -52,7 +54,8 @@ public struct VitureOrientationFusion: Sendable {
             if orientation == nil {
                 orientation = pose
             } else if stable {
-                if let current = orientation {
+                let slowEnough = gyro.map { length($0) <= correctionSpeed } ?? true
+                if slowEnough, let current = orientation {
                     let angle = 2 * acos(min(1, abs(simd_dot(current.vector, pose.vector))))
                     if angle > snapAngle {
                         orientation = pose
