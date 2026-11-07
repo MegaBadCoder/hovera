@@ -123,6 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// перечисляет его с задержкой. Поэтому запуск ждёт экран, а не завершается с первого взгляда.
     private static let glassesWaitStep = 0.5
     private static let glassesWaitAttempts = 20
+    /// Сколько ждать экран очков до первой жалобы в лог; дальше ждём молча.
+    private static let glassesWaitLogEvery = 20
 
     private func waitForGlasses(attempt: Int) {
         if glassesScreen()?.displayID != nil {
@@ -130,13 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             start()
             return
         }
-        guard attempt < Self.glassesWaitAttempts else {
-            fail(t(.alertGlassesMissing))
-            NSApp.terminate(nil)
-            return
-        }
         if attempt == 0 {
-            log("glasses screen missing: waiting up to \(Double(Self.glassesWaitAttempts) * Self.glassesWaitStep) s")
+            log("glasses screen missing: waiting for it in the background")
+        }
+        if attempt > 0, attempt % Self.glassesWaitLogEvery == 0 {
+            log("glasses screen still missing after \(Int(Double(attempt) * Self.glassesWaitStep)) s, still waiting")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.glassesWaitStep) { [weak self] in
             self?.waitForGlasses(attempt: attempt + 1)
@@ -195,11 +195,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshStatus() }
 
-        if UserDefaults.standard.bool(forKey: "handsCameraAutoStart") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.toggleHandsCamera(NSMenuItem())
-            }
-        }
     }
 
     /// Открывает окно панелей. Если экран очков пропал на время смены режима дисплея, попытка
