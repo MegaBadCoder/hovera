@@ -227,3 +227,19 @@ private let degree = Double.pi / 180
     scene.grabCentered(0, head: yawPitchQuat(yaw: 0, pitch: 89 * degree))
     #expect(scene.screens[0].pitch <= 80 * degree + 1e-9)
 }
+
+@Test func rotateWorldTurnsEveryScreenAndGrabOffset() {
+    var scene = SpatialScene(screens: [
+        ScreenPose(yaw: 0.2, pitch: 0, distance: 1.5, width: 1, aspect: 16.0 / 9.0),
+        ScreenPose(yaw: -0.2, pitch: 0, distance: 1.5, width: 1, aspect: 16.0 / 9.0),
+    ])
+    let before = scene.centerYaw
+    scene.rotateWorld(by: 0.3)
+    #expect(abs(remainder(scene.centerYaw - before - 0.3, 2 * .pi)) < 1e-9)
+}
+
+@Test func rotateWorldWrapsAcrossTheCircle() {
+    var scene = SpatialScene(screens: [ScreenPose(yaw: 3.0, pitch: 0, distance: 1.5, width: 1, aspect: 16.0 / 9.0)])
+    scene.rotateWorld(by: 1.0)
+    #expect(scene.screens[0].yaw > -Double.pi && scene.screens[0].yaw <= Double.pi)
+}

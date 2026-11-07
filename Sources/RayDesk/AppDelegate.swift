@@ -1210,13 +1210,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func alignSceneOnStart(head: simd_quatd) {
         guard !didAlignSceneOnStart else { return }
         didAlignSceneOnStart = true
-        let angles = scene.screens.map(\.yaw)
-        guard !angles.isEmpty else { return }
-        let sumSin = angles.reduce(0) { $0 + sin($1) } / Double(angles.count)
-        let sumCos = angles.reduce(0) { $0 + cos($1) } / Double(angles.count)
-        let center = atan2(sumSin, sumCos)
+        guard !scene.screens.isEmpty else { return }
+        let center = scene.centerYaw
         let delta = remainder(center - head.yawPitch.yaw, 2 * .pi)
         guard abs(delta) > 2 * .pi / 180 else { return }
+        if renderer?.externalPose != nil {
+            scene.rotateWorld(by: -delta)
+            saveScene()
+            log(String(format: "startup alignment (VITURE): scene center %.0f°, head %.0f°, scene turned %.0f°",
+                       center * 180 / .pi, head.yawPitch.yaw * 180 / .pi, -delta * 180 / .pi))
+            return
+        }
         filter.rotateWorldYaw(by: delta)
         if renderer?.headOffset != nil {
             cameraHead.worldYawChanged(by: delta)
@@ -1229,7 +1233,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func recenterToGaze() {
         guard let renderer else { return }
         if let viture {
-            log("VITURE: recenter \(viture.recenter() ? "выполнен" : "не удался")")
+            let ok = viture.recenter()
+            if ok {
+                let delta = remainder(head.yawPitch.yaw - scene.centerYaw, 2 * .pi)
+                scene.rotateWorld(by: delta)
+                saveScene()
+            }
+            log("VITURE: recenter \(ok ? "выполнен" : "не удался"), раскладка выровнена по взгляду")
             return
         }
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw

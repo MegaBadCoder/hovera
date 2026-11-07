@@ -238,6 +238,27 @@ public final class SpatialScene {
         screens[index].width = min(maxWidth, max(minWidth, screens[index].width * factor))
     }
 
+    /// Поворачивает всю раскладку вокруг вертикали.
+    ///
+    /// Нужен, когда мир нельзя повернуть фильтром: на VITURE ориентацию задаёт VIO
+    /// очков, и поворот фильтра на картинку не влияет — двигать надо сами экраны.
+    ///
+    /// - Parameter angle: угол, радианы, плюс — влево.
+    public func rotateWorld(by angle: Double) {
+        for index in screens.indices {
+            screens[index].yaw = wrap(screens[index].yaw + angle)
+        }
+        grabOffset.yaw = wrap(grabOffset.yaw + angle)
+    }
+
+    /// Средний курс раскладки — куда смотрит её центр.
+    public var centerYaw: Double {
+        guard !screens.isEmpty else { return 0 }
+        let sumSin = screens.reduce(0.0) { $0 + sin($1.yaw) } / Double(screens.count)
+        let sumCos = screens.reduce(0.0) { $0 + cos($1.yaw) } / Double(screens.count)
+        return atan2(sumSin, sumCos)
+    }
+
     /// Сдвигает экран `index` на `yaw` влево и `pitch` вверх от его текущего направления.
     ///
     /// Захваченный экран сдвигается вместе со смещением захвата: без этого следующий `tick`

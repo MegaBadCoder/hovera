@@ -102,20 +102,16 @@ final class HandCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         defer { device.unlockForConfiguration() }
         let target = 30.0
         let formats = device.formats.filter { format in
-            format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= target }
+            format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= target && $0.maxFrameRate >= target }
         }
         if let format = formats.first(where: { $0.formatDescription.dimensions.width == 1920 }) ?? formats.first {
             device.activeFormat = format
         }
-        let duration = CMTime(value: 1, timescale: CMTimeScale(target))
-        if device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= target }) {
-            device.activeVideoMinFrameDuration = duration
-            device.activeVideoMaxFrameDuration = duration
-        }
         if device.isExposureModeSupported(.continuousAutoExposure) {
             device.exposureMode = .continuousAutoExposure
         }
-        log("hands camera format: \(device.activeFormat.formatDescription.dimensions.width)×\(device.activeFormat.formatDescription.dimensions.height) @\(target) к/с")
+        let dimensions = device.activeFormat.formatDescription.dimensions
+        log("hands camera format: \(dimensions.width)×\(dimensions.height)")
     }
 
     /// Останавливает поток.
