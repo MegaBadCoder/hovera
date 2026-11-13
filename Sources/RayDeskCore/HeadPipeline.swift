@@ -1,8 +1,8 @@
 import Foundation
 import simd
 
-/// Путь от фильтра до ориентации, по которой рисуется кадр: предсказание, ручная
-/// поправка сетки и стабилизация. Один и тот же путь используют отрисовка и замеры.
+/// Предсказание и калибровка ориентации для отрисовки и замеров.
+/// Закреплённый режим сохраняет реальные повороты; остальные методы допускают сглаживание.
 public final class HeadPipeline {
     public let filter: OrientationFilter
     public var calibration = ViewCalibration()
@@ -22,6 +22,16 @@ public final class HeadPipeline {
 
     public init(filter: OrientationFilter) {
         self.filter = filter
+    }
+
+    /// Предсказывает поворот к моменту показа без сглаживания реального движения головы.
+    /// - Parameter presentTime: время показа в шкале `ProcessInfo.systemUptime`, секунды.
+    /// - Returns: откалиброванная ориентация голова→мир, горизонт в секундах и скорость по осям головы в рад/с.
+    public func worldLockedSample(at presentTime: Double)
+        -> (orientation: simd_quatd, horizon: Double, angularVelocity: SIMD3<Double>) {
+        let sample = filter.prediction(at: presentTime, bias: predictionBias,
+                                       limit: maxPrediction, fallback: predictionSeconds)
+        return (calibration.apply(to: sample.orientation), sample.horizon, sample.angularVelocity)
     }
 
     /// Ориентация голова→мир для кадра, который будет показан в `presentTime`.
@@ -47,13 +57,13 @@ public final class HeadPipeline {
 
     /// Стабилизирует внешнюю ориентацию (VITURE) тем же фильтром, что и свой трекинг.
     ///
-    /// Калибровка сетки и предсказание не применяются: поза уже посчитана SDK ко времени показа.
+    /// Применяет ручную поправку вида. Дополнительного предсказания нет: его выполняет внешний трекер.
     ///
     /// - Parameters:
     ///   - orientation: ориентация от внешнего трекера.
     ///   - dt: время с прошлого кадра, секунды.
     public func stabilizedExternal(_ orientation: simd_quatd, dt: Double) -> simd_quatd {
-        stabilizer.filter(orientation, dt: dt)
+        stabilizer.filter(calibration.apply(to: orientation), dt: dt)
     }
 
     /// Насколько вперёд предсказывать ориентацию для кадра в `presentTime`, секунды.

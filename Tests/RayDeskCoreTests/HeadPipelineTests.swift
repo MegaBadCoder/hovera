@@ -89,3 +89,28 @@ private func filterWithSample(at time: Double, yawRate: Double = 0) -> Orientati
     let angle = 2 * acos(min(1, abs(output.real)))
     #expect(angle < 0.001)
 }
+
+@Test func externalOrientationAppliesManualSceneAngles() {
+    let pipeline = HeadPipeline(filter: OrientationFilter())
+    pipeline.stabilizer = OrientationStabilizer(level: .off)
+    pipeline.calibration = ViewCalibration(yaw: 0.2, pitch: -0.1, roll: 0.05)
+    let external = yawPitchQuat(yaw: 0.5, pitch: 0.3)
+    let output = pipeline.stabilizedExternal(external, dt: 1.0 / 120)
+    let expected = pipeline.calibration.apply(to: external)
+    #expect(abs(simd_dot(output.vector, expected.vector)) > 1 - 1e-10)
+}
+
+@Test func worldLockedSampleUsesOneTimestampAndAppliesCalibrationOnce() {
+    let filter = filterWithSample(at: 100, yawRate: 0.7)
+    let pipeline = HeadPipeline(filter: filter)
+    pipeline.predictionBias = 0.003
+    pipeline.calibration = ViewCalibration(yaw: 0.2, pitch: -0.1, roll: 0.05)
+    pipeline.stabilizer.level = .strong
+    let sample = pipeline.worldLockedSample(at: 100.012)
+    let expected = pipeline.calibration.apply(to: filter.orientation(predictAhead: 0.015))
+    #expect(abs(sample.horizon - 0.015) < 1e-9)
+    #expect(abs(simd_dot(sample.orientation.vector, expected.vector)) > 1 - 1e-10)
+    #expect(sample.angularVelocity == filter.angularVelocity)
+    #expect(pipeline.worldLockedSample(at: 101).horizon == pipeline.maxPrediction)
+    #expect(pipeline.worldLockedSample(at: 99).horizon == 0)
+}

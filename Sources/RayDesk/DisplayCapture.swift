@@ -69,6 +69,10 @@ final class DisplayCapture: NSObject, SCStreamOutput, SCStreamDelegate {
               SCFrameStatus(rawValue: rawStatus) == .complete,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else { return }
+        publish(pixelBuffer)
+    }
+
+    func publish(_ pixelBuffer: CVPixelBuffer) {
         lock.lock()
         latest = pixelBuffer
         generation &+= 1

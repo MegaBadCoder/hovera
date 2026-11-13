@@ -32,11 +32,21 @@ public struct OrientationStabilizer {
     public static let speedCutoff = 1.0
     /// Рывок ориентации, после которого сглаживание начинается заново, радианы.
     public static let snapAngle = 10 * Double.pi / 180
+    /// Максимальное угловое отклонение сглаженной позы в закреплённом режиме, радианы.
+    public static let worldLockMaximumDeviation = 0.08 * Double.pi / 180
+
+    /// Фильтр микроколебаний со срезом от 0,15 Гц и отклонением от входной ориентации не больше 0,08°.
+    public static var worldLocked: Self {
+        var filter = Self(level: .medium)
+        filter.maximumDeviation = worldLockMaximumDeviation
+        return filter
+    }
 
     public var level: StabilizationLevel
     private var filtered: simd_quatd?
     private var previous: simd_quatd?
     private var speed = 0.0
+    private var maximumDeviation: Double?
 
     public init(level: StabilizationLevel) {
         self.level = level
@@ -59,7 +69,13 @@ public struct OrientationStabilizer {
         let rawSpeed = angle(between: previous, and: orientation) / dt
         speed += (rawSpeed - speed) * smoothing(cutoff: OrientationStabilizer.speedCutoff, dt: dt)
         let cutoff = level.minCutoff + level.speedGain * speed
-        let result = simd_slerp(filtered, orientation, smoothing(cutoff: cutoff, dt: dt))
+        var result = simd_slerp(filtered, orientation, smoothing(cutoff: cutoff, dt: dt))
+        if let maximumDeviation {
+            let deviation = angle(between: result, and: orientation)
+            if deviation > maximumDeviation {
+                result = simd_slerp(orientation, result, maximumDeviation / deviation)
+            }
+        }
         self.filtered = result
         self.previous = orientation
         return result

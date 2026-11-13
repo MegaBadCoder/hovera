@@ -38,3 +38,15 @@ private let lookingDown = yawPitchQuat(yaw: 0, pitch: -35 * degree)
     let hit = try #require(cursorHit(head: yawPitchQuat(yaw: 0, pitch: 0), screens: [far, near]))
     #expect(hit.target == .virtual(1))
 }
+
+@Test func cursorUsesTranslatedHeadForPanelCoordinates() throws {
+    let hit = try #require(cursorHit(head: yawPitchQuat(yaw: 0, pitch: 0), screens: [panel], origin: SIMD3(0.25, 0, 0)))
+    #expect(hit.target == .virtual(0))
+    #expect(length(hit.uv - SIMD2(0.75, 0.5)) < 1e-6)
+}
+
+@Test func movingAwayFromALowPanelAllowsMacFallback() throws {
+    let low = ScreenPose(yaw: 0, pitch: -35 * degree, distance: 1.5, width: 1, aspect: 1)
+    let hit = try #require(cursorHit(head: lookingDown, screens: [low], origin: SIMD3(1, 0, 0)))
+    #expect(hit.target == .mac)
+}

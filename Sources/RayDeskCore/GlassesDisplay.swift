@@ -16,10 +16,10 @@ public enum GlassesDisplayFamily: String, Sendable {
         }
     }
 
-    /// Частота панели, к которой стремимся: у VITURE Luma Ultra панель 120 Гц.
+    /// Предпочтительная частота панели, Гц; конкретный режим выбирается из доступных устройству.
     public var targetRefreshRate: Double {
         switch self {
-        case .rayNeo: 60
+        case .rayNeo: 120
         case .viture: 120
         }
     }
@@ -53,6 +53,24 @@ public func glassesDisplayFamily(forDisplayName name: String) -> GlassesDisplayF
     if lowered.contains("viture") { return .viture }
     if lowered.contains("rayneo") || lowered.contains("smartglasses") { return .rayNeo }
     return nil
+}
+
+/// Семейство очков, с которыми сейчас работает приложение.
+///
+/// VITURE важнее остальных признаков: его поза приходит в рендер и перекрывает
+/// ориентацию RayNeo-фильтра. HID-устройство RayNeo важнее имени дисплея: имя
+/// остаётся в системе при смене режима панели и после отключения очков.
+///
+/// - Parameters:
+///   - vitureConnected: в USB есть очки VITURE.
+///   - rayNeoConnected: открыто HID-устройство RayNeo.
+///   - displayName: `localizedName` дисплея очков, если он есть.
+/// - Returns: семейство либо `nil`, если очков не видно.
+public func activeGlassesFamily(vitureConnected: Bool, rayNeoConnected: Bool, displayName: String?) -> GlassesDisplayFamily? {
+    if vitureConnected { return .viture }
+    if rayNeoConnected { return .rayNeo }
+    guard let displayName else { return nil }
+    return glassesDisplayFamily(forDisplayName: displayName)
 }
 
 /// Выбирает режим дисплея очков, в котором картинка выводится без масштабирования.

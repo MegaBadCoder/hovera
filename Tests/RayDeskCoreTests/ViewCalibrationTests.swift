@@ -42,3 +42,10 @@ private let identity = simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
     let decoded = try JSONDecoder().decode(ViewCalibration.self, from: JSONEncoder().encode(calibration))
     #expect(decoded == calibration)
 }
+
+@Test func manualYawRotatesExternalPositionInTheSameWorldFrame() {
+    let calibration = ViewCalibration(yaw: .pi / 2, pitch: 0.1, roll: 0.2)
+    let position = calibration.apply(toPosition: SIMD3(1, 2, 0))
+    #expect(length(position - SIMD3(0, 2, -1)) < 1e-9)
+    #expect(ViewCalibration(pitch: 0.1, roll: 0.2).apply(toPosition: SIMD3(1, 2, 3)) == SIMD3(1, 2, 3))
+}

@@ -61,3 +61,12 @@ import Testing
     clock.observe(target: 1, presented: 1.006)
     #expect(abs((clock.offset ?? 0) - 0.006) < 1e-9)
 }
+
+@Test func unpresentedDrawableDoesNotEraseMeasuredDelay() throws {
+    let clock = PresentationClock()
+    clock.observe(target: 1, presented: 0)
+    #expect(clock.offset == nil)
+    clock.observe(target: 1, presented: 1.025)
+    for _ in 0..<50 { clock.observe(target: 2, presented: 0) }
+    #expect(abs(try #require(clock.offset) - 0.025) < 1e-9)
+}

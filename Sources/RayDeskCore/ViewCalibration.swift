@@ -16,6 +16,12 @@ public struct ViewCalibration: Codable, Equatable {
         self.roll = roll
     }
 
+    /// Переводит положение головы в мировую систему с поправкой курса; координаты в метрах.
+    /// Поправки наклона оптики не меняют положение головы.
+    public func apply(toPosition position: SIMD3<Double>) -> SIMD3<Double> {
+        simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0)).act(position)
+    }
+
     /// Применяет поправку к ориентации головы из фильтра.
     ///
     /// - Parameter head: ориентация голова→мир из `OrientationFilter`.

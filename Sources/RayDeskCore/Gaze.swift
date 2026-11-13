@@ -16,12 +16,13 @@ public struct GazeHit: Equatable {
 /// - Parameters:
 ///   - head: ориентация головы (взгляд — направление -Z в её системе координат).
 ///   - screens: позы экранов.
+///   - origin: положение головы в мировых координатах, метры; то же, что используется при отрисовке.
 /// - Returns: индекс ближайшего экрана и координаты попадания, либо `nil`, если взгляд не попадает ни в один экран.
-public func gazeHit(head: simd_quatd, screens: [ScreenPose]) -> GazeHit? {
+public func gazeHit(head: simd_quatd, screens: [ScreenPose], origin: SIMD3<Double> = .zero) -> GazeHit? {
     let direction = head.act(SIMD3(0, 0, -1))
     var best: (index: Int, t: Double, uv: SIMD2<Double>)?
     for (index, screen) in screens.enumerated() {
-        guard let hit = screen.intersect(rayDirection: direction) else { continue }
+        guard let hit = screen.intersect(rayDirection: direction, rayOrigin: origin) else { continue }
         if best == nil || hit.t < best!.t {
             best = (index, hit.t, hit.uv)
         }

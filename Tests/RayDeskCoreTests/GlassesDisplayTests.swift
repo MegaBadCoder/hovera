@@ -9,6 +9,22 @@ import Testing
     #expect(glassesDisplayFamily(forDisplayName: "Color LCD") == nil)
 }
 
+@Test func connectedVitureBeatsEverythingElse() {
+    #expect(activeGlassesFamily(vitureConnected: true, rayNeoConnected: true, displayName: "RayNeo Air 3s") == .viture)
+    #expect(activeGlassesFamily(vitureConnected: true, rayNeoConnected: false, displayName: nil) == .viture)
+}
+
+@Test func connectedRayNeoBeatsItsDisplayName() {
+    #expect(activeGlassesFamily(vitureConnected: false, rayNeoConnected: true, displayName: "Color LCD") == .rayNeo)
+}
+
+@Test func displayNameIsTheLastResort() {
+    #expect(activeGlassesFamily(vitureConnected: false, rayNeoConnected: false, displayName: "VITURE") == .viture)
+    #expect(activeGlassesFamily(vitureConnected: false, rayNeoConnected: false, displayName: "RayNeo Air 3s") == .rayNeo)
+    #expect(activeGlassesFamily(vitureConnected: false, rayNeoConnected: false, displayName: "Color LCD") == nil)
+    #expect(activeGlassesFamily(vitureConnected: false, rayNeoConnected: false, displayName: nil) == nil)
+}
+
 @Test func vitureUsesItsNativePanelMode() {
     let modes = [
         DisplayModeOption(pointWidth: 1920, pointHeight: 1200, pixelWidth: 1920, pixelHeight: 1200, refreshRate: 120),
@@ -44,10 +60,15 @@ import Testing
         DisplayModeOption(pointWidth: 1920, pointHeight: 1080, pixelWidth: 1920, pixelHeight: 1080, refreshRate: 120),
         DisplayModeOption(pointWidth: 1920, pointHeight: 1080, pixelWidth: 1920, pixelHeight: 1080, refreshRate: 60),
     ]
-    #expect(chooseGlassesDisplayMode(rayNeo, family: .rayNeo)?.refreshRate == 60)
+    #expect(chooseGlassesDisplayMode(rayNeo, family: .rayNeo)?.refreshRate == 120)
     let viture = [
         DisplayModeOption(pointWidth: 1920, pointHeight: 1200, pixelWidth: 1920, pixelHeight: 1200, refreshRate: 120),
         DisplayModeOption(pointWidth: 1920, pointHeight: 1200, pixelWidth: 1920, pixelHeight: 1200, refreshRate: 90),
     ]
     #expect(chooseGlassesDisplayMode(viture, family: .viture)?.refreshRate == 120)
+}
+
+@Test func rayNeoKeeps60HzWhen120HzIsUnavailable() {
+    let mode = DisplayModeOption(pointWidth: 1920, pointHeight: 1080, pixelWidth: 1920, pixelHeight: 1080, refreshRate: 60)
+    #expect(chooseGlassesDisplayMode([mode], family: .rayNeo) == mode)
 }

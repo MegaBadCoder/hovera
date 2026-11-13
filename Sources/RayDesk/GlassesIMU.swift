@@ -104,11 +104,13 @@ final class GlassesIMU {
     }
 
     private func handle(report: UnsafeMutablePointer<UInt8>, length: CFIndex) {
+        let receivedAt = ProcessInfo.processInfo.systemUptime
         guard let sample = decoder.decode(UnsafeBufferPointer(start: report, count: length)) else { return }
         temperature = sample.temperature
+        filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer,
+                      temperature: sample.temperature, dt: sample.dt, sampleTime: receivedAt)
         recorder?.record(sample)
         sampleSink?(sample)
-        filter.update(gyro: sample.gyro, accel: sample.accel, magnetometer: sample.magnetometer, temperature: sample.temperature, dt: sample.dt)
         counterLock.lock()
         samplesSinceLastRead += 1
         if let magnetometer = sample.magnetometer, compassFitter != nil {

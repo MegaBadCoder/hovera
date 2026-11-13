@@ -3,10 +3,6 @@ import simd
 import VitureSDK
 
 /// Трекер VITURE: держит дескриптор SDK, отдаёт позу и переносит опору.
-///
-/// В отличие от RayNeo, у VITURE поза считается на очках: VIO фьюзит стереокамеры
-/// с IMU и отдаёт готовые 6DoF с привязкой наклона к гравитации. Поэтому фильтр
-/// ориентации здесь не нужен, а дрейф курса отсутствует по определению.
 final class VitureTracker {
     /// Ошибки запуска трекера.
     enum StartError: Error {
@@ -25,11 +21,30 @@ final class VitureTracker {
     /// Строка продукта, если система её отдала.
     let productName: String?
 
+    private let clock: () -> Double
+    private let connectionCheck: () -> Bool
+    private let startedAt: Double
     private let library: VitureLibrary
     private let device: VitureDevice
+    let poseMode: ViturePoseMode
+    private let nativeToHost: (Double) -> Double
+    private var pendingCallback: (native: Double, host: Double)?
+    private var callbackScheduled = false
+    private var callbackReady = false
+    private var lastCallbackTimestamp = -Double.infinity
+    private var callbackNotBefore = -Double.infinity
+    private var callbackCount = 0
+    private var processedCallbackCount = 0
+    private var rejectedCallbackCount = 0
     private let lock = NSLock()
     private var lastPose: ViturePose?
-    private var lastPoseTime: Double = 0
+    private var lastSDKPosition: SIMD3<Double>?
+    private var lastPoseTime: Double?
+    private var lastOutputTime: Double = 0
+    private var positionGuard = ViturePositionGuard()
+    private var originalFilmMode: Float?
+    private var appliedFilmMode: Float?
+    private var filmControlUnavailable = false
     private var stopped = false
     private var predictFailures = 0
     private var driftMeter = PoseDriftMeter()
@@ -39,22 +54,41 @@ final class VitureTracker {
     private var previousForRate: (time: Double, orientation: simd_quatd)?
     private var pollTimer: DispatchSourceTimer?
     private let pollQueue = DispatchQueue(label: "raydesk.viture.poll", qos: .userInteractive)
+    private let serviceQueue = DispatchQueue(label: "raydesk.viture.connection", qos: .utility)
+    private let connectionLock = NSLock()
+    private var connectionTimer: DispatchSourceTimer?
     private var connected = true
     private var lastConnectionCheck: Double = 0
-    /// Держать ориентацию гироскопом между устойчивыми позами VIO.
+    private let settingsLock = NSLock()
+    private var _usesFusion = UserDefaults.standard.bool(forKey: "vitureGyroFusion")
+    private var _usesExtrapolation = UserDefaults.standard.object(forKey: "vitureExtrapolation") as? Bool ?? true
+
+    /// Продолжать поворот гироскопом до 250 мс после потери устойчивой позы VIO.
     ///
-    /// По умолчанию выключено: поза VIO и так быстрая и без дрожи, а гироскоп
-    /// добавляет свой ноль и может кренить мир при неверных осях IMU. Включается
-    /// флагом `vitureGyroFusion`, когда VIO теряет устойчивость в темноте.
-    private var usesFusion = UserDefaults.standard.bool(forKey: "vitureGyroFusion")
+    /// По умолчанию выключено. Устойчивая поза VIO всегда задаёт ориентацию напрямую.
+    var usesFusion: Bool {
+        get { settingsLock.withLock { _usesFusion } }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            settingsLock.withLock { _usesFusion = newValue }
+            fusion.reset()
+        }
+    }
+
     /// Предсказывать позу экстраполяцией гироскопа между отсчётами.
     ///
-    /// По умолчанию выключено: поза и так приходит 120 раз в секунду, а
-    /// экстраполяция с неверными осями или нулём гироскопа добавляет картинке
-    /// ложное движение. Включается флагом `vitureExtrapolation`.
-    private var usesExtrapolation = UserDefaults.standard.object(forKey: "vitureExtrapolation") as? Bool ?? true
+    /// Включено по умолчанию: между отсчётами VIO проходит больше времени, чем
+    /// между кадрами, и без предсказания картинка отстаёт. Переключается пунктом
+    /// меню «Очки VITURE» и флагом `vitureExtrapolation`.
+    var usesExtrapolation: Bool {
+        get { settingsLock.withLock { _usesExtrapolation } }
+        set { settingsLock.withLock { _usesExtrapolation = newValue } }
+    }
 
+    private let angularVelocityUnit = VitureIMU.AngularVelocityUnit(rawValue: UserDefaults.standard.string(forKey: "vitureIMUAngularUnit") ?? "radians") ?? .radians
     private let imuLock = NSLock()
+    private var imuArrivalTime = -Double.infinity
     private var imuSample: (acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double)?
 
     /// Последний сырой IMU-отсчёт: ускорение и угловая скорость, как их отдал SDK.
@@ -64,21 +98,28 @@ final class VitureTracker {
         return imuSample
     }
 
-    private init(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?) {
+    private init(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?,
+                 clock: @escaping () -> Double, connectionCheck: @escaping () -> Bool,
+                 poseMode: ViturePoseMode, nativeToHost: @escaping (Double) -> Double) {
+        self.clock = clock
+        self.connectionCheck = connectionCheck
+        startedAt = clock()
         self.library = library
         self.device = device
         self.productID = productID
         self.productName = productName
+        self.poseMode = poseMode
+        self.nativeToHost = nativeToHost
     }
 
     /// Ищет очки, загружает SDK и запускает трекинг.
     ///
-    /// - Returns: готовый трекер либо `nil`, если VITURE нет в системе или SDK не загрузился.
+    /// - Returns: готовый трекер либо `nil`, если Luma Ultra нет в системе.
     /// - Throws: `StartError`, если очки найдены, но SDK не смог их поднять.
     static func start(searchPaths: [String] = VitureLibrary.defaultSearchPaths(),
-                      library: VitureLibrary? = nil) throws -> VitureTracker? {
+                      library: VitureLibrary? = nil, poseMode: ViturePoseMode = .polling) throws -> VitureTracker? {
         let connected = VitureUSB.connectedDevices()
-        guard let found = connected.first else { return nil }
+        guard let found = connected.first(where: { $0.productID == 0x1104 }) else { return nil }
         let sdk: VitureLibrary
         if let library {
             sdk = library
@@ -93,23 +134,96 @@ final class VitureTracker {
         guard let device = sdk.createDevice(productID: found.productID) else {
             throw StartError.deviceNotCreated(productID: found.productID)
         }
-        return try start(library: sdk, device: device, productID: found.productID, productName: found.name)
+        return try start(library: sdk, device: device, productID: found.productID, productName: found.name, poseMode: poseMode)
     }
 
-    private static func start(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?) throws -> VitureTracker {
-        device.setSixDegreesOfFreedom(true)
-        guard device.initialize(cacheDirectory: VitureLibrary.defaultCacheDirectory()) else {
+    static func start(library: VitureLibrary, device: VitureDevice, productID: Int32, productName: String?,
+                      automaticallyPoll: Bool = true,
+                      clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+                      connectionCheck: (() -> Bool)? = nil, poseMode: ViturePoseMode = .polling,
+                      nativeToHost: @escaping (Double) -> Double = VitureNativeClock.hostTime) throws -> VitureTracker {
+        var ready = false
+        defer { if !ready { device.close() } }
+        guard device.kind == .carina, device.setSixDegreesOfFreedom(true) else {
+            throw StartError.startupFailed("setSixDegreesOfFreedom", code: -1)
+        }
+        guard device.initialize(config: poseMode.configuration, cacheDirectory: VitureLibrary.defaultCacheDirectory()) else {
             throw StartError.startupFailed("initialize", code: -1)
         }
-        let tracker = VitureTracker(library: library, device: device, productID: productID, productName: productName)
-        device.registerCallbacks(imu: { acceleration, angularVelocity, time in
-            tracker.store(imu: acceleration, angularVelocity: angularVelocity, time: time)
-        })
+        guard poseMode != .callback || device.supportsNativePose else {
+            throw StartError.sdkUnavailable("native GL pose API для callback недоступен")
+        }
+        let tracker = VitureTracker(library: library, device: device, productID: productID, productName: productName,
+                                    clock: clock, connectionCheck: connectionCheck ?? { VitureUSB.connectedDevices().contains { $0.productID == productID } },
+                                    poseMode: poseMode, nativeToHost: nativeToHost)
+        let poseClock: ((Double) -> Void)? = poseMode == .callback ? { [weak tracker] timestamp in
+            tracker?.receivePoseClock(timestamp)
+        } : nil
+        guard device.registerCallbacks(imu: { [weak tracker] acceleration, angularVelocity, time in
+            tracker?.store(imu: acceleration, angularVelocity: angularVelocity, time: time)
+        }, poseClock: poseClock) else {
+            throw StartError.startupFailed("registerCallbacks", code: -1)
+        }
         guard device.start() else {
             throw StartError.startupFailed("start", code: -1)
         }
-        tracker.startPolling()
+        ready = true
+        tracker.activateCallbackDelivery()
+        if automaticallyPoll { tracker.startPolling() }
         return tracker
+    }
+
+    private func activateCallbackDelivery() {
+        lock.lock()
+        defer { lock.unlock() }
+        callbackReady = true
+        guard pendingCallback != nil, !callbackScheduled else { return }
+        callbackScheduled = true
+        pollQueue.async { [weak self] in self?.consumePoseClock() }
+    }
+
+    private func receivePoseClock(_ timestamp: Double) {
+        let host = nativeToHost(timestamp)
+        let now = clock()
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return }
+        guard timestamp.isFinite, host.isFinite, timestamp > lastCallbackTimestamp,
+              host <= now + 0.005, host >= now - 0.25, host >= callbackNotBefore else {
+            rejectedCallbackCount += 1
+            return
+        }
+        lastCallbackTimestamp = timestamp
+        callbackCount += 1
+        pendingCallback = (timestamp, host)
+        guard callbackReady, !callbackScheduled else { return }
+        callbackScheduled = true
+        pollQueue.async { [weak self] in self?.consumePoseClock() }
+    }
+
+    private func consumePoseClock() {
+        let sample = lock.withLock { () -> (native: Double, host: Double)? in
+            guard !stopped else { pendingCallback = nil; callbackScheduled = false; return nil }
+            guard let sample = pendingCallback else { callbackScheduled = false; return nil }
+            pendingCallback = nil
+            return sample
+        }
+        guard let sample else { return }
+        let pose = device.nativePose(at: sample.native)
+        accept(pose, at: clock(), poseTime: sample.host)
+        lock.lock()
+        processedCallbackCount += 1
+        let again = !stopped && pendingCallback != nil
+        if !again { callbackScheduled = false }
+        lock.unlock()
+        if again { pollQueue.async { [weak self] in self?.consumePoseClock() } }
+    }
+
+    func takeCallbackCounts() -> (received: Int, processed: Int, rejected: Int) {
+        lock.withLock {
+            defer { callbackCount = 0; processedCallbackCount = 0; rejectedCallbackCount = 0 }
+            return (callbackCount, processedCallbackCount, rejectedCallbackCount)
+        }
     }
 
     /// Текущая поза очков.
@@ -117,12 +231,20 @@ final class VitureTracker {
     /// - Parameter predictTime: на сколько вперёд предсказать позу, секунды.
     /// - Returns: поза либо `nil`, если SDK её не отдал.
     func pose(predictTime: Double = 0) -> ViturePose? {
+        poseSample(predictTime: predictTime)?.pose
+    }
+
+    func poseSample(predictTime: Double = 0, extrapolate: Bool = true)
+        -> (pose: ViturePose, predictionHorizon: Double, sampleTime: Double, maximumPredictionHorizon: Double)? {
         lock.lock()
         defer { lock.unlock() }
         guard !stopped, let lastPose else { return nil }
-        guard usesExtrapolation, predictTime > 0, let imu = latestIMU else { return lastPose }
-        let rate = VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(imu.angularVelocity)) - fusion.gyroBias
-        return lastPose.extrapolated(by: predictTime, rate: rate)
+        let now = clock()
+        guard usesExtrapolation, predictTime.isFinite, predictTime >= 0, let gyro = freshGyro(at: now) else { return (lastPose, 0, lastOutputTime, 0) }
+        let maximumHorizon = usesFusion ? min(0.05, max(0, fusion.remainingPredictionTime(at: now))) : 0.05
+        let horizon = min(maximumHorizon, max(0, now - lastOutputTime) + predictTime)
+        if !extrapolate { return (lastPose, horizon, lastOutputTime, maximumHorizon) }
+        return (lastPose.extrapolated(by: horizon, rate: gyro - fusion.gyroBias), horizon, lastOutputTime + horizon, maximumHorizon)
     }
 
     /// Запускает опрос позы в отдельном потоке.
@@ -131,50 +253,93 @@ final class VitureTracker {
     /// а главный поток рисует кадр и держит виртуальные дисплеи — его остановка
     /// и есть «картинка тормозит» и срабатывание watchdog.
     private func startPolling() {
+        let connectionTimer = DispatchSource.makeTimerSource(queue: serviceQueue)
+        connectionTimer.schedule(deadline: .now(), repeating: 2)
+        connectionTimer.setEventHandler { [weak self] in self?.refreshConnection(force: true) }
+        self.connectionTimer = connectionTimer
+        connectionTimer.resume()
+        guard poseMode == .polling else { return }
         let timer = DispatchSource.makeTimerSource(queue: pollQueue)
         timer.schedule(deadline: .now(), repeating: 1.0 / 120.0)
-        timer.setEventHandler { [weak self] in self?.poll() }
+        timer.setEventHandler { [weak self] in self?.pollOnQueue() }
         timer.resume()
         pollTimer = timer
     }
 
-    private func poll() {
-        lock.lock()
-        let stopped = self.stopped
-        lock.unlock()
-        guard !stopped else { return }
-        let now = ProcessInfo.processInfo.systemUptime
+    func poll() {
+        refreshConnection()
+        pollQueue.sync { pollOnQueue() }
+    }
+
+    private func freshGyro(at time: Double) -> SIMD3<Double>? {
+        imuLock.lock()
+        defer { imuLock.unlock() }
+        guard time - imuArrivalTime <= 0.1, let sample = imuSample else { return nil }
+        let rate = VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(sample.angularVelocity), unit: angularVelocityUnit)
+        guard rate.x.isFinite, rate.y.isFinite, rate.z.isFinite else { return nil }
+        return rate
+    }
+
+    private func refreshConnection(force: Bool = false) {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard !lock.withLock({ stopped }) else { return }
+        if force || clock() - lastConnectionCheck > 2 {
+            lastConnectionCheck = clock()
+            let present = connectionCheck()
+            lock.withLock { if !stopped { connected = present } }
+        }
+    }
+
+    private func pollOnQueue() {
+        guard !lock.withLock({ stopped || !connected }) else { return }
+        guard poseMode == .polling else { return }
         let pose = device.pose(predictTime: 0)
+        let now = clock()
+        accept(pose, at: now, poseTime: now)
+    }
+
+    private func accept(_ pose: ViturePose?, at now: Double, poseTime: Double) {
+        let gyro = freshGyro(at: now)
+        var message: String?
         lock.lock()
-        if pose == nil {
+        defer {
+            lock.unlock()
+            if let message { serviceQueue.async { log(message) } }
+        }
+        guard !stopped else { return }
+        if pose != nil {
+            lastPoseTime = poseTime
+            if let position = pose?.position, position.x.isFinite, position.y.isFinite, position.z.isFinite {
+                lastSDKPosition = position
+            }
+        } else {
             predictFailures += 1
         }
-        lock.unlock()
-        guard let pose else { return }
-        let gyro: SIMD3<Double>? = latestIMU.map { sample in VitureIMU.radiansPerSecond(VitureIMU.bodyAngularVelocity(sample.angularVelocity)) }
         if let gyro, length(gyro) < 0.03 {
-            lock.lock()
             if gyroStillSince == nil { gyroStillSince = now }
-            lock.unlock()
         } else {
-            lock.lock()
             gyroStillSince = nil
-            lock.unlock()
         }
-        lock.lock()
         let stillForBias = gyroStillSince.map { now - $0 > 2 } ?? false
-        lock.unlock()
-        var result = pose
-        if usesFusion {
-            let fused = fusion.update(pose: pose.orientation, stable: pose.isStable, gyro: gyro, time: now, still: stillForBias)
-            if let fused { result.orientation = fused }
-        } else {
-            fusion.update(pose: nil, stable: false, gyro: gyro, time: now, still: stillForBias)
+        let useFusion = usesFusion
+        let fused = fusion.update(pose: useFusion ? pose?.orientation : nil,
+                                  stable: useFusion && pose?.isStable == true,
+                                  gyro: gyro, time: now, still: stillForBias)
+        guard var result = pose ?? lastPose else { return }
+        if pose == nil {
+            result.isStable = false
         }
-        lock.lock()
-        if !pose.isStable, let previous = lastPose {
-            result.position = previous.position
+        let wasHolding = positionGuard.isHolding
+        result.position = positionGuard.update(pose?.position, stable: pose?.isStable == true, at: now)
+        if positionGuard.isHolding != wasHolding {
+            message = positionGuard.isHolding
+                ? "VITURE: положение 6DoF удерживается — недостоверное смещение или потеря трекинга"
+                : "VITURE: положение 6DoF восстановлено без скачка сцены"
         }
+        if useFusion, let fused { result.orientation = fused }
+        if useFusion && pose?.isStable != true && fused != nil && gyro != nil { lastOutputTime = now }
+        else if pose != nil { lastOutputTime = poseTime }
         if let previous = previousForRate {
             let dt = now - previous.time
             if dt > 1e-6, dt < 0.5 {
@@ -187,12 +352,6 @@ final class VitureTracker {
         }
         previousForRate = (now, result.orientation)
         lastPose = result
-        lastPoseTime = now
-        lock.unlock()
-        if now - lastConnectionCheck > 2 {
-            lastConnectionCheck = now
-            connected = VitureUSB.connectedDevices().contains { $0.productID == productID }
-        }
     }
 
     /// Крен ориентации в радианах.
@@ -229,53 +388,105 @@ final class VitureTracker {
         return predictFailures
     }
 
-    /// Возраст последней полученной позы, секунды; `nil`, если позы ещё не было.
+    /// Возраст последней позы SDK или время ожидания первой позы, секунды.
     var poseAge: Double? {
         lock.lock()
         defer { lock.unlock() }
-        guard lastPose != nil else { return nil }
-        return ProcessInfo.processInfo.systemUptime - lastPoseTime
+        return clock() - (lastPoseTime ?? startedAt)
+    }
+
+    var shouldRestart: Bool {
+        lock.withLock { clock() - (lastPoseTime ?? startedAt) > (lastPoseTime == nil ? 10 : 2) }
     }
 
     private func store(imu acceleration: SIMD3<Double>, angularVelocity: SIMD3<Double>, time: Double) {
         imuLock.lock()
         imuSample = (acceleration, angularVelocity, time)
+        imuArrivalTime = clock()
         imuLock.unlock()
     }
 
-    /// Переносит опору мира в текущее положение и курс.
-    ///
-    /// Наклон к гравитации SDK не трогает: горизонт после этого остаётся верным.
-    @discardableResult
-    func recenter() -> Bool {
-        guard let current = pose(predictTime: 0) else { return false }
-        return resetOrigin(to: current)
-    }
-
-    /// Переносит опору мира в заданную позу.
-    ///
-    /// Наклон к гравитации SDK не трогает: горизонт после этого остаётся верным.
-    ///
-    /// - Parameter pose: поза, которая станет началом координат.
-    @discardableResult
-    func resetOrigin(to pose: ViturePose) -> Bool {
-        fusion.reset()
-        gyroStillSince = nil
-        return device.resetOrigin(to: pose)
-    }
-
-    /// Останавливает трекинг. Повторный запуск требует нового трекера.
-    func stop() {
-        pollTimer?.cancel()
-        pollTimer = nil
-        lock.lock()
-        guard !stopped else {
-            lock.unlock()
-            return
+    /// Переносит опору в заданную позу в очереди SDK. Результат приходит в той же очереди.
+    func resetOrigin(to pose: ViturePose, completion: @escaping (Bool) -> Void = { _ in }) {
+        pollQueue.async { [self] in
+            let origin: ViturePose? = lock.withLock {
+                guard !stopped else { return nil }
+                var origin = pose
+                origin.position = lastSDKPosition ?? pose.position
+                return origin
+            }
+            guard let origin, device.resetOrigin(to: origin) else {
+                completion(false)
+                return
+            }
+            lock.withLock {
+                fusion.reset()
+                gyroStillSince = nil
+                previousForRate = nil
+                driftMeter = PoseDriftMeter()
+                positionGuard = ViturePositionGuard()
+                if poseMode == .callback {
+                    pendingCallback = nil
+                    callbackNotBefore = clock()
+                }
+            }
+            pollOnQueue()
+            completion(true)
         }
-        stopped = true
-        lock.unlock()
-        device.stop()
+    }
+
+    var supportsFilmControl: Bool { lock.withLock { !filmControlUnavailable } }
+
+    func setLensTint(_ darkened: Bool?) {
+        pollQueue.async { [self] in
+            guard !lock.withLock({ stopped || filmControlUnavailable }) else { return }
+            guard let darkened else {
+                restoreFilmMode()
+                return
+            }
+            if originalFilmMode == nil {
+                originalFilmMode = device.filmMode()
+                guard originalFilmMode != nil else {
+                    lock.withLock { filmControlUnavailable = true }
+                    log("VITURE: SDK не поддерживает чтение затемнения линз")
+                    return
+                }
+            }
+            let value: Float = darkened ? 1 : 0
+            guard appliedFilmMode != value else { return }
+            if device.setFilmMode(value) {
+                appliedFilmMode = value
+            } else {
+                restoreFilmMode()
+                lock.withLock { filmControlUnavailable = true }
+                log("VITURE: SDK отклонил переключение затемнения линз")
+            }
+        }
+    }
+
+    private func restoreFilmMode() {
+        guard let originalFilmMode else { return }
+        if device.setFilmMode(originalFilmMode) {
+            self.originalFilmMode = nil
+            appliedFilmMode = nil
+        }
+    }
+
+    /// Останавливает опрос и освобождает SDK в его очереди; завершение вызывается после очистки.
+    func stop(completion: @escaping () -> Void = {}) {
+        lock.withLock {
+            stopped = true
+            pendingCallback = nil
+            pollTimer?.cancel()
+            pollTimer = nil
+            connectionTimer?.cancel()
+            connectionTimer = nil
+        }
+        pollQueue.async { [self] in
+            restoreFilmMode()
+            device.close()
+            completion()
+        }
     }
 
     /// `true`, если очки ещё видны в USB.

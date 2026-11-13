@@ -31,7 +31,7 @@ public final class VitureLibrary: @unchecked Sendable {
     typealias GetPoseFunction = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<Float>?, Double, UnsafeMutablePointer<Int32>?) -> Int32
     /// Тип функции `xr_device_provider_reset_origin_carina`.
     typealias ResetOriginFunction = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<Float>?) -> Int32
-    /// Колбэк позы: 7 чисел и метка времени.
+    /// Колбэк Carina: буфер выбранного формата и исходная метка времени, секунды.
     typealias PoseCallback = @convention(c) (UnsafeMutablePointer<Float>?, Double) -> Void
     /// Колбэк вертикальной синхронизации.
     typealias VSyncCallback = @convention(c) (Double) -> Void
@@ -53,6 +53,9 @@ public final class VitureLibrary: @unchecked Sendable {
     public let path: String
 
     private let handle: UnsafeMutableRawPointer
+    private typealias NativePoseFunction = @convention(c) (UnsafeMutablePointer<Float>?, Double) -> Int32
+    private var nativePoseFunction: NativePoseFunction?
+    private var nativeHandle: UnsafeMutableRawPointer?
     private let createFunction: CreateFunction
     private let initializeFunction: InitializeFunction
     private let startFunction: HandleFunction
@@ -64,6 +67,10 @@ public final class VitureLibrary: @unchecked Sendable {
     private let getPoseFunction: GetPoseFunction
     private let resetOriginFunction: ResetOriginFunction
     private let registerCallbacksFunction: RegisterCallbacksFunction
+    typealias GetFilmFunction = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<Float>?) -> Int32
+    typealias SetFilmFunction = @convention(c) (UnsafeMutableRawPointer?, Float) -> Int32
+    private let getFilmFunction: GetFilmFunction?
+    private let setFilmFunction: SetFilmFunction?
     private let isProductIDValidFunction: ProductPredicateFunction
 
     /// Пути, где Hovera ищет SDK, в порядке приоритета.
@@ -129,6 +136,8 @@ public final class VitureLibrary: @unchecked Sendable {
             guard let pointer = dlsym(handle, name) else { throw LoadError.missingSymbol(name) }
             return unsafeBitCast(pointer, to: T.self)
         }
+        getFilmFunction = try? symbol("xr_device_provider_get_film_mode", as: GetFilmFunction.self)
+        setFilmFunction = try? symbol("xr_device_provider_set_film_mode", as: SetFilmFunction.self)
         createFunction = try symbol("xr_device_provider_create", as: CreateFunction.self)
         initializeFunction = try symbol("xr_device_provider_initialize", as: InitializeFunction.self)
         startFunction = try symbol("xr_device_provider_start", as: HandleFunction.self)
@@ -189,9 +198,40 @@ public final class VitureLibrary: @unchecked Sendable {
         return (pose, poseStatus)
     }
 
+    func prepareNativePose() -> Bool {
+        if nativePoseFunction != nil { return true }
+        var pointer = dlsym(handle, "carina_a1088_viture_get_gl_pose")
+        if pointer == nil {
+            let sibling = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("libcarina_vio.dylib").path
+            nativeHandle = dlopen(sibling, RTLD_NOW | RTLD_LOCAL)
+            if let nativeHandle { pointer = dlsym(nativeHandle, "carina_a1088_viture_get_gl_pose") }
+        }
+        guard let pointer else { return false }
+        nativePoseFunction = unsafeBitCast(pointer, to: NativePoseFunction.self)
+        return true
+    }
+
+    func nativePose(at timestamp: Double) -> ViturePose? {
+        guard timestamp.isFinite, timestamp >= 0, let nativePoseFunction else { return nil }
+        var values = [Float](repeating: .nan, count: 32)
+        guard nativePoseFunction(&values, timestamp) == 0 else { return nil }
+        return ViturePose(nativeGL: values, timestamp: timestamp)
+    }
+
     func resetOrigin(_ handle: UnsafeMutableRawPointer, to pose: ViturePose) -> Int32 {
         var values = pose.floats
         return resetOriginFunction(handle, &values)
+    }
+
+    func filmMode(_ handle: UnsafeMutableRawPointer) -> Float? {
+        var value: Float = 0
+        guard getFilmFunction?(handle, &value) == 0, value.isFinite, (0...1).contains(value) else { return nil }
+        return value
+    }
+
+    func setFilmMode(_ handle: UnsafeMutableRawPointer, value: Float) -> Bool {
+        guard value.isFinite, (0...1).contains(value) else { return false }
+        return setFilmFunction?(handle, value) == 0
     }
 
     func registerCallbacks(_ handle: UnsafeMutableRawPointer,
@@ -215,8 +255,9 @@ public final class VitureDevice: @unchecked Sendable {
     /// Модель очков.
     public let kind: Kind
     private let library: VitureLibrary
-    private let handle: UnsafeMutableRawPointer
-    private var started = false
+    private var handle: UnsafeMutableRawPointer?
+    private var didStop = false
+    private let callbackOwner = UUID()
 
     init?(library: VitureLibrary, handle: UnsafeMutableRawPointer) {
         let kind = Kind(rawValue: library.deviceType(handle))
@@ -229,18 +270,37 @@ public final class VitureDevice: @unchecked Sendable {
         self.kind = kind
     }
 
-    deinit {
-        if started {
-            _ = library.stop(handle)
-            _ = library.shutdown(handle)
-        }
+    deinit { close() }
+
+    /// Останавливает потоки SDK и освобождает устройство и обработчики; повторный вызов безопасен.
+    /// Вызывать последовательно с остальными методами устройства, после завершения опроса позы.
+    public func close() {
+        guard let handle else { return }
+        if !didStop { _ = library.stop(handle) }
+        _ = library.shutdown(handle)
         library.destroy(handle)
+        self.handle = nil
+        VitureCallbacks.shared.clear(owner: callbackOwner)
+    }
+
+    /// Текущее затемнение линз в диапазоне 0…1; `nil`, если SDK не поддерживает чтение.
+    public func filmMode() -> Float? {
+        guard let handle else { return nil }
+        return library.filmMode(handle)
+    }
+
+    /// Устанавливает затемнение линз: 0 — прозрачные, 1 — полностью затемнённые.
+    /// Возвращает `false`, если значение недопустимо или устройство отклонило команду.
+    public func setFilmMode(_ value: Float) -> Bool {
+        guard let handle else { return false }
+        return library.setFilmMode(handle, value: value)
     }
 
     /// Включает или выключает 6DoF. Вызывать до `initialize`.
     @discardableResult
     public func setSixDegreesOfFreedom(_ is6DOF: Bool) -> Bool {
-        library.setSixDegreesOfFreedom(handle, is6DOF: is6DOF) == 0
+        guard let handle else { return false }
+        return library.setSixDegreesOfFreedom(handle, is6DOF: is6DOF) == 0
     }
 
     /// Готовит SDK к работе.
@@ -250,22 +310,36 @@ public final class VitureDevice: @unchecked Sendable {
     ///   - cacheDirectory: куда SDK кладёт кеш калибровки; `nil` — выбор SDK.
     /// - Returns: `true`, если инициализация прошла.
     public func initialize(config: String? = nil, cacheDirectory: String? = nil) -> Bool {
-        library.initialize(handle, config: config, cacheDirectory: cacheDirectory) == 0
+        guard let handle else { return false }
+        return library.initialize(handle, config: config, cacheDirectory: cacheDirectory) == 0
+    }
+
+    /// Доступен ли запрос OpenGL-матрицы по исходной метке Carina после инициализации.
+    public var supportsNativePose: Bool { library.prepareNativePose() }
+
+    /// Возвращает OpenGL-позу на время Carina, в секундах; статус устойчивости требует 6DoF.
+    /// Вызывать в одной очереди с управлением устройством. При ошибке SDK возвращает `nil`.
+    public func nativePose(at timestamp: Double) -> ViturePose? {
+        guard handle != nil, library.prepareNativePose() else { return nil }
+        return library.nativePose(at: timestamp)
     }
 
     /// Запускает поток данных устройства.
     @discardableResult
     public func start() -> Bool {
+        guard let handle else { return false }
+        didStop = false
         let result = library.start(handle) == 0
-        started = result
         return result
     }
 
     /// Останавливает поток данных, не уничтожая устройство.
     @discardableResult
     public func stop() -> Bool {
+        guard let handle, !didStop else { return true }
         let result = library.stop(handle) == 0
-        if result { started = false }
+        if result { didStop = true }
+        VitureCallbacks.shared.clear(owner: callbackOwner)
         return result
     }
 
@@ -278,15 +352,21 @@ public final class VitureDevice: @unchecked Sendable {
     ///   - pose: поза с частотой камеры (25 Гц); можно не задавать, если позу опрашиваем сами.
     ///   - vsync: момент вертикальной синхронизации панели.
     ///   - imu: сырые IMU-отсчёты: ускорение и угловая скорость с меткой времени.
+    ///   - poseClock: исходная метка Carina, секунды; требует конфигурации формата callback и исключает `pose`.
     @discardableResult
     public func registerCallbacks(pose: ((ViturePose) -> Void)? = nil,
                                   vsync: ((Double) -> Void)? = nil,
-                                  imu: ((SIMD3<Double>, SIMD3<Double>, Double) -> Void)? = nil) -> Bool {
-        VitureCallbacks.shared.set(pose: pose, vsync: vsync, imu: imu)
-        return library.registerCallbacks(self.handle,
-                                         pose: pose == nil ? nil : viturePoseTrampoline,
+                                  imu: ((SIMD3<Double>, SIMD3<Double>, Double) -> Void)? = nil,
+                                  poseClock: ((Double) -> Void)? = nil) -> Bool {
+        guard let handle else { return false }
+        guard pose == nil || poseClock == nil else { return false }
+        VitureCallbacks.shared.set(owner: callbackOwner, pose: pose, vsync: vsync, imu: imu, poseClock: poseClock)
+        let registered = library.registerCallbacks(handle,
+                                         pose: pose == nil && poseClock == nil ? nil : viturePoseTrampoline,
                                          vsync: vsync == nil ? nil : vitureVSyncTrampoline,
                                          imu: imu == nil ? nil : vitureImuTrampoline) == 0
+        if !registered { VitureCallbacks.shared.clear(owner: callbackOwner) }
+        return registered
     }
 
     /// Опрашивает позу.
@@ -294,7 +374,8 @@ public final class VitureDevice: @unchecked Sendable {
     /// - Parameter predictTime: на сколько вперёд предсказать позу, секунды; 0 — текущая.
     /// - Returns: поза либо `nil`, если SDK не отдал её.
     public func pose(predictTime: Double = 0) -> ViturePose? {
-        library.pose(handle, predictTime: predictTime)?.pose
+        guard let handle else { return nil }
+        return library.pose(handle, predictTime: predictTime)?.pose
     }
 
     /// Переносит начало координат трекинга.
@@ -304,7 +385,8 @@ public final class VitureDevice: @unchecked Sendable {
     /// - Parameter pose: новая опора, обычно результат `pose(predictTime: 0)`.
     @discardableResult
     public func resetOrigin(to pose: ViturePose) -> Bool {
-        library.resetOrigin(handle, to: pose) == 0
+        guard let handle else { return false }
+        return library.resetOrigin(handle, to: pose) == 0
     }
 }
 
@@ -318,22 +400,39 @@ final class VitureCallbacks: @unchecked Sendable {
     static let shared = VitureCallbacks()
 
     private let lock = NSLock()
+    private var owner: UUID?
     private var poseHandler: ((ViturePose) -> Void)?
     private var vsyncHandler: ((Double) -> Void)?
     private var imuHandler: ((SIMD3<Double>, SIMD3<Double>, Double) -> Void)?
+    private var poseClockHandler: ((Double) -> Void)?
 
-    func set(pose: ((ViturePose) -> Void)?, vsync: ((Double) -> Void)?, imu: ((SIMD3<Double>, SIMD3<Double>, Double) -> Void)?) {
+    func set(owner: UUID, pose: ((ViturePose) -> Void)?, vsync: ((Double) -> Void)?, imu: ((SIMD3<Double>, SIMD3<Double>, Double) -> Void)?, poseClock: ((Double) -> Void)? = nil) {
         lock.lock()
+        self.owner = owner
         poseHandler = pose
         vsyncHandler = vsync
         imuHandler = imu
+        poseClockHandler = poseClock
         lock.unlock()
+    }
+
+    func clear(owner: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.owner == owner else { return }
+        self.owner = nil
+        poseHandler = nil
+        vsyncHandler = nil
+        imuHandler = nil
+        poseClockHandler = nil
     }
 
     func handlePose(_ pose: UnsafeMutablePointer<Float>, timestamp: Double) {
         lock.lock()
         let handler = poseHandler
+        let clockHandler = poseClockHandler
         lock.unlock()
+        if let clockHandler { clockHandler(timestamp); return }
         handler?(ViturePose(floats: pose, timestamp: timestamp, isStable: true))
     }
 

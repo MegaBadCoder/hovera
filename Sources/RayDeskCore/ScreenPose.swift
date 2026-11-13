@@ -122,19 +122,23 @@ public struct ScreenPose: Codable, Equatable, Sendable {
         simd_quatf(ix: Float(q.imag.x), iy: Float(q.imag.y), iz: Float(q.imag.z), r: Float(q.real))
     }
 
-    /// Пересечение луча из начала координат (головы) с плоскостью экрана.
+    /// Пересечение луча с лицевой стороной экрана из заданного положения головы.
     ///
-    /// - Parameter rayDirection: направление луча в мировых координатах (не обязательно нормализовано).
-    /// - Returns: расстояние вдоль луча и координаты попадания `uv` (u вправо, v вниз, [0,1]²), либо `nil`, если луч не попадает в экран.
-    public func intersect(rayDirection: SIMD3<Double>) -> (t: Double, uv: SIMD2<Double>)? {
+    /// - Parameters:
+    ///   - rayDirection: направление луча в мировых координатах (не обязательно нормализовано).
+    ///   - rayOrigin: начало луча в мировых координатах, метры; по умолчанию — ноль.
+    /// - Returns: параметр `t` точки `rayOrigin + t * rayDirection` и координаты `uv`
+    ///   (u вправо, v вниз, [0,1]²), либо `nil`, если луч не попадает в экран перед собой.
+    public func intersect(rayDirection: SIMD3<Double>, rayOrigin: SIMD3<Double> = .zero) -> (t: Double, uv: SIMD2<Double>)? {
         let local = rotation.inverse.act(rayDirection)
+        let localOrigin = rotation.inverse.act(rayOrigin)
         let center = SIMD3<Double>(0, 0, -distance)
         let normal = surfaceRotation.act(SIMD3(0, 0, 1))
         let facing = dot(local, normal)
         guard facing < 0 else { return nil }
-        let t = dot(center, normal) / facing
+        let t = dot(center - localOrigin, normal) / facing
         guard t > 0 else { return nil }
-        let p = surfaceRotation.inverse.act(t * local - center)
+        let p = surfaceRotation.inverse.act(localOrigin + t * local - center)
         let x = p.x / (width / 2)
         let y = p.y / (height / 2)
         guard abs(x) <= 1, abs(y) <= 1 else { return nil }

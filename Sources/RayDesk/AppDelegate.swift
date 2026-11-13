@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var vitureRetryAt: TimeInterval = 0
     /// Идёт попытка поднять трекер; второй параллельной попытки быть не должно.
     private var vitureStarting = false
+    private var vitureStopping = false
+    private var vitureGeneration = 0
+    private var lensTintPolicy = LensTintPolicy()
+    private var physicalMonitor: PhysicalMonitorDirection?
+    private var monitorCaptureWork: DispatchWorkItem?
+    private var autoTintMenuItem: NSMenuItem?
+    private var terminating = false
     private var slots: [ScreenSlot] = []
     private var window: NSWindow?
     private var glassesView: MTKView?
@@ -37,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var renderer: Renderer?
     private var isSelectingFocus = false
     private var isCalibrating = false
+    private var calibrationFamily: GlassesDisplayFamily?
+    private var calibrationMenuItems: [NSMenuItem] = []
     private var statusTicks = 0
     private var compassFieldPrompted = false
     private var signalToken = 0
@@ -47,6 +56,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var statusText = ""
     private var statusTimer: Timer?
+    /// Семейство очков, для которого собраны меню и строка состояния.
+    ///
+    /// Запоминается: когда очки отключают, меню остаётся на последнем устройстве,
+    /// а не переключается на чужой набор пунктов.
+    private var menuFamily: GlassesDisplayFamily?
+    /// Пункты меню, которые относятся только к одному из семейств.
+    private var rayNeoMenuItems: [NSMenuItem] = []
+    private var vitureMenuItems: [NSMenuItem] = []
     private var mouseTapLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var mouseTapState = MouseTapState.checking
     private var mouseTap: MouseTap?
@@ -59,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cameraDebugWindow: CameraDebugWindow?
     private var handCamera: HandCamera?
     private var handWindow: HandPreviewWindow?
+    private var handsCameraItem: NSMenuItem?
     private var lastHandsLog: TimeInterval = 0
     private static let debugObserver = "camera-debug-window"
     private static let outlineObserver = "glasses-outline-window"
@@ -67,6 +85,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var cameraHead = CameraHeadTracker(
         orientation: { [filter] uptime in (filter.orientation(atUptime: uptime), filter.isReady ? filter.angularSpeed : .infinity) }
     )
+    private lazy var cameraUsage = CameraUsageController(
+        start: { [weak self] completion in self?.cameraHead.start { completion($0) } },
+        stop: { [weak self] in self?.cameraHead.stop() }
+    )
+    private var cameraCenteringRequested = false
     private let glassesVision = GlassesVision()
     private let watchdog = MainThreadWatchdog()
     private var glassesTrackingItem: NSMenuItem?
@@ -90,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var calibrationStarted: Date?
 
     private var wallModeItem: NSMenuItem?
+    private var restToleranceValueLabel: NSTextField?
+    private var scanoutCompensationEnabled = true
+    private var scanoutBottomToTop = false
     private var fovSlider: NSSlider?
     private var fovValueLabel: NSTextField?
     private var verticalFOVSave: DispatchWorkItem?
@@ -156,7 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("camera motion from background \(cameraMotionEnabled() ? "on" : "off")")
         useLightGlassesMode()
         log("screens after light mode: \(screensDescription())")
-        slots = scene.screens.indices.map { ScreenSlot(index: $0) }
+        let family = connectedGlassesFamily
+        slots = scene.screens.indices.map { ScreenSlot(index: $0, family: family) }
         log("screens after virtual displays: \(screensDescription())")
         saveScene()
         arrangeDisplays()
@@ -298,6 +325,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSScreen.screens.first { RayDeskCore.glassesDisplayFamily(forDisplayName: $0.localizedName) != nil }
     }
 
+    /// Семейство очков, которые сейчас работают: USB, HID и имя дисплея как запасной признак.
+    private var connectedGlassesFamily: GlassesDisplayFamily? {
+        RayDeskCore.activeGlassesFamily(vitureConnected: !VitureUSB.connectedDevices().isEmpty,
+                                        rayNeoConnected: imu?.isConnected == true,
+                                        displayName: glassesScreen()?.localizedName)
+    }
+
     private func useLightGlassesMode() {
         guard let screen = glassesScreen(),
               let family = RayDeskCore.glassesDisplayFamily(forDisplayName: screen.localizedName),
@@ -403,65 +437,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log("display link: no targetTimestamp, the frame time falls back to now + one frame")
             }
         }
-        glassesView?.draw()
+        if let glassesView, let renderer {
+            renderer.draw(in: glassesView)
+        }
     }
 
     /// Пробует поднять трекер VITURE в фоне: SDK грузит VIO и может занять сотни миллисекунд.
     private func startVitureTracking() {
-        guard !vitureStarting else { return }
-        guard !VitureUSB.connectedDevices().isEmpty else { return }
+        guard !vitureStarting, !vitureStopping, !terminating, viture == nil else { return }
+        guard VitureUSB.connectedDevices().contains(where: { $0.productID == 0x1104 }) else { return }
         vitureStarting = true
+        let generation = vitureGeneration
+        let poseMode = savedViturePoseMode()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                guard let tracker = try VitureTracker.start() else {
-                    DispatchQueue.main.async { log("VITURE: устройство есть, но трекер не создан") }
+            let result = Result { try VitureTracker.start(poseMode: poseMode) }
+            DispatchQueue.main.async {
+                guard let self else {
+                    if case .success(let tracker) = result { tracker?.stop() }
                     return
                 }
-                DispatchQueue.main.async {
-                    guard let self else {
-                        tracker.stop()
-                        return
-                    }
-                    self.vitureStarting = false
+                self.vitureStarting = false
+                guard generation == self.vitureGeneration, !self.terminating else {
+                    if case .success(let tracker?) = result { self.stopVitureTracking(tracker) }
+                    return
+                }
+                switch result {
+                case .success(let tracker?):
                     self.viture = tracker
+                    self.lensTintPolicy = LensTintPolicy()
+                    self.physicalMonitor = nil
+                    self.didAlignSceneOnStart = false
                     log(String(format: "VITURE: трекер запущен (%@, product id 0x%04X)",
                                tracker.productName ?? "модель неизвестна", tracker.productID))
-                    tracker.recenter()
-                    log("VITURE: опора мира поставлена в текущее положение и курс")
+                    log("VITURE: источник позы \(tracker.poseMode.rawValue)")
                     self.installViturePose()
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self?.vitureStarting = false
-                    self?.vitureRetryAt = CACurrentMediaTime() + 3
+                case .success(nil):
+                    self.vitureRetryAt = CACurrentMediaTime() + 1
+                    log("VITURE: очки исчезли во время запуска, повторю после подключения")
+                case .failure(let error):
+                    self.vitureRetryAt = CACurrentMediaTime() + 3
                     log("VITURE: трекер не запустился — \(error)")
                 }
             }
         }
     }
 
-    /// Раз в секунду проверяет, что трекер VITURE жив: переподключение очков и сон
-    /// останавливают поток данных SDK, и без перезапуска картинка становится статичной.
+    private func stopVitureTracking(_ tracker: VitureTracker) {
+        vitureStopping = true
+        monitorCaptureWork?.cancel()
+        monitorCaptureWork = nil
+        if viture === tracker {
+            viture = nil
+            renderer?.externalPose = nil
+            renderer?.independentSource = nil
+            renderer?.suspendsIndependentScene = false
+        }
+        tracker.stop { [weak self] in
+            DispatchQueue.main.async {
+                self?.vitureStopping = false
+                self?.vitureRetryAt = CACurrentMediaTime() + 1
+            }
+        }
+    }
+
     private func watchVitureTracking() {
         if let viture {
-            guard viture.isConnected else {
-                viture.stop()
-                self.viture = nil
-                renderer?.externalPose = nil
-                vitureRetryAt = CACurrentMediaTime() + 1
-                log("VITURE: очки отключились, трекинг остановлен")
-                return
-            }
-            if let age = viture.poseAge, age > 2 {
-                viture.stop()
-                self.viture = nil
-                renderer?.externalPose = nil
-                vitureRetryAt = CACurrentMediaTime() + 1
-                log(String(format: "VITURE: поза не приходит %.1f с, перезапускаю трекер", age))
+            if !viture.isConnected || viture.shouldRestart {
+                log("VITURE: нет свежей позы или USB-подключения, перезапускаю трекер")
+                stopVitureTracking(viture)
             }
             return
         }
-        guard CACurrentMediaTime() >= vitureRetryAt, !VitureUSB.connectedDevices().isEmpty else { return }
+        guard CACurrentMediaTime() >= vitureRetryAt else { return }
         startVitureTracking()
     }
 
@@ -475,9 +522,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // становится равен минус повороту: чтобы взгляд смотрел в центр раскладки,
         // опору надо развернуть на минус этот центр.
         let delta = remainder(-scene.centerYaw, 2 * .pi)
-        guard viture.resetOrigin(to: pose.rotatedYaw(by: delta)) else { return }
-        log(String(format: "VITURE: опора развёрнута на %.0f°, чтобы взгляд смотрел в центр раскладки (%.0f°)",
-                   delta * 180 / .pi, scene.centerYaw * 180 / .pi))
+        let origin = pose.rotatedYaw(by: delta)
+        renderer?.suspendsIndependentScene = true
+        viture.resetOrigin(to: origin) { [weak self, weak viture] success in
+            DispatchQueue.main.async {
+                guard let self, let viture, self.viture === viture else { return }
+                self.renderer?.suspendsIndependentScene = false
+                if success {
+                    self.renderer?.calibration.yaw = 0
+                    self.physicalMonitor?.yaw -= origin.orientation.yawPitch.yaw
+                    self.lensTintPolicy = LensTintPolicy()
+                    log("VITURE: опора мира обновлена")
+                } else {
+                    log("VITURE: не удалось обновить опору мира")
+                }
+            }
+        }
     }
 
     /// Сдвиг картинки по положению головы из VIO.
@@ -491,11 +551,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Отдаёт рендеру позу VITURE с предсказанием к моменту показа кадра.
     private func installViturePose() {
+        if let renderer, calibrationFamily != .viture {
+            restoreViewCalibration(renderer, family: .viture)
+        }
+        if let viture { renderer?.independentSource = .viture(viture) }
         renderer?.externalPose = { [weak self] presentTime in
             guard let self, let viture = self.viture else { return nil }
             let predictTime = max(0, min(0.05, presentTime - CACurrentMediaTime()))
-            guard let pose = viture.pose(predictTime: predictTime) else { return nil }
-            return (pose.orientation, usesSixDofPosition ? pose.position : .zero)
+            guard let sample = viture.poseSample(predictTime: predictTime) else { return nil }
+            return (sample.pose.orientation, usesSixDofPosition ? sample.pose.position : .zero, sample.predictionHorizon)
         }
         log("VITURE: внешняя поза (ориентация и положение) установлена в рендер")
     }
@@ -511,7 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let yawPitch = pose.orientation.yawPitch
         let roll = atan2(2 * (pose.orientation.real * pose.orientation.imag.z + pose.orientation.imag.x * pose.orientation.imag.y),
                          1 - 2 * (pose.orientation.imag.y * pose.orientation.imag.y + pose.orientation.imag.z * pose.orientation.imag.z))
-        log(String(format: "VITURE pose: yaw %+.1f° pitch %+.1f° roll %+.1f° · позиция %+.2f %+.2f %+.2f м · %@ · в рендере %@ · предсказание не поддержано %d",
+        log(String(format: "VITURE pose: yaw %+.1f° pitch %+.1f° roll %+.1f° · позиция %+.2f %+.2f %+.2f м · %@ · в рендере %@ · ошибок чтения позы %d",
                    yawPitch.yaw * 180 / .pi, yawPitch.pitch * 180 / .pi, roll * 180 / .pi,
                    pose.position.x, pose.position.y, pose.position.z,
                    pose.isStable ? "стабильна" : "нестабильна",
@@ -531,13 +595,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        viture?.stop()
+        terminating = true
+        cameraUsage.stopAll()
+        vitureGeneration += 1
+        if let viture {
+            let done = DispatchSemaphore(value: 0)
+            viture.stop { done.signal() }
+            _ = done.wait(timeout: .now() + 2)
+        }
         viture = nil
         handCamera?.stop()
         handCamera = nil
         calibrationFile?.closeFile()
         calibrationFile = nil
         frameLink?.invalidate()
+        renderer?.stopIndependentReprojection()
         if recorder.isRecording {
             let done = DispatchSemaphore(value: 0)
             Task.detached { [recorder] in
@@ -574,12 +646,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let renderer = try Renderer(view: view, scene: scene, filter: filter)
         renderer.showsGrid = UserDefaults.standard.bool(forKey: "showsGrid")
         renderer.showsScreenBorders = !UserDefaults.standard.bool(forKey: "hideScreenBorders")
-        if let calibration = loadSetting(ViewCalibration.self, key: "viewCalibration", name: t(.settingGrid)) {
-            renderer.calibration = calibration
-        }
+        renderer.screenTextMode = savedScreenTextMode()
+        log("screen text mode: \(renderer.screenTextMode.rawValue)")
+        restoreViewCalibration(renderer, family: connectedGlassesFamily)
         renderer.verticalFOV = savedVerticalFOV()
+        log(String(format: "display projection: vertical FOV %.6f°", renderer.verticalFOV))
         renderer.slots = slots
         renderer.stabilizer.level = savedStabilization()
+        renderer.worldLockedPresentation = savedWorldLockedPresentation()
+        renderer.worldLockSmoothing = savedWorldLockSmoothing()
+        renderer.adaptiveVSync = savedAdaptiveVSync()
+        renderer.restSmoothing = savedRestSmoothing()
+        renderer.restStrength = savedRestStrength()
+        renderer.restTolerance = savedRestTolerance()
+        renderer.scanoutEnabled = scanoutCompensationEnabled
+        renderer.scanoutBottomToTop = scanoutBottomToTop
+        renderer.showsRestIndicator = savedRestIndicator()
+        log("rotational world lock: \(renderer.worldLockedPresentation ? "on" : "off")")
+        log("world lock light smoothing: \(renderer.worldLockSmoothing ? "on" : "off")")
+        log("adaptive vsync: \(renderer.adaptiveVSync ? "on" : "off")")
+        log("world lock rest smoothing: \(renderer.restSmoothing && !renderer.adaptiveVSync ? "on" : "off") · strength \(renderer.restStrength.rawValue) · tolerance \(renderer.restTolerance) · indicator \(renderer.showsRestIndicator)")
         if let savedPrediction = UserDefaults.standard.object(forKey: "predictionMs") as? Double {
             renderer.headPipeline.predictionSeconds = savedPrediction / 1000
             renderer.headPipeline.predictionBias = savedPrediction / 1000 - HeadPipeline.defaultPredictionSeconds
@@ -590,27 +676,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             updatePointerTargets(head: head)
             self.alignSceneOnStart(head: head)
+            self.updateLensTint(head: head)
             guard self.renderer?.meditation.isActive != true else { return }
             warpPolicy.observeGaze(target: lastCursorHit?.target, at: CACurrentMediaTime())
         }
-        view.delegate = renderer
+        view.delegate = nil
         view.isPaused = true
         view.enableSetNeedsDisplay = false
         window.contentView = view
         glassesView = view
         window.orderFrontRegardless()
         self.window = window
+        self.renderer?.stopIndependentReprojection()
         self.renderer = renderer
         if viture != nil {
             installViturePose()
         }
+        try renderer.startIndependentReprojection(view: view, framesPerSecond: screen.maximumFramesPerSecond)
+        log("independent reprojection: started at \(screen.maximumFramesPerSecond) Hz")
         restartFrameLink()
-        if UserDefaults.standard.bool(forKey: "wallMode"), let wallModeItem {
-            toggleWallMode(wallModeItem)
-        }
-        if glassesTracking, !UserDefaults.standard.bool(forKey: "guidedCalibrationIntroduced") {
+        scheduleReprojectionDelayCheck()
+        syncCameraCentering(force: true)
+        if cameraCenteringRequested, glassesTracking, !UserDefaults.standard.bool(forKey: "guidedCalibrationIntroduced") {
             UserDefaults.standard.set(true, forKey: "guidedCalibrationIntroduced")
             Task { @MainActor [weak self] in self?.startCameraCalibration() }
+        }
+    }
+
+    private func scheduleReprojectionDelayCheck() {
+        guard ProcessInfo.processInfo.environment["HOVERA_ATW_DELAY_CHECK"] == "1" else { return }
+        for index in 0..<5 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6 + Double(index) * 2) { [weak self] in
+                guard let presenter = self?.renderer?.independentReprojection else { return }
+                let before = presenter.snapshot
+                let started = CACurrentMediaTime()
+                Thread.sleep(forTimeInterval: 0.2)
+                let after = presenter.snapshot
+                log(String(format: "ATW DELAY CHECK %d main=%.1fms presented=%d reused=%d errors=%d",
+                           index + 1, (CACurrentMediaTime() - started) * 1000,
+                           after.presented - before.presented, after.reused - before.reused,
+                           after.failed - before.failed))
+            }
         }
     }
 
@@ -649,8 +755,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// После пробуждения дисплей очков может вернуться позже остальных: ждём его и пересобираем окно.
     private func handleWake() {
         log("wake: screens \(screensDescription())")
-        viture?.stop()
-        viture = nil
+        vitureGeneration += 1
+        if let viture { stopVitureTracking(viture) }
         renderer?.externalPose = nil
         vitureRetryAt = CACurrentMediaTime() + 2
         if !VitureUSB.connectedDevices().isEmpty {
@@ -679,8 +785,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func screenParametersSettled() {
         let started = CACurrentMediaTime()
         useLightGlassesMode()
+        if let family = connectedGlassesFamily {
+            for slot in slots { slot.virtualScreen.updateRefreshRate(family: family) }
+            if let renderer, calibrationFamily != family { restoreViewCalibration(renderer, family: family) }
+        }
         fitWindowToGlasses()
         restartFrameLink()
+        syncCameraCentering()
         let elapsed = (CACurrentMediaTime() - started) * 1000
         if elapsed > 20 {
             log(String(format: "screen parameters settled in %.0f ms", elapsed))
@@ -709,9 +820,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     enum GlassesError: Error { case screenMissing }
 
     private var head: simd_quatd { renderer?.currentHead ?? simd_quatd(ix: 0, iy: 0, iz: 0, r: 1) }
+    private var headOrigin: SIMD3<Double> { renderer?.currentHeadOffset ?? .zero }
 
     private func targetScreen() -> Int {
-        scene.focus?.screen ?? RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen ?? scene.screens.count - 1
+        scene.focus?.screen ?? RayDeskCore.gazeHit(head: head, screens: scene.screens, origin: headOrigin)?.screen ?? scene.screens.count - 1
     }
 
     private func saveScene() {
@@ -721,11 +833,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updatePointerTargets(head: simd_quatd) {
         if let focus = scene.focus {
-            lastGazeHit = focus.hit(head: head, origin: renderer?.currentHeadOffset ?? .zero)
+            lastGazeHit = focus.hit(head: head, origin: headOrigin)
             lastCursorHit = lastGazeHit.map { CursorHit(target: .virtual($0.screen), uv: $0.uv) }
         } else {
-            lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens)
-            var hit = RayDeskCore.cursorHit(head: head, screens: scene.screens)
+            lastGazeHit = RayDeskCore.gazeHit(head: head, screens: scene.screens, origin: headOrigin)
+            var hit = RayDeskCore.cursorHit(head: head, screens: scene.screens, origin: headOrigin)
             if macScreenOff, hit?.target == .mac { hit = nil }
             lastCursorHit = hit
         }
@@ -759,7 +871,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func swapScreensByGaze() {
         guard renderer != nil, mouseTap?.isDraggingScreen != true, !isSelectingFocus,
               scene.focus == nil, renderer?.meditation.isActive != true else { NSSound.beep(); return }
-        guard let target = RayDeskCore.gazeHit(head: head, screens: scene.screens)?.screen else { return }
+        guard let target = RayDeskCore.gazeHit(head: head, screens: scene.screens, origin: headOrigin)?.screen else { return }
         if let grabbed = scene.grabbed {
             scene.toggleGrab(grabbed, head: head)
             saveScene()
@@ -810,7 +922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Экран под взглядом: увеличенная панель, затем пересечение луча с экранами, затем ближайший по углу.
     private func screenUnderGaze() -> Int {
         if let focus = scene.focus { return focus.screen }
-        if let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens) { return hit.screen }
+        if let hit = RayDeskCore.gazeHit(head: head, screens: scene.screens, origin: headOrigin) { return hit.screen }
         let gaze = head.yawPitch
         return scene.screens.indices.min {
             angularGap(scene.screens[$0], gaze) < angularGap(scene.screens[$1], gaze)
@@ -818,7 +930,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func angularGap(_ pose: ScreenPose, _ gaze: (yaw: Double, pitch: Double)) -> Double {
-        hypot(atan2(sin(pose.yaw - gaze.yaw), cos(pose.yaw - gaze.yaw)), pose.pitch - gaze.pitch)
+        let relativeCenter = pose.center - headOrigin
+        let yaw = atan2(-relativeCenter.x, -relativeCenter.z)
+        let pitch = atan2(relativeCenter.y, hypot(relativeCenter.x, relativeCenter.z))
+        return hypot(atan2(sin(yaw - gaze.yaw), cos(yaw - gaze.yaw)), pitch - gaze.pitch)
     }
 
     /// Режим перемещения: стрелки двигают выбранный экран по горизонтали и вертикали, а не только
@@ -909,7 +1024,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func recalibrate() {
+        renderer?.suspendsIndependentScene = true
         filter.reset()
+        renderer?.suspendsIndependentScene = false
     }
 
     @objc private func addScreen() {
@@ -917,7 +1034,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("add screen: already at maximum")
             return
         }
-        let slot = ScreenSlot(index: slots.count)
+        let slot = ScreenSlot(index: slots.count, family: connectedGlassesFamily)
         slots.append(slot)
         startCapture(slot)
         renderer?.slots = slots
@@ -948,6 +1065,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleCalibration() {
         guard let renderer else { return }
         isCalibrating.toggle()
+        for item in calibrationMenuItems { item.state = isCalibrating ? .on : .off }
         renderer.showsGrid = isCalibrating || UserDefaults.standard.bool(forKey: "showsGrid")
         if !isCalibrating {
             saveCalibration()
@@ -1216,10 +1334,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(String(format: "calibration yaw %.1f° pitch %.1f° roll %.1f°", c.yaw * 180 / .pi, c.pitch * 180 / .pi, c.roll * 180 / .pi))
     }
 
+    private func restoreViewCalibration(_ renderer: Renderer, family: GlassesDisplayFamily?) {
+        calibrationFamily = family
+        let key = family == .viture ? "vitureViewCalibration" : "viewCalibration"
+        renderer.calibration = loadSetting(ViewCalibration.self, key: key, name: t(.settingGrid)) ?? ViewCalibration()
+    }
+
     private func saveCalibration() {
         guard let renderer else { return }
         let mount = ViewCalibration(yaw: 0, pitch: renderer.calibration.pitch, roll: renderer.calibration.roll)
-        saveSetting(mount, key: "viewCalibration")
+        let key = calibrationFamily == .viture ? "vitureViewCalibration" : "viewCalibration"
+        saveSetting(mount, key: key)
     }
 
     /// Ставит «вперёд» туда, куда смотрю: без запомненной точки MacBook и без маркера.
@@ -1228,18 +1353,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ловить его кнопкой возврата.
     private func alignSceneOnStart(head: simd_quatd) {
         guard !didAlignSceneOnStart else { return }
+        guard viture == nil || renderer?.usedExternalOrientation == true else { return }
         didAlignSceneOnStart = true
         guard !scene.screens.isEmpty else { return }
         let center = scene.centerYaw
         let delta = remainder(center - head.yawPitch.yaw, 2 * .pi)
-        guard abs(delta) > 2 * .pi / 180 else { return }
         if renderer?.externalPose != nil {
             alignVitureOrigin()
             log(String(format: "startup alignment (VITURE): scene center %.0f°, head %.0f°",
                        center * 180 / .pi, head.yawPitch.yaw * 180 / .pi))
             return
         }
+        guard abs(delta) > 2 * .pi / 180 else { return }
+        renderer?.suspendsIndependentScene = true
         filter.rotateWorldYaw(by: delta)
+        renderer?.suspendsIndependentScene = false
         if renderer?.headOffset != nil {
             cameraHead.worldYawChanged(by: delta)
             if glassesTracking { cameraHead.resetReference(after: 0.3) }
@@ -1250,14 +1378,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func recenterToGaze() {
         guard let renderer else { return }
-        if let viture {
+        if viture != nil {
             alignVitureOrigin()
-            log("VITURE: Recenter — опора поставлена по текущему взгляду")
+            log("VITURE: запрошен перенос опоры по текущему взгляду")
             return
         }
         let yaw = filter.orientation(predictAhead: 0).yawPitch.yaw
         logCorrection(kind: "recenter", yawDegrees: -renderer.currentHead.yawPitch.yaw * 180 / .pi)
+        renderer.suspendsIndependentScene = true
         filter.alignYawToZero()
+        renderer.suspendsIndependentScene = false
         renderer.calibration.yaw = 0
         if renderer.headOffset != nil {
             cameraHead.worldYawChanged(by: -yaw)
@@ -1267,22 +1397,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleHandsCamera(_ sender: NSMenuItem) {
         if handCamera != nil {
-            handCamera?.stop()
-            handCamera = nil
-            handWindow?.orderOut(nil)
-            sender.state = .off
-            log("hands camera off")
+            stopHandsCamera()
             return
         }
         let camera = HandCamera()
         camera.onFrame = { [weak self] frame in
-            guard let self else { return }
-            if handWindow == nil {
-                handWindow = HandPreviewWindow()
-            }
-            if handWindow?.isVisible != true {
-                handWindow?.orderFront(nil)
-            }
+            guard let self, self.handCamera != nil else { return }
+            self.showHandsWindow()
             handWindow?.update(frame: frame, framesPerSecond: handCamera?.framesPerSecond ?? 0)
             let now = CACurrentMediaTime()
             if now - lastHandsLog > 5 {
@@ -1298,14 +1419,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         handCamera = camera
-        sender.state = .on
+        handsCameraItem?.state = .on
         log("hands camera on: \(camera.deviceName)")
+    }
+
+    /// Показывает превью камеры очков; закрытие окна останавливает камеру.
+    private func showHandsWindow() {
+        if handWindow == nil {
+            let window = HandPreviewWindow()
+            window.onClose = { [weak self] in
+                guard let self else { return }
+                handWindow = nil
+                stopHandsCamera()
+            }
+            handWindow = window
+        }
+        if handWindow?.isVisible != true {
+            handWindow?.orderFront(nil)
+        }
+    }
+
+    /// Останавливает камеру очков и убирает превью: пункт меню и окно возвращаются в выключенное состояние.
+    private func stopHandsCamera() {
+        guard handCamera != nil || handWindow != nil else { return }
+        handCamera?.stop()
+        handCamera = nil
+        handsCameraItem?.state = .off
+        let window = handWindow
+        handWindow = nil
+        window?.close()
+        log("hands camera off")
     }
 
     @MainActor @objc private func startCameraCalibration() {
         if let window = cameraCalibrationWindow { window.show(); return }
+        guard !cameraUsage.isRequested(.calibration) else { return }
         let wasGlassesTracking = glassesTracking
-        let wasRunning = cameraHead.isRunning
         if !glassesTracking { setGlassesTracking(true) }
         let present = { @MainActor [weak self] in
             guard let self else { return }
@@ -1316,26 +1465,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 complete: { [weak self] result in
                     guard let self else { return }
                     cameraHead.applyGuidedCalibration(result)
-                    if let renderer, renderer.headOffset == nil { installCameraHeadOffset(renderer) }
                     UserDefaults.standard.set(true, forKey: "wallMode")
-                    wallModeItem?.state = .on
                     cameraHead.observeCalibration(nil)
                     cameraCalibrationWindow = nil
+                    syncCameraCentering(force: true)
+                    cameraUsage.release(.calibration)
                     signal(t(.signalCalibrationDone), symbol: "checkmark.circle", seconds: 6)
                 }, cancel: { [weak self] in
                     self?.cameraHead.cancelGuidedCalibration()
                     self?.cameraHead.observeCalibration(nil)
                     self?.cameraCalibrationWindow = nil
                     if !wasGlassesTracking { self?.setGlassesTracking(false) }
-                    if !wasRunning { self?.cameraHead.stop() }
+                    self?.cameraUsage.release(.calibration)
                 })
             cameraCalibrationWindow = window
             cameraHead.observeCalibration { [weak window] observation in window?.update(observation) }
             window.show()
         }
-        if cameraHead.isRunning { present(); return }
-        cameraHead.start { [weak self] error in
+        cameraUsage.request(.calibration) { [weak self] error in
             guard error == nil else {
+                self?.cameraUsage.release(.calibration)
                 if !wasGlassesTracking { self?.setGlassesTracking(false) }
                 self?.signal(t(.signalCameraUnavailableSystem), symbol: "video.slash", seconds: 10)
                 return
@@ -1354,7 +1503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let open = { [weak self] in
-            guard let self else { return }
+            guard let self, learningGlasses, cameraUsage.isRequested(.learning) else { return }
             let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].displayID
             let screen = NSScreen.screens.first { $0.displayID == display }
             let window = GlassesOutlineWindow(on: screen)
@@ -1379,12 +1528,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             glassesVision.start { open() }
         }
-        if cameraHead.isRunning {
-            begin()
-            return
-        }
-        cameraHead.start { [weak self] error in
+        cameraUsage.request(.learning) { [weak self] error in
             if let error {
+                self?.cameraUsage.release(.learning)
                 log("camera head tracking failed: \(error)")
                 sender.state = .off
                 self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
@@ -1398,6 +1544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Заканчивает обучение формы, сохраняет её и закрывает окно обводки: рисовать больше некуда.
     @MainActor private func stopGlassesLearning() {
         learningGlasses = false
+        cameraUsage.release(.learning)
         glassesOutlineWindow?.close()
         glassesOutlineWindow = nil
         cameraHead.removeObserver(Self.outlineObserver)
@@ -1410,9 +1557,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleCameraDebug(_ sender: NSMenuItem) {
-        if let window = cameraDebugWindow, window.isVisible {
-            window.close()
+        if cameraUsage.isRequested(.debug) {
+            cameraDebugWindow?.close()
             cameraHead.removeObserver(Self.debugObserver)
+            cameraUsage.release(.debug)
             sender.state = .off
             log("camera debug window off")
             return
@@ -1422,18 +1570,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let display: CGDirectDisplayID? = slots.isEmpty ? nil : slots[targetScreen()].displayID
             let screen = NSScreen.screens.first { $0.displayID == display }
             let window = CameraDebugWindow(session: cameraHead.captureSession, on: screen)
+            window.onClose = { [weak self, weak sender] in
+                guard let self else { return }
+                cameraHead.removeObserver(Self.debugObserver)
+                cameraDebugWindow = nil
+                cameraUsage.release(.debug)
+                sender?.state = .off
+            }
             cameraDebugWindow = window
             cameraHead.addObserver(Self.debugObserver) { [weak window] observation in window?.update(observation) }
             window.show()
             sender.state = .on
             log("camera debug window on")
         }
-        if cameraHead.isRunning {
-            open()
-            return
-        }
-        cameraHead.start { [weak self] error in
+        cameraUsage.request(.debug) { [weak self] error in
             if let error {
+                self?.cameraUsage.release(.debug)
                 log("camera head tracking failed: \(error)")
                 self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
                 return
@@ -1568,37 +1720,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func toggleWallMode(_ sender: NSMenuItem) {
-        guard let renderer else { return }
-        if renderer.headOffset != nil {
-            renderer.headOffset = nil
-            sender.state = .off
-            UserDefaults.standard.set(false, forKey: "wallMode")
-            log("wall mode off")
+    private func syncCameraCentering(force: Bool = false) {
+        let needed = !terminating && CameraUsageController.needsCentering(
+            family: connectedGlassesFamily,
+            visible: window?.isVisible == true && renderer != nil,
+            enabled: UserDefaults.standard.bool(forKey: "wallMode")
+        )
+        guard force || needed != cameraCenteringRequested else { return }
+        cameraCenteringRequested = needed
+        guard needed else {
+            renderer?.headOffset = nil
+            wallModeItem?.state = .off
+            cameraUsage.release(.centering)
+            log("camera centering off")
             return
         }
-        UserDefaults.standard.set(true, forKey: "wallMode")
-        let enable = { [weak self] in
-            guard let self, let renderer = self.renderer else { return }
+        wallModeItem?.state = .on
+        cameraUsage.request(.centering) { [weak self] error in
+            guard let self, cameraCenteringRequested else { return }
+            if let error {
+                log("camera head tracking failed: \(error)")
+                wallModeItem?.state = .off
+                signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
+                return
+            }
+            guard let renderer else { return }
             cameraHead.resetReference(after: 0.3)
             installCameraHeadOffset(renderer)
-            sender.state = .on
+            wallModeItem?.state = .on
             signal(glassesTracking ? t(.signalWallModeGlasses) : t(.signalWallModeFace), symbol: "rectangle.on.rectangle", seconds: 6)
             log("wall mode on")
         }
-        if cameraHead.isRunning {
-            enable()
-            return
-        }
-        cameraHead.start { [weak self] error in
-            if let error {
-                log("camera head tracking failed: \(error)")
-                self?.signal(t(.signalCameraUnavailablePrivacy), symbol: "video.slash", seconds: 10)
-                return
-            }
-            log("camera head tracking on")
-            enable()
-        }
+    }
+
+    @objc private func toggleWallMode(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(sender.state != .on, forKey: "wallMode")
+        syncCameraCentering(force: true)
     }
 
     @MainActor @objc private func toggleGlassesTracking(_ sender: NSMenuItem) {
@@ -1635,12 +1792,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        if cameraHead.isRunning {
-            begin()
-            return
-        }
-        cameraHead.start { [weak self] error in
+        cameraUsage.request(.learning) { [weak self] error in
             if let error {
+                self?.cameraUsage.release(.learning)
                 log("camera head tracking failed: \(error)")
                 self?.learningGlasses = false
                 sender.state = .off
@@ -1659,6 +1813,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filter.trustNextStillness()
         sender.state = enabled ? .on : .off
         log("firmware zero restore \(enabled ? "on" : "off")")
+    }
+
+    private var automaticLensTint: Bool {
+        UserDefaults.standard.object(forKey: "vitureAutomaticLensTint") as? Bool ?? true
+    }
+
+    private func updateLensTint(head: simd_quatd) {
+        guard automaticLensTint, let viture, viture.supportsFilmControl else { return }
+        guard renderer?.usedExternalOrientation == true, (viture.poseAge ?? .infinity) < 0.15 else {
+            _ = lensTintPolicy.update(target: nil, time: CACurrentMediaTime())
+            return
+        }
+        let target: CursorTarget?
+        if renderer?.meditation.isActive == true {
+            target = .virtual(0)
+        } else if lastGazeHit == nil, let rawHead = viture.pose()?.orientation, physicalMonitor?.contains(head: rawHead) == true {
+            target = .mac
+        } else {
+            target = lastCursorHit?.target
+        }
+        if let darkened = lensTintPolicy.update(target: target, time: CACurrentMediaTime()) {
+            viture.setLensTint(darkened)
+        }
+    }
+
+    @objc private func toggleAutomaticLensTint(_ sender: NSMenuItem) {
+        let enabled = !automaticLensTint
+        UserDefaults.standard.set(enabled, forKey: "vitureAutomaticLensTint")
+        sender.state = enabled ? .on : .off
+        lensTintPolicy = LensTintPolicy()
+        if !enabled { viture?.setLensTint(nil) }
+    }
+
+    @objc private func rememberPhysicalMonitor() {
+        monitorCaptureWork?.cancel()
+        let generation = vitureGeneration
+        let tracker = viture
+        let work = DispatchWorkItem { [weak self, weak tracker] in
+            guard let self, let tracker, self.viture === tracker, self.vitureGeneration == generation,
+                  self.renderer?.usedExternalOrientation == true,
+                  (tracker.poseAge ?? .infinity) < 0.15 else { return }
+            guard let rawPose = tracker.pose() else { return }
+            let direction = rawPose.orientation.yawPitch
+            self.physicalMonitor = PhysicalMonitorDirection(yaw: direction.yaw, pitch: direction.pitch)
+            self.lensTintPolicy = LensTintPolicy()
+            self.monitorCaptureWork = nil
+            NSSound(named: "Tink")?.play()
+            log("VITURE: направление на физический монитор запомнено")
+        }
+        monitorCaptureWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    @objc private func forgetPhysicalMonitor() {
+        monitorCaptureWork?.cancel()
+        monitorCaptureWork = nil
+        physicalMonitor = nil
+        lensTintPolicy = LensTintPolicy()
+        viture?.setLensTint(nil)
+    }
+
+    private var vitureExtrapolation: Bool {
+        UserDefaults.standard.object(forKey: "vitureExtrapolation") as? Bool ?? true
+    }
+
+    private func savedViturePoseMode() -> ViturePoseMode {
+        UserDefaults.standard.string(forKey: "viturePoseMode").flatMap(ViturePoseMode.init(rawValue:)) ?? .callback
+    }
+
+    @objc private func toggleVitureCallbackPose(_ sender: NSMenuItem) {
+        let mode: ViturePoseMode = savedViturePoseMode() == .callback ? .polling : .callback
+        UserDefaults.standard.set(mode.rawValue, forKey: "viturePoseMode")
+        sender.state = mode == .callback ? .on : .off
+        vitureGeneration += 1
+        if let viture { stopVitureTracking(viture) }
+        log("VITURE: выбран источник позы \(mode.rawValue), перезапускаю трекер")
+    }
+
+    @objc private func toggleVitureSixDof(_ sender: NSMenuItem) {
+        let enabled = !UserDefaults.standard.bool(forKey: "vitureSixDofPosition")
+        UserDefaults.standard.set(enabled, forKey: "vitureSixDofPosition")
+        sender.state = enabled ? .on : .off
+        log("VITURE: положение головы по 6DoF \(enabled ? "вкл" : "выкл")")
+    }
+
+    @objc private func toggleVitureExtrapolation(_ sender: NSMenuItem) {
+        let enabled = !vitureExtrapolation
+        UserDefaults.standard.set(enabled, forKey: "vitureExtrapolation")
+        viture?.usesExtrapolation = enabled
+        sender.state = enabled ? .on : .off
+        log("VITURE: экстраполяция позы \(enabled ? "вкл" : "выкл")")
+    }
+
+    @objc private func toggleVitureGyroFusion(_ sender: NSMenuItem) {
+        let enabled = !UserDefaults.standard.bool(forKey: "vitureGyroFusion")
+        UserDefaults.standard.set(enabled, forKey: "vitureGyroFusion")
+        viture?.usesFusion = enabled
+        sender.state = enabled ? .on : .off
+        log("VITURE: гироскопное слияние \(enabled ? "вкл" : "выкл")")
     }
 
     private func logCameraHead() {
@@ -1709,11 +1962,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func arrangeInArc() {
-        guard let renderer else { return }
-        scene.arrangeInArc(head: renderer.currentHead, join: savedJoin())
+        guard renderer != nil, let anchor = gazedScreen else { NSSound.beep(); return }
+        scene.arrangeInArc(around: anchor, join: savedJoin())
         saveScene()
         arrangeDisplays()
-        log("screens arranged in an arc")
+        log("screens arranged around screen \(anchor + 1)")
+    }
+
+    private var gazedScreen: Int? {
+        scene.focus?.screen ?? RayDeskCore.gazeHit(head: head, screens: scene.screens, origin: headOrigin)?.screen
+    }
+
+    @objc private func rollLeft() {
+        rotateTargetInPlane(by: .pi / 180)
+    }
+
+    @objc private func rollRight() {
+        rotateTargetInPlane(by: -.pi / 180)
+    }
+
+    private func rotateTargetInPlane(by angle: Double) {
+        guard renderer != nil, let index = gazedScreen else { NSSound.beep(); return }
+        scene.rotateInPlane(index, by: angle)
+        saveScene()
+        log(String(format: "screen %d rotated in plane by %.0f°", index + 1, angle * 180 / .pi))
     }
 
     private func savedJoin() -> ScreenJoin {
@@ -1848,12 +2120,174 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.string(forKey: "stabilization").flatMap(StabilizationLevel.init(rawValue:)) ?? .off
     }
 
+    private func savedWorldLockedPresentation() -> Bool {
+        UserDefaults.standard.object(forKey: "worldLockedPresentation") as? Bool ?? true
+    }
+
+    private func savedWorldLockSmoothing() -> Bool {
+        UserDefaults.standard.object(forKey: "worldLockSmoothing") as? Bool ?? true
+    }
+
+    private func savedAdaptiveVSync() -> Bool {
+        UserDefaults.standard.object(forKey: "adaptiveVSync") as? Bool ?? false
+    }
+
+    @objc private func toggleAdaptiveVSync(_ sender: NSMenuItem) {
+        let enabled = !savedAdaptiveVSync()
+        UserDefaults.standard.set(enabled, forKey: "adaptiveVSync")
+        renderer?.adaptiveVSync = enabled
+        sender.state = enabled ? .on : .off
+        log("adaptive vsync: \(enabled ? "on" : "off")")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            statusItem?.menu = buildMenu()
+        }
+    }
+
+    private func savedRestSmoothing() -> Bool {
+        UserDefaults.standard.object(forKey: "restSmoothing") as? Bool ?? true
+    }
+
+    @objc private func toggleScanoutCompensation(_ sender: NSMenuItem) {
+        scanoutCompensationEnabled.toggle()
+        renderer?.scanoutEnabled = scanoutCompensationEnabled
+        sender.state = scanoutCompensationEnabled ? .on : .off
+        log("scanout compensation: \(scanoutCompensationEnabled ? "on" : "off")")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            statusItem?.menu = buildMenu()
+        }
+    }
+
+    @objc private func toggleScanoutDirection(_ sender: NSMenuItem) {
+        scanoutBottomToTop.toggle()
+        renderer?.scanoutBottomToTop = scanoutBottomToTop
+        sender.state = scanoutBottomToTop ? .on : .off
+        log("scanout direction: \(scanoutBottomToTop ? "bottom-to-top" : "top-to-bottom")")
+    }
+
+    private func savedRestStrength() -> RestStabilizationStrength {
+        UserDefaults.standard.string(forKey: "restStrength").flatMap(RestStabilizationStrength.init(rawValue:)) ?? .light
+    }
+
+    private func savedRestTolerance() -> Double {
+        let value = UserDefaults.standard.object(forKey: "restTolerance") as? Double ?? 1
+        return value.isFinite ? min(RestPoseStabilizer.toleranceRange.upperBound, max(RestPoseStabilizer.toleranceRange.lowerBound, value)) : 1
+    }
+
+    @objc private func restToleranceChanged(_ sender: NSSlider) {
+        let value = min(RestPoseStabilizer.toleranceRange.upperBound, max(RestPoseStabilizer.toleranceRange.lowerBound, (sender.doubleValue * 4).rounded() / 4))
+        sender.doubleValue = value
+        restToleranceValueLabel?.stringValue = String(format: "×%.2f", value)
+        guard value != savedRestTolerance() else { return }
+        UserDefaults.standard.set(value, forKey: "restTolerance")
+        renderer?.restTolerance = value
+        log(String(format: "world lock rest tolerance: ×%.2f", value))
+    }
+
+    private func savedRestIndicator() -> Bool {
+        UserDefaults.standard.object(forKey: "showsRestIndicator") as? Bool ?? true
+    }
+
+    @objc private func toggleRestIndicator(_ sender: NSMenuItem) {
+        let enabled = !savedRestIndicator()
+        UserDefaults.standard.set(enabled, forKey: "showsRestIndicator")
+        renderer?.showsRestIndicator = enabled
+        sender.state = enabled ? .on : .off
+        log("world lock rest indicator: \(enabled)")
+    }
+
+    @objc private func toggleWorldLockSmoothing(_ sender: NSMenuItem) {
+        let enabled = !savedWorldLockSmoothing()
+        UserDefaults.standard.set(enabled, forKey: "worldLockSmoothing")
+        renderer?.worldLockSmoothing = enabled
+        sender.state = enabled ? .on : .off
+        log("world lock light smoothing: \(enabled ? "on" : "off")")
+    }
+
+    @objc private func toggleWorldLockedPresentation() {
+        let enabled = !savedWorldLockedPresentation()
+        UserDefaults.standard.set(enabled, forKey: "worldLockedPresentation")
+        renderer?.worldLockedPresentation = enabled
+        renderer?.stabilizer = OrientationStabilizer(level: savedStabilization())
+        log("rotational world lock: \(enabled ? "on" : "off")")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            statusItem?.menu = buildMenu()
+        }
+    }
+
+    private func savedScreenTextMode() -> ScreenTextMode {
+        UserDefaults.standard.string(forKey: "screenTextMode").flatMap(ScreenTextMode.init(rawValue:)) ?? .original
+    }
+
+    @objc private func chooseScreenTextMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = ScreenTextMode(rawValue: raw) else { return }
+        UserDefaults.standard.set(mode.rawValue, forKey: "screenTextMode")
+        renderer?.screenTextMode = mode
+        sender.menu?.items.forEach { item in
+            item.state = item.representedObject as? String == raw ? .on : .off
+        }
+        log("screen text mode: \(mode.rawValue)")
+    }
+
     @objc private func chooseStabilization(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let level = StabilizationLevel(rawValue: raw) else { return }
-        UserDefaults.standard.set(level.rawValue, forKey: "stabilization")
-        renderer?.stabilizer.level = level
+        if savedWorldLockedPresentation() {
+            let enabled = level != .off
+            UserDefaults.standard.set(enabled, forKey: "restSmoothing")
+            renderer?.restSmoothing = enabled
+            if enabled {
+                let strength: RestStabilizationStrength
+                switch level {
+                case .off, .weak: strength = .light
+                case .medium: strength = .medium
+                case .strong: strength = .strong
+                }
+                UserDefaults.standard.set(strength.rawValue, forKey: "restStrength")
+                UserDefaults.standard.set(false, forKey: "adaptiveVSync")
+                renderer?.restStrength = strength
+                renderer?.adaptiveVSync = false
+            }
+            log("world lock rest stabilization: \(raw)")
+        } else {
+            UserDefaults.standard.set(level.rawValue, forKey: "stabilization")
+            renderer?.stabilizer.level = level
+            log("stabilization \(raw)")
+        }
         sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == raw ? .on : .off }
-        log("stabilization \(raw)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            statusItem?.menu = buildMenu()
+        }
+    }
+
+    private func pictureStabilizationLevel() -> StabilizationLevel {
+        guard savedWorldLockedPresentation() else { return savedStabilization() }
+        guard savedRestSmoothing() && !savedAdaptiveVSync() else { return .off }
+        switch savedRestStrength() {
+        case .light: return .weak
+        case .medium: return .medium
+        case .strong: return .strong
+        }
+    }
+
+    private func pictureStabilizationMenu() -> NSMenuItem {
+        let stabilization = NSMenuItem(title: t(.menuStabilization), action: nil, keyEquivalent: "")
+        let hint = t(savedWorldLockedPresentation() ? .pictureStabilizationAnchoredHint : .pictureStabilizationUnanchoredHint)
+        stabilization.toolTip = hint
+        let levels = NSMenu()
+        levels.autoenablesItems = false
+        for (level, title) in [(StabilizationLevel.off, t(.menuStabilizationOff)), (.weak, t(.menuStabilizationWeak)),
+                               (.medium, t(.menuStabilizationMedium)), (.strong, t(.menuStabilizationStrong))] {
+            let item = menuItem(title, #selector(chooseStabilization(_:)))
+            item.representedObject = level.rawValue
+            item.state = level == pictureStabilizationLevel() ? .on : .off
+            item.toolTip = hint
+            levels.addItem(item)
+        }
+        stabilization.submenu = levels
+        return stabilization
     }
 
     @objc private func toggleGrid() {
@@ -1908,7 +2342,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(renderer.verticalFOV, forKey: "verticalFOV")
     }
     private func savedVerticalFOV() -> Double {
-        UserDefaults.standard.object(forKey: "verticalFOV") as? Double ?? Renderer.defaultVerticalFOV
+        let stored = UserDefaults.standard.object(forKey: "verticalFOV")
+        let value = stored as? Double ?? (stored as? String).flatMap(Double.init)
+        guard let value, Renderer.verticalFOVRange.contains(value) else { return Renderer.defaultVerticalFOV }
+        return value
     }
     private func showVerticalFOV(_ value: Double) {
         fovSlider?.doubleValue = value
@@ -1917,6 +2354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleWindow() {
         guard let window else { return }
         window.isVisible ? window.orderOut(nil) : window.orderFrontRegardless()
+        syncCameraCentering()
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -1936,6 +2374,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.turnAll(by: self?.turnStep ?? 0) }
         hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.turnAll(by: -(self?.turnStep ?? 0)) }
+        hotkeys.register(keyCode: kVK_ANSI_Comma, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.rollLeft() }
+        hotkeys.register(keyCode: kVK_ANSI_Period, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.rollRight() }
         hotkeys.register(keyCode: kVK_LeftArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnLeft() }
         hotkeys.register(keyCode: kVK_RightArrow, modifiers: controlKey | optionKey | shiftKey) { [weak self] in self?.turnRight() }
         hotkeys.register(keyCode: kVK_UpArrow, modifiers: controlKey | optionKey | cmdKey) { [weak self] in self?.tiltAllBack() }
@@ -1974,19 +2414,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupMenu() {
+        syncMenuFamily()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "RayDesk")
         item.menu = buildMenu()
         statusItem = item
     }
 
-    private func buildMenu() -> NSMenu {
+    func buildMenu() -> NSMenu {
+        statusLine.menu?.removeItem(statusLine)
+        mouseTapLine.menu?.removeItem(mouseTapLine)
+        rayNeoMenuItems = []
+        vitureMenuItems = []
+        calibrationMenuItems = []
         let menu = NSMenu()
         statusLine.title = statusText.isEmpty ? t(.statusStarting) : statusText
         refreshMouseTapLine()
         menu.addItem(statusLine)
         menu.addItem(.separator())
-        menu.addItem(submenu(t(.menuScreens)) { screens in
+        menu.addItem(screensMenu())
+        menu.addItem(centreHeadingMenu())
+        let camera = cameraMenu()
+        rayNeoMenuItems.append(camera)
+        menu.addItem(camera)
+        let viture = vitureMenu()
+        vitureMenuItems.append(viture)
+        menu.addItem(viture)
+        menu.addItem(pictureMenu())
+        menu.addItem(meditationMenu())
+        menu.addItem(settingsMenu())
+        menu.addItem(.separator())
+        menu.addItem(mouseTapLine)
+        menu.addItem(.separator())
+        menu.addItem(menuItem(t(.menuQuit), #selector(quit)))
+        applyMenuFamily()
+        return menu
+    }
+
+    private func screensMenu() -> NSMenuItem {
+        submenu(t(.menuScreens)) { screens in
             screens.addItem(menuItem(t(.menuPlaceHere), #selector(placeHere)))
             screens.addItem(menuItem(t(.menuGrab), #selector(toggleGrab)))
             let macOff = menuItem(t(.menuMacScreenOff), #selector(toggleMacScreenOff))
@@ -2012,6 +2478,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screens.addItem(menuItem(t(.menuTiltForward), #selector(tiltForward)))
             screens.addItem(menuItem(t(.menuTurnLeft), #selector(turnLeft)))
             screens.addItem(menuItem(t(.menuTurnRight), #selector(turnRight)))
+            screens.addItem(menuItem(t(.menuRollLeft), #selector(rollLeft)))
+            screens.addItem(menuItem(t(.menuRollRight), #selector(rollRight)))
             screens.addItem(menuItem(t(.menuTiltAllBack), #selector(tiltAllBack)))
             screens.addItem(menuItem(t(.menuTiltAllForward), #selector(tiltAllForward)))
             screens.addItem(.separator())
@@ -2024,19 +2492,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screens.addItem(.separator())
             screens.addItem(menuItem(t(.menuCursorToGaze), #selector(warpCursorToGaze)))
             screens.addItem(menuItem(t(.menuWindowToGaze), #selector(moveWindowToGaze)))
-        })
-        menu.addItem(submenu(t(.menuCentreHeading)) { center in
+        }
+    }
+
+    private func manualCalibrationMenuItem() -> NSMenuItem {
+        let item = menuItem(t(.menuGridManual), #selector(toggleCalibration))
+        item.state = isCalibrating ? .on : .off
+        calibrationMenuItems.append(item)
+        return item
+    }
+
+    private func centreHeadingMenu() -> NSMenuItem {
+        submenu(t(.menuCentreHeading)) { center in
             center.addItem(menuItem(t(.menuRecentreWorld), #selector(recenterToGaze)))
+            center.addItem(manualCalibrationMenuItem())
             center.addItem(menuItem(t(.menuMarkReference), #selector(markReference)))
-            center.addItem(.separator())
+            let separator = NSMenuItem.separator()
+            center.addItem(separator)
             let compassItem = menuItem(t(.menuCompass), #selector(toggleCompass(_:)))
             compassItem.state = UserDefaults.standard.bool(forKey: "compassEnabled") ? .on : .off
             center.addItem(compassItem)
-            center.addItem(menuItem(t(.menuCalibrateCompass), #selector(calibrateCompass)))
-            center.addItem(menuItem(t(.menuCalibrateGyroScale), #selector(calibrateGyroScale)))
-            center.addItem(menuItem(t(.menuRecalibrateGyro), #selector(recalibrate)))
-        })
-        menu.addItem(submenu(t(.menuCamera)) { camera in
+            let calibrateCompassItem = menuItem(t(.menuCalibrateCompass), #selector(calibrateCompass))
+            center.addItem(calibrateCompassItem)
+            let gyroScaleItem = menuItem(t(.menuCalibrateGyroScale), #selector(calibrateGyroScale))
+            center.addItem(gyroScaleItem)
+            let recalibrateItem = menuItem(t(.menuRecalibrateGyro), #selector(recalibrate))
+            center.addItem(recalibrateItem)
+            rayNeoMenuItems += [separator, compassItem, calibrateCompassItem, gyroScaleItem, recalibrateItem]
+        }
+    }
+
+    private func cameraMenu() -> NSMenuItem {
+        submenu(t(.menuCamera)) { camera in
             let glassesItem = menuItem(t(.menuGlassesTracking), #selector(toggleGlassesTracking(_:)))
             glassesItem.state = UserDefaults.standard.bool(forKey: "glassesTracking") ? .on : .off
             glassesTrackingItem = glassesItem
@@ -2092,52 +2579,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let debugItem = menuItem(t(.menuCameraDebugWindow), #selector(toggleCameraDebug(_:)))
             debugItem.state = cameraDebugWindow?.isVisible == true ? .on : .off
             camera.addItem(debugItem)
+        }
+    }
+
+    private func vitureMenu() -> NSMenuItem {
+        submenu(t(.menuViture)) { viture in
+            let callbackPose = menuItem(t(.menuVitureCallbackPose), #selector(toggleVitureCallbackPose(_:)))
+            callbackPose.state = savedViturePoseMode() == .callback ? .on : .off
+            viture.addItem(callbackPose)
+            let autoTint = menuItem(t(.menuVitureAutoTint), #selector(toggleAutomaticLensTint(_:)))
+            autoTint.state = automaticLensTint ? .on : .off
+            autoTintMenuItem = autoTint
+            viture.addItem(autoTint)
+            viture.addItem(menuItem(t(.menuVitureRememberMonitor), #selector(rememberPhysicalMonitor)))
+            viture.addItem(menuItem(t(.menuVitureForgetMonitor), #selector(forgetPhysicalMonitor)))
+            viture.addItem(.separator())
+            let sixDof = menuItem(t(.menuVitureSixDof), #selector(toggleVitureSixDof(_:)))
+            sixDof.state = UserDefaults.standard.bool(forKey: "vitureSixDofPosition") ? .on : .off
+            viture.addItem(sixDof)
+            let extrapolation = menuItem(t(.menuVitureExtrapolation), #selector(toggleVitureExtrapolation(_:)))
+            extrapolation.state = vitureExtrapolation ? .on : .off
+            viture.addItem(extrapolation)
+            let fusion = menuItem(t(.menuVitureGyroFusion), #selector(toggleVitureGyroFusion(_:)))
+            fusion.state = UserDefaults.standard.bool(forKey: "vitureGyroFusion") ? .on : .off
+            viture.addItem(fusion)
+            viture.addItem(.separator())
             let handsItem = menuItem(t(.menuHandsCamera), #selector(toggleHandsCamera(_:)))
-            handsItem.state = handWindow?.isVisible == true ? .on : .off
-            camera.addItem(handsItem)
-        })
-        menu.addItem(submenu(t(.menuPicture)) { picture in
+            handsItem.state = handCamera == nil ? .off : .on
+            handsCameraItem = handsItem
+            viture.addItem(handsItem)
+        }
+    }
+
+    private func pictureMenu() -> NSMenuItem {
+        submenu(t(.menuPicture)) { picture in
             picture.autoenablesItems = false
             picture.addItem(menuItem(t(.menuTogglePicture), #selector(toggleWindow)))
             let bordersItem = menuItem(t(.menuScreenBorders), #selector(toggleScreenBorders(_:)))
             bordersItem.state = UserDefaults.standard.bool(forKey: "hideScreenBorders") ? .off : .on
             picture.addItem(bordersItem)
+            picture.addItem(submenu(t(.menuSoftText)) { modes in
+                for (mode, title) in [(ScreenTextMode.original, t(.menuTextOriginal)), (.soft, t(.menuTextSoft)), (.softDimmed, t(.menuTextSoftDimmed))] {
+                    let item = menuItem(title, #selector(chooseScreenTextMode(_:)))
+                    item.representedObject = mode.rawValue
+                    item.state = mode == savedScreenTextMode() ? .on : .off
+                    modes.addItem(item)
+                }
+            })
             picture.addItem(.separator())
             picture.addItem(fovControl())
             picture.addItem(menuItem(t(.menuFieldOfViewWider), #selector(widerFOV)))
             picture.addItem(menuItem(t(.menuFieldOfViewNarrower), #selector(narrowerFOV)))
             picture.addItem(menuItem(t(.menuMorePrediction), #selector(morePrediction)))
             picture.addItem(menuItem(t(.menuLessPrediction), #selector(lessPrediction)))
-            let stabilization = NSMenuItem(title: t(.menuStabilization), action: nil, keyEquivalent: "")
-            let levels = NSMenu()
-            for (level, title) in [(StabilizationLevel.off, t(.menuStabilizationOff)), (.weak, t(.menuStabilizationWeak)),
-                                   (.medium, t(.menuStabilizationMedium)), (.strong, t(.menuStabilizationStrong))] {
-                let item = menuItem(title, #selector(chooseStabilization(_:)))
-                item.representedObject = level.rawValue
-                item.state = level == savedStabilization() ? .on : .off
-                levels.addItem(item)
-            }
-            stabilization.submenu = levels
-            picture.addItem(stabilization)
+            let worldLock = menuItem(t(.menuWorldLockedPresentation), #selector(toggleWorldLockedPresentation))
+            worldLock.state = savedWorldLockedPresentation() ? .on : .off
+            worldLock.toolTip = t(.worldLockedPresentationHint)
+            picture.addItem(worldLock)
+            picture.addItem(pictureStabilizationMenu())
+            let lightSmoothing = menuItem(t(.menuWorldLockSmoothing), #selector(toggleWorldLockSmoothing(_:)))
+            lightSmoothing.state = savedWorldLockSmoothing() ? .on : .off
+            lightSmoothing.isEnabled = savedWorldLockedPresentation()
+            picture.addItem(lightSmoothing)
+            let adaptiveVSync = menuItem(t(.menuAdaptiveVSync), #selector(toggleAdaptiveVSync(_:)))
+            adaptiveVSync.state = savedAdaptiveVSync() ? .on : .off
+            adaptiveVSync.isEnabled = savedWorldLockedPresentation()
+            adaptiveVSync.toolTip = t(.adaptiveVSyncHint)
+            picture.addItem(adaptiveVSync)
+            let scanout = menuItem(t(.menuScanoutCompensation), #selector(toggleScanoutCompensation(_:)))
+            scanout.state = scanoutCompensationEnabled ? .on : .off
+            scanout.isEnabled = savedWorldLockedPresentation()
+            scanout.toolTip = t(.scanoutCompensationHint)
+            picture.addItem(scanout)
+            let scanoutDirection = menuItem(t(.menuScanoutBottomToTop), #selector(toggleScanoutDirection(_:)))
+            scanoutDirection.state = scanoutBottomToTop ? .on : .off
+            scanoutDirection.isEnabled = savedWorldLockedPresentation() && scanoutCompensationEnabled
+            picture.addItem(scanoutDirection)
+            picture.addItem(restToleranceControl())
+            let restIndicator = menuItem(t(.menuRestIndicator), #selector(toggleRestIndicator(_:)))
+            restIndicator.state = savedRestIndicator() ? .on : .off
+            picture.addItem(restIndicator)
             picture.addItem(.separator())
             picture.addItem(menuItem(t(.menuHorizonGrid), #selector(toggleGrid)))
-            picture.addItem(menuItem(t(.menuGridManual), #selector(toggleCalibration)))
+            picture.addItem(manualCalibrationMenuItem())
             picture.addItem(menuItem(t(.menuRecordGlassesVideo), #selector(toggleRecording)))
-        })
-        menu.addItem(meditationMenu())
-        menu.addItem(submenu(t(.menuSettings)) { settings in
+        }
+    }
+
+    private func settingsMenu() -> NSMenuItem {
+        submenu(t(.menuSettings)) { settings in
             for language in AppLanguage.allCases {
                 let option = menuItem(language.nativeName, #selector(chooseLanguage(_:)))
                 option.representedObject = language.rawValue
                 option.state = language == Localization.shared.language ? .on : .off
                 settings.addItem(option)
             }
-        })
-        menu.addItem(.separator())
-        menu.addItem(mouseTapLine)
-        menu.addItem(.separator())
-        menu.addItem(menuItem(t(.menuQuit), #selector(quit)))
-        return menu
+        }
+    }
+
+    /// Переключает меню и строку состояния на семейство подключённых очков.
+    private func syncMenuFamily() {
+        guard let family = connectedGlassesFamily, family != menuFamily else { return }
+        menuFamily = family
+        log("glasses family: \(family.rawValue)")
+        applyMenuFamily()
+    }
+
+    /// Прячет пункты меню, которых у подключённого семейства очков нет.
+    private func applyMenuFamily() {
+        let viture = menuFamily == .viture
+        for item in rayNeoMenuItems { item.isHidden = viture }
+        for item in vitureMenuItems { item.isHidden = !viture }
     }
 
     private func applyStoredLanguage() {
@@ -2172,6 +2724,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func menuItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
+        return item
+    }
+
+    private func restToleranceControl() -> NSMenuItem {
+        let value = NSTextField(labelWithString: String(format: "×%.2f", savedRestTolerance()))
+        value.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        value.alignment = .right
+        value.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        let title = NSTextField(labelWithString: t(.menuRestTolerance))
+        title.font = .menuFont(ofSize: 0)
+        let slider = NSSlider(value: savedRestTolerance(), minValue: RestPoseStabilizer.toleranceRange.lowerBound,
+                              maxValue: RestPoseStabilizer.toleranceRange.upperBound,
+                              target: self, action: #selector(restToleranceChanged(_:)))
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.altIncrementValue = 0.25
+        slider.setAccessibilityLabel(t(.menuRestTolerance))
+        slider.toolTip = t(.restToleranceHint)
+        slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [title, slider, value])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 2, left: 14, bottom: 2, right: 14)
+        stack.frame = NSRect(x: 0, y: 0, width: 340, height: 28)
+        restToleranceValueLabel = value
+        let item = NSMenuItem()
+        item.view = stack
         return item
     }
 
@@ -2216,21 +2796,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func logFrameTiming(_ kind: String, _ timing: FrameTimeline.Summary) {
+        func milliseconds(_ value: Double?) -> String {
+            value.map { String(format: "%.3f", $0) } ?? "n/a"
+        }
+        log("GPU \(kind) window=240 frames=\(timing.frames) cpuP95=\(milliseconds(timing.cpuMillisecondsP95))ms queueP95=\(milliseconds(timing.gpuQueueMillisecondsP95))ms executionP95=\(milliseconds(timing.gpuMillisecondsP95))ms presentWaitP95=\(milliseconds(timing.presentWaitMillisecondsP95))ms poseAgeP95=\(milliseconds(timing.sourceAgeMillisecondsP95))ms")
+    }
+
     private func refreshStatus() {
         statusTicks += 1
+        if let viture, viture.poseMode == .callback {
+            let counts = viture.takeCallbackCounts()
+            log("VITURE callback: received=\(counts.received) processed=\(counts.processed) rejected=\(counts.rejected)")
+        }
+        if let state = renderer?.independentReprojection?.snapshot {
+            log(String(format: "ATW presented=%d submitted=%d reused=%d dropped=%d errors=%d age=%.1fms maxAge=%.1fms maxGap=%.1fms",
+                       state.presented, state.submitted, state.reused, state.dropped, state.failed,
+                       state.frameAge * 1000, state.maximumFrameAge * 1000, state.maximumPresentGap * 1000))
+            let sampleToPresent = state.presented > 0
+                ? String(format: "%.2fms", (state.lastPresentedTime - state.sampleTime) * 1000) : "n/a"
+            log(String(format: "ATW adaptive=%@ vsync=%@ switches=%d targetLead=%.2fms sampleToPresent=%@ presentedSync=%@ horizon=%.2fms timeResidual=%.2fms",
+                       state.adaptiveVSync ? "on" : "off", state.displaySyncEnabled ? "on" : "off",
+                       state.syncSwitches, (state.poseTargetTime - state.sampleTime) * 1000, sampleToPresent,
+                       state.presentedDisplaySyncEnabled ? "on" : "off", state.horizon * 1000,
+                       (state.lastPresentedTime - state.poseTargetTime) * 1000))
+            if let pacing = state.pacing {
+                let latency = pacing.latencyPeriods.map { String(format: "%.2f", $0) } ?? "n/a"
+                log("ATW pacing skips=\(pacing.skipped) latencyPeriods=\(latency) streak=\(pacing.overStreak) pending=\(pacing.drainRequested) motionEligible=\(pacing.motionEligible)")
+            }
+            log(String(format: "SCANOUT span=%.3fms referenceTarget=%.6f lastRowTarget=%.6f referenceResidual=%.3fms angle=%.5fdeg direction=%@",
+                       state.scanoutDuration * 1000, state.poseTargetTime, state.scanoutEndTargetTime,
+                       (state.lastPresentedTime - state.poseTargetTime) * 1000, state.scanoutAngle * 180 / .pi,
+                       state.scanoutBottomToTop ? "bottom-to-top" : "top-to-bottom"))
+            if let error = state.error { log("ATW error: \(error)") }
+        }
+        if let renderer {
+            let warp = renderer.independentReprojection?.timings ?? renderer.warpTimings
+            logFrameTiming("warp", warp.summary(synchronized: renderer.displaySyncEnabled))
+            logFrameTiming("scene", renderer.sceneTimings.summary(synchronized: nil))
+            let position = renderer.currentHeadOffset
+            log(String(format: "ATW appliedPosition=%.4f,%.4f,%.4fm", position.x, position.y, position.z))
+        }
+        syncMenuFamily()
+        syncCameraCentering()
+        watchRendering()
+        logCameraHead()
+        logViturePose()
+        if let renderer { showVerticalFOV(renderer.verticalFOV) }
+        if let offset = renderer?.presentation.offset {
+            let source = renderer?.usedExternalOrientation == true ? "VITURE" : "внутренний трекер"
+            log(String(format: "DIAG поправка времени показа %.1f мс · горизонт предсказания (%@) %.1f мс",
+                       offset * 1000, source, (renderer?.lastPredictionHorizon ?? 0) * 1000))
+        }
+        if let renderer, renderer.adaptivePrediction {
+            log(String(format: "DIAG поправка предсказания %+.1f мс", renderer.headPipeline.predictionBias * 1000))
+        }
+        if let renderer, renderer.worldLockedPresentation {
+            if renderer.restSmoothing || renderer.adaptiveVSync {
+                log(String(format: "DIAG покой %@ · сила %@ · порог ×%.2f · поправка %.4f°",
+                           renderer.restPhase.rawValue, renderer.restStrength.rawValue, renderer.restTolerance,
+                           renderer.restCorrection * 180 / .pi))
+            }
+            log(String(format: "DIAG закрепление поворотов %@ · поздняя поправка %.3f°",
+                       renderer.lastReprojectionApplied ? "активно" : "без перепроекции", renderer.lastReprojectionAngle * 180 / .pi))
+        }
+        if menuFamily == .viture {
+            refreshVitureStatus()
+        } else {
+            refreshRayNeoStatus()
+        }
+    }
+
+    /// Строка состояния RayNeo: IMU, компас и выученный ноль гироскопа.
+    private func refreshRayNeoStatus() {
         if statusTicks % 30 == 0 { saveGyroBias() }
         promptCompassRecalibrationIfFieldChanged()
-        watchRendering()
         let cameraHoldsHeading = cameraHead.isRunning && cameraHead.correctsHeading
         if filter.compassPaused != cameraHoldsHeading {
             filter.compassPaused = cameraHoldsHeading
             log(cameraHoldsHeading ? "compass paused: camera reference owns heading (including temporary tracking loss)" : "compass resumed")
         }
-        logCameraHead()
-        logViturePose()
         let rate = imu?.takeSampleRate() ?? 0
         let yp = head.yawPitch
-        if let renderer { showVerticalFOV(renderer.verticalFOV) }
         statusText = String(format: t(.statusLine),
                                     imu?.isConnected == true ? "✓" : "✗", rate,
                                     yp.yaw * 180 / .pi, yp.pitch * 180 / .pi, scene.screens.count, renderer?.verticalFOV ?? 0,
@@ -2241,13 +2888,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + (filter.magnetometerCalibration == nil ? t(.statusCompassOff) : String(format: t(.statusCompassError), filter.compassError * 180 / .pi) + (filter.compassFieldChanged ? t(.statusFieldChanged) : ""))
         log(statusText + String(format: t(.statusDiagnostics), compass,
                                                                imu?.temperature ?? 0, (renderer?.headPipeline.predictionSeconds ?? 0) * 1000, filter.restoredFirmwareUpdates))
-        if let offset = renderer?.presentation.offset {
-            log(String(format: "DIAG кадр показан на %.1f мс позже заявленного · горизонт предсказания %.1f мс",
-                       offset * 1000, (renderer?.lastPredictionHorizon ?? 0) * 1000))
-        }
-        if let renderer, renderer.adaptivePrediction {
-            log(String(format: "DIAG поправка предсказания %+.1f мс", renderer.headPipeline.predictionBias * 1000))
-        }
         writeCalibrationRow()
         let applied = filter.appliedGyroBias * 180 / .pi
         let shift = filter.firmwareZeroShift * 180 / .pi
@@ -2261,6 +2901,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        length(raw - lastRawBias), raw.x, raw.y, raw.z))
         }
         lastRawBias = raw
+    }
+
+    /// Строка состояния VITURE: ориентация и положение приходят из SDK.
+    private func refreshVitureStatus() {
+        autoTintMenuItem?.toolTip = viture?.supportsFilmControl == false ? t(.menuVitureTintUnavailable) : nil
+        let yp = head.yawPitch
+        let yaw = yp.yaw * 180 / .pi
+        let pitch = yp.pitch * 180 / .pi
+        let fov = renderer?.verticalFOV ?? 0
+        if let viture, let pose = viture.pose() {
+            let position = pose.position
+            statusText = String(format: t(.statusViture), pose.isStable ? "✓" : "✗",
+                                yaw, pitch, scene.screens.count, fov,
+                                position.x, position.y, position.z)
+        } else if viture != nil {
+            statusText = String(format: t(.statusVitureNoPose), yaw, pitch, scene.screens.count, fov)
+        } else {
+            statusText = String(format: t(.statusVitureNoTracker), yaw, pitch, scene.screens.count, fov)
+        }
+        statusLine.title = statusText
     }
 
     private func refreshMouseTapLine() {

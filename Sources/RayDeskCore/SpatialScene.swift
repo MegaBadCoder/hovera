@@ -215,6 +215,47 @@ public final class SpatialScene {
         grabbed = nil
     }
 
+    /// Собирает соседние экраны вокруг `anchor`, сохраняя его позу и размеры.
+    /// Выбранный экран становится средним; остальные сохраняют взаимный порядок
+    /// вдоль его горизонтальной оси и стыкуются способом `join`. Захват отпускается.
+    public func arrangeInArc(around anchor: Int, join: ScreenJoin) {
+        guard screens.indices.contains(anchor) else { return }
+        let fixed = screens[anchor]
+        var order = screens.indices.filter { $0 != anchor }.sorted {
+            let lhs = dot(screens[$0].center - fixed.center, fixed.right)
+            let rhs = dot(screens[$1].center - fixed.center, fixed.right)
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }
+        let middle = screens.count / 2
+        order.insert(anchor, at: middle)
+        for position in stride(from: middle - 1, through: 0, by: -1) {
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position + 1]], on: .left, join: join)
+        }
+        for position in (middle + 1)..<order.count {
+            screens[order[position]] = attached(screens[order[position]], to: screens[order[position - 1]], on: .right, join: join)
+        }
+        grabbed = nil
+        endFocus()
+        cancelSwap()
+    }
+
+    /// Поворачивает прямоугольник экрана вокруг нормали через его центр.
+    /// - Parameters:
+    ///   - index: индекс экрана; отсутствующий индекс игнорируется.
+    ///   - angle: угол в радианах, положительный — против часовой стрелки со стороны зрителя.
+    /// Положение центра, нормаль и размеры сохраняются; поворачивается также содержимое экрана.
+    public func rotateInPlane(_ index: Int, by angle: Double) {
+        guard screens.indices.contains(index), angle.isFinite else { return }
+        var pose = screens[index]
+        let rotation = simd_quatd(angle: angle, axis: pose.normal)
+        let rotated = ScreenPose(center: pose.center, right: rotation.act(pose.right), up: rotation.act(pose.up),
+                                 width: pose.width, aspect: pose.aspect)
+        pose.tilt = rotated.tilt
+        pose.roll = rotated.roll
+        pose.pan = rotated.pan
+        screens[index] = pose
+    }
+
     /// Наклоняет все экраны вместе на `angle` (плюс — верх от зрителя), каждый вокруг своей
     /// горизонтальной оси; наклон каждого ограничен ±60°.
     public func tiltAll(by angle: Double) {

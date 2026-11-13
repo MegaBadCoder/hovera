@@ -249,18 +249,38 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         }
     }
 
+    private var captureGeneration = 0
+
     func start(completion: @escaping @MainActor (Error?) -> Void) {
+        let generation = lock.withLock {
+            captureGeneration += 1
+            return captureGeneration
+        }
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self else { return }
+            guard self.lock.withLock({ self.captureGeneration == generation }) else {
+                Task { @MainActor in completion(CameraError.cancelled) }
+                return
+            }
             guard granted else {
                 Task { @MainActor in completion(CameraError.accessDenied) }
                 return
             }
             queue.async {
+                guard self.lock.withLock({ self.captureGeneration == generation }) else {
+                    Task { @MainActor in completion(CameraError.cancelled) }
+                    return
+                }
                 do {
                     try self.configure()
+                    guard self.lock.withLock({ self.captureGeneration == generation }) else {
+                        Task { @MainActor in completion(CameraError.cancelled) }
+                        return
+                    }
                     self.session.startRunning()
-                    Task { @MainActor in completion(nil) }
+                    Task { @MainActor in
+                        completion(self.lock.withLock({ self.captureGeneration == generation }) ? nil : CameraError.cancelled)
+                    }
                 } catch {
                     Task { @MainActor in completion(error) }
                 }
@@ -269,10 +289,12 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     }
 
     func stop() {
+        lock.withLock { captureGeneration += 1 }
         queue.async {
             self.session.stopRunning()
             try? self.glassesFile?.close()
             self.glassesFile = nil
+            log("camera head tracking off")
         }
     }
 
@@ -792,6 +814,7 @@ final class CameraHeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     }
 
     enum CameraError: Error {
+        case cancelled
         case accessDenied
         case noCamera
     }

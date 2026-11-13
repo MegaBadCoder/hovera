@@ -11,6 +11,9 @@ public enum UIString: CaseIterable {
     case statusCompassError
     case statusFieldChanged
     case statusDiagnostics
+    case statusViture
+    case statusVitureNoPose
+    case statusVitureNoTracker
     case mouseTapChecking
     case mouseTapNeedsAccessibility
     case mouseTapRunning
@@ -32,6 +35,8 @@ public enum UIString: CaseIterable {
     case menuTiltForward
     case menuTurnLeft
     case menuTurnRight
+    case menuRollLeft
+    case menuRollRight
     case menuTiltAllBack
     case menuTiltAllForward
     case menuGatherScreens
@@ -72,15 +77,55 @@ public enum UIString: CaseIterable {
     case menuCameraDebugWindow
     case menuHandsCamera
 
+    case menuViture
+    case menuVitureAutoTint
+    case menuVitureRememberMonitor
+    case menuVitureForgetMonitor
+    case menuVitureTintUnavailable
+    case menuVitureSixDof
+    case menuVitureExtrapolation
+    case menuVitureCallbackPose
+    case menuVitureGyroFusion
+
     case menuPicture
     case menuTogglePicture
     case menuScreenBorders
+    case menuSoftText
+    case menuTextOriginal
+    case menuTextSoft
+    case menuTextSoftDimmed
     case menuFieldOfView
     case menuFieldOfViewWider
     case menuFieldOfViewNarrower
     case menuMorePrediction
     case menuLessPrediction
     case menuStabilization
+    case pictureStabilizationAnchoredHint
+    case pictureStabilizationUnanchoredHint
+    case menuWorldLockedPresentation
+    case worldLockedPresentationHint
+    case menuWorldLockSmoothing
+    case menuAdaptiveVSync
+    case adaptiveVSyncHint
+    case menuScanoutCompensation
+    case menuScanoutBottomToTop
+    case scanoutCompensationHint
+    case restAdaptiveSyncOn
+    case restAdaptiveSyncOff
+    case menuRestSmoothing
+    case menuRestStrength
+    case menuRestTolerance
+    case restToleranceHint
+    case menuRestLight
+    case menuRestMedium
+    case menuRestStrong
+    case menuRestIndicator
+    case restPhaseDisabled
+    case restPhaseUnavailable
+    case restPhaseWaiting
+    case restPhaseMoving
+    case restPhaseResting
+    case restStrengthCaption
     case menuStabilizationOff
     case menuStabilizationWeak
     case menuStabilizationMedium
@@ -249,6 +294,9 @@ public enum UIString: CaseIterable {
         case .statusCompassError: " · компас расходится %.1f°"
         case .statusFieldChanged: " · поле изменилось"
         case .statusDiagnostics: " · %@ · %.1f °C · предсказание %.0f мс · пересчётов нуля прошивкой отменено %d"
+        case .statusViture: "VITURE %@ · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f° · позиция %+.2f %+.2f %+.2f м"
+        case .statusVitureNoPose: "VITURE · SDK не отдаёт позу · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°"
+        case .statusVitureNoTracker: "VITURE · трекер не запущен · взгляд %.0f° / %.0f° · экранов %d · FOV %.1f°"
         case .mouseTapChecking: "Перетаскивание мышью: проверка разрешений…"
         case .mouseTapNeedsAccessibility: "Перетаскивание мышью: нужно разрешение «Универсальный доступ»"
         case .mouseTapRunning: "⌃⌥ + тащить — двигать экран, ⌃⌥ + скролл — ближе/дальше"
@@ -270,10 +318,12 @@ public enum UIString: CaseIterable {
         case .menuTiltForward: "Наклонить вперёд   ⌃⌥⇧↓"
         case .menuTurnLeft: "Довернуть экран влево   ⌃⌥⇧←"
         case .menuTurnRight: "Довернуть экран вправо   ⌃⌥⇧→"
+        case .menuRollLeft: "Вращать экран против часовой   ⌃⌥⇧,"
+        case .menuRollRight: "Вращать экран по часовой   ⌃⌥⇧."
         case .menuTiltAllBack: "Наклонить все назад   ⌃⌥⌘↑"
         case .menuTiltAllForward: "Наклонить все вперёд   ⌃⌥⌘↓"
         case .menuGatherScreens: "Собрать экраны перед собой   ⌃⌥⇧G"
-        case .menuArrangeInArc: "Собрать дугой, край к краю   ⌃⌥A"
+        case .menuArrangeInArc: "Собрать вокруг экрана под взглядом   ⌃⌥A"
         case .menuJoin: "Стыковка экранов"
         case .menuJoinHinge: "Как тройной монитор: вертикально, стык по всей длине"
         case .menuJoinGaze: "По взгляду: каждый экран смотрит на вас"
@@ -310,21 +360,61 @@ public enum UIString: CaseIterable {
         case .menuCameraDebugWindow: "Окно отладки (рамка и точки лица)"
         case .menuHandsCamera: "Камера очков: руки"
 
+        case .menuViture: "Очки VITURE"
+        case .menuVitureAutoTint: "Прозрачные линзы при взгляде на монитор"
+        case .menuVitureRememberMonitor: "Запомнить монитор через 3 с"
+        case .menuVitureForgetMonitor: "Забыть положение монитора"
+        case .menuVitureTintUnavailable: "Автозатемнение недоступно в SDK"
+        case .menuVitureSixDof: "Положение головы по 6DoF"
+        case .menuVitureExtrapolation: "Экстраполяция позы между отсчётами"
+        case .menuVitureCallbackPose: "Поза через callback (эксперимент)"
+        case .menuVitureGyroFusion: "Гироскоп при краткой потере трекинга"
+
         case .menuPicture: "Картинка"
         case .menuTogglePicture: "Скрыть / показать картинку   ⌃⌥H"
         case .menuScreenBorders: "Рамка вокруг экранов"
+        case .menuSoftText: "Мягкий текст (тест)"
+        case .menuTextOriginal: "Обычный вид"
+        case .menuTextSoft: "Без усиления резкости"
+        case .menuTextSoftDimmed: "Без усиления резкости + приглушённый белый"
         case .menuFieldOfView: "Угол обзора"
         case .menuFieldOfViewWider: "Угол обзора больше   ⌃⌥]"
         case .menuFieldOfViewNarrower: "Угол обзора меньше   ⌃⌥["
         case .menuMorePrediction: "Предсказание больше   ⌃⌥0"
         case .menuLessPrediction: "Предсказание меньше   ⌃⌥9"
         case .menuStabilization: "Стабилизация картинки"
+        case .pictureStabilizationAnchoredHint: "Сглаживает только в покое, сохраняя закрепление при поворотах. Выбор силы отключает Adaptive VSync, который обходит этот фильтр. Компенсация развёртки работает независимо."
+        case .pictureStabilizationUnanchoredHint: "Сглаживает ориентацию при выключенном закреплении экранов."
+        case .menuWorldLockedPresentation: "Закреплять при поворотах"
+        case .worldLockedPresentationHint: "Удерживает экраны при поворотах головы; работает с RayNeo и VITURE. Лёгкое сглаживание можно переключить отдельно."
+        case .menuWorldLockSmoothing: "Лёгкое сглаживание при закреплении"
+        case .menuAdaptiveVSync: "Adaptive VSync в покое"
+        case .menuScanoutCompensation: "Компенсация развёртки"
+        case .menuScanoutBottomToTop: "Развёртка снизу вверх"
+        case .scanoutCompensationHint: "Экспериментальный прогноз для разных строк экрана. Выключите для сравнения в этой же сборке. Направление можно поменять отдельно."
+        case .adaptiveVSyncHint: "Сохраняет компенсацию микродвижений и уменьшает ожидание показа в покое. При движении включает VSync. В покое возможны разрывы изображения; сглаживание ориентации в покое не применяется."
+        case .restAdaptiveSyncOn: "Adaptive VSync: синхронизация"
+        case .restAdaptiveSyncOff: "Adaptive VSync: быстрый вывод"
+        case .menuRestSmoothing: "Сглаживать только в покое"
+        case .menuRestStrength: "Сила сглаживания в покое"
+        case .menuRestTolerance: "Порог покоя"
+        case .restToleranceHint: "Коэффициент расширяет допустимые мелкие движения. Большее значение дольше сохраняет покой, но может захватывать медленные повороты."
+        case .menuRestLight: "Лёгкая"
+        case .menuRestMedium: "Средняя"
+        case .menuRestStrong: "Сильная"
+        case .menuRestIndicator: "Показывать статус покоя на сфере"
+        case .restPhaseDisabled: "Выключено"
+        case .restPhaseUnavailable: "Нет устойчивого трекинга"
+        case .restPhaseWaiting: "Ожидание покоя"
+        case .restPhaseMoving: "Движение"
+        case .restPhaseResting: "Покой"
+        case .restStrengthCaption: "Сила: %@"
         case .menuStabilizationOff: "Выключена"
         case .menuStabilizationWeak: "Слабая"
         case .menuStabilizationMedium: "Средняя"
         case .menuStabilizationStrong: "Сильная"
         case .menuHorizonGrid: "Сетка горизонта   ⌃⌥D"
-        case .menuGridManual: "Настроить сетку вручную   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)"
+        case .menuGridManual: "Ручная настройка сцены   ⌃⌥C (стрелки, ⌃⌥, ⌃⌥.)"
         case .menuRecordGlassesVideo: "Записать видео очков (старт/стоп)   ⌃⌥V"
 
         case .menuMeditation: "Медитация"
@@ -478,6 +568,9 @@ public enum UIString: CaseIterable {
         case .statusCompassError: " · compass off by %.1f°"
         case .statusFieldChanged: " · field changed"
         case .statusDiagnostics: " · %@ · %.1f °C · prediction %.0f ms · firmware zero resets cancelled %d"
+        case .statusViture: "VITURE %@ · gaze %.0f° / %.0f° · screens %d · FOV %.1f° · position %+.2f %+.2f %+.2f m"
+        case .statusVitureNoPose: "VITURE · the SDK is not returning a pose · gaze %.0f° / %.0f° · screens %d · FOV %.1f°"
+        case .statusVitureNoTracker: "VITURE · tracker is not running · gaze %.0f° / %.0f° · screens %d · FOV %.1f°"
         case .mouseTapChecking: "Mouse dragging: checking permissions…"
         case .mouseTapNeedsAccessibility: "Mouse dragging: Accessibility permission required"
         case .mouseTapRunning: "⌃⌥ + drag — move a screen, ⌃⌥ + scroll — closer / further"
@@ -499,10 +592,12 @@ public enum UIString: CaseIterable {
         case .menuTiltForward: "Tilt forward   ⌃⌥⇧↓"
         case .menuTurnLeft: "Turn the screen left   ⌃⌥⇧←"
         case .menuTurnRight: "Turn the screen right   ⌃⌥⇧→"
+        case .menuRollLeft: "Rotate screen counterclockwise   ⌃⌥⇧,"
+        case .menuRollRight: "Rotate screen clockwise   ⌃⌥⇧."
         case .menuTiltAllBack: "Tilt all back   ⌃⌥⌘↑"
         case .menuTiltAllForward: "Tilt all forward   ⌃⌥⌘↓"
         case .menuGatherScreens: "Gather the screens in front of me   ⌃⌥⇧G"
-        case .menuArrangeInArc: "Arrange in an arc, edge to edge   ⌃⌥A"
+        case .menuArrangeInArc: "Arrange around the screen you look at   ⌃⌥A"
         case .menuJoin: "Screen joining"
         case .menuJoinHinge: "Like a triple monitor: upright, joined along the whole edge"
         case .menuJoinGaze: "By gaze: each screen faces you"
@@ -539,21 +634,61 @@ public enum UIString: CaseIterable {
         case .menuCameraDebugWindow: "Debug window (box and face points)"
         case .menuHandsCamera: "Glasses camera: hands"
 
+        case .menuViture: "VITURE glasses"
+        case .menuVitureAutoTint: "Clear lenses when looking at a monitor"
+        case .menuVitureRememberMonitor: "Remember monitor in 3 seconds"
+        case .menuVitureForgetMonitor: "Forget monitor position"
+        case .menuVitureTintUnavailable: "Automatic tint unavailable in SDK"
+        case .menuVitureSixDof: "Head position by 6DoF"
+        case .menuVitureExtrapolation: "Pose extrapolation between samples"
+        case .menuVitureCallbackPose: "Callback pose (experimental)"
+        case .menuVitureGyroFusion: "Gyroscope during brief tracking loss"
+
         case .menuPicture: "Picture"
         case .menuTogglePicture: "Hide / show the picture   ⌃⌥H"
         case .menuScreenBorders: "Border around the screens"
+        case .menuSoftText: "Soft text (test)"
+        case .menuTextOriginal: "Original appearance"
+        case .menuTextSoft: "No sharpening"
+        case .menuTextSoftDimmed: "No sharpening + dimmed whites"
         case .menuFieldOfView: "Field of view"
         case .menuFieldOfViewWider: "Field of view wider   ⌃⌥]"
         case .menuFieldOfViewNarrower: "Field of view narrower   ⌃⌥["
         case .menuMorePrediction: "More prediction   ⌃⌥0"
         case .menuLessPrediction: "Less prediction   ⌃⌥9"
         case .menuStabilization: "Picture stabilisation"
+        case .pictureStabilizationAnchoredHint: "Smooths only while still and keeps screens anchored during turns. Selecting a strength disables Adaptive VSync, which bypasses this filter. Scanout compensation works independently."
+        case .pictureStabilizationUnanchoredHint: "Smooths orientation while screen anchoring is disabled."
+        case .menuWorldLockedPresentation: "Keep screens fixed when turning"
+        case .worldLockedPresentationHint: "Keeps screens in place as you turn your head; works with RayNeo and VITURE. Light smoothing can be toggled separately."
+        case .menuWorldLockSmoothing: "Light smoothing while keeping screens fixed"
+        case .menuAdaptiveVSync: "Adaptive VSync at rest"
+        case .menuScanoutCompensation: "Scanout compensation"
+        case .menuScanoutBottomToTop: "Bottom-to-top scanout"
+        case .scanoutCompensationHint: "Experimental prediction for different screen rows. Turn off to compare within this build. Scanout direction can be reversed separately."
+        case .adaptiveVSyncHint: "Preserves micro-motion compensation and reduces presentation waiting at rest. Enables VSync during movement. Tearing is possible at rest; rest-only pose smoothing is bypassed."
+        case .restAdaptiveSyncOn: "Adaptive VSync: synchronized"
+        case .restAdaptiveSyncOff: "Adaptive VSync: immediate output"
+        case .menuRestSmoothing: "Smooth only while still"
+        case .menuRestStrength: "Stillness smoothing strength"
+        case .menuRestTolerance: "Stillness threshold"
+        case .restToleranceHint: "The multiplier expands tolerated small movements. Higher values retain stillness longer and may include slow turns."
+        case .menuRestLight: "Light"
+        case .menuRestMedium: "Medium"
+        case .menuRestStrong: "Strong"
+        case .menuRestIndicator: "Show stillness status on sphere"
+        case .restPhaseDisabled: "Disabled"
+        case .restPhaseUnavailable: "Tracking unavailable"
+        case .restPhaseWaiting: "Waiting for stillness"
+        case .restPhaseMoving: "Moving"
+        case .restPhaseResting: "Still"
+        case .restStrengthCaption: "Strength: %@"
         case .menuStabilizationOff: "Off"
         case .menuStabilizationWeak: "Weak"
         case .menuStabilizationMedium: "Medium"
         case .menuStabilizationStrong: "Strong"
         case .menuHorizonGrid: "Horizon grid   ⌃⌥D"
-        case .menuGridManual: "Adjust the grid manually   ⌃⌥C (arrows, ⌃⌥, ⌃⌥.)"
+        case .menuGridManual: "Manual scene alignment   ⌃⌥C (arrows, ⌃⌥, ⌃⌥.)"
         case .menuRecordGlassesVideo: "Record glasses video (start/stop)   ⌃⌥V"
 
         case .menuMeditation: "Meditation"

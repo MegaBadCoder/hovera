@@ -4,7 +4,8 @@ import QuartzCore
 import RayDeskCore
 import RayDeskLocalization
 
-final class CameraDebugWindow {
+final class CameraDebugWindow: NSObject, NSWindowDelegate {
+    var onClose: (() -> Void)?
     private let window: NSWindow
     private let preview: AVCaptureVideoPreviewLayer
     private let boxLayer = CAShapeLayer()
@@ -26,6 +27,8 @@ final class CameraDebugWindow {
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.black.cgColor
         preview = AVCaptureVideoPreviewLayer(session: session)
+        super.init()
+        window.delegate = self
         preview.videoGravity = .resizeAspect
         preview.frame = view.bounds
         preview.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -64,7 +67,11 @@ final class CameraDebugWindow {
     }
 
     func close() {
-        window.orderOut(nil)
+        window.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
     }
 
     func applyLanguage() {

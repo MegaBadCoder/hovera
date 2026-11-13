@@ -1,12 +1,12 @@
 # Hovera
 
-Floating virtual monitors for RayNeo AR glasses on macOS.
+Floating virtual monitors for RayNeo and VITURE AR glasses on macOS.
 
-On a Mac, RayNeo glasses behave like a plain second display: the picture is glued to your face and turns with your head. Hovera creates several virtual displays and pins them in the room around you. Look left for mail, straight ahead for code, right for the browser. The cursor follows your gaze.
+Hovera creates several virtual displays and keeps them anchored as you turn your head. Look left for mail, straight ahead for code, right for the browser. The cursor moves between screens using your head direction; this is not eye tracking.
 
 [Русская версия](README.ru.md)
 
-> Unofficial project, not affiliated with RayNeo or TCL. The app is still called **RayDesk** inside; the rename is pending.
+> Independent project, not affiliated with RayNeo, TCL or VITURE. The installed application is named **RayDesk.app**.
 
 ## Demo
 
@@ -16,7 +16,10 @@ The 1:56 demo shows the view rendered for the glasses. [Download the MP4 (13.5 M
 
 ## Features
 
-- 2–4 virtual monitors placed around your head with 3DoF head tracking (~500 Hz IMU over USB).
+- 2–4 virtual monitors placed around your head. RayNeo uses its USB IMU; VITURE Luma Ultra uses the official VITURE SDK.
+- Independent rotational reprojection refreshes the view using the latest head pose while the scene or captured desktop is still being updated.
+- Up to 120 Hz output on both supported glasses families, using the display modes offered by macOS.
+- Stillness-only stabilization, Adaptive VSync and experimental scanout compensation; see [Stabilization](#stabilization).
 - The cursor jumps to the screen you look at, including your MacBook's built-in display.
 - Gather the screens in front of you, blank the MacBook display and keep the cursor out, or make the screen under your gaze the primary display for the menu bar, Dock and new windows.
 - Move screens with ⌃⌥ + mouse drag; resize them and move them closer or further away.
@@ -32,25 +35,28 @@ The 1:56 demo shows the view rendered for the glasses. [Download the MP4 (13.5 M
 ## Requirements
 
 - macOS 15 or later.
-- RayNeo Air-series glasses (USB `1bbb:af50`). Tested on one pair so far; reports from other models are welcome.
+- Apple Silicon Mac.
+- RayNeo Air-series glasses (USB `1bbb:af50`) or VITURE Luma Ultra (`35ca:1104`). Other VITURE models are not validated by this integration.
 - Xcode 16 / Swift 6 toolchain to build.
 
 ## Download
 
-Grab `Hovera-0.3.0-macOS-arm64.zip` from [Releases](https://github.com/MegaBadCoder/hovera/releases), unzip it and move `RayDesk.app` to Applications. Apple Silicon Macs only.
+Grab `Hovera-0.4.0-macOS-arm64.zip` from [Hovera 0.4.0](https://github.com/MegaBadCoder/hovera/releases/tag/v0.4.0), unzip it and move `RayDesk.app` to Applications. The release bundle includes the VITURE runtime libraries. SHA-256 checksums are attached to the release.
 
-The latest source on `main` includes camera and status updates made after the 0.3.0 release. Build from source for those changes.
-
-The app is not notarized yet, so macOS blocks the first launch: open it once, then System Settings → Privacy & Security → "Open Anyway". Or run `xattr -dr com.apple.quarantine /Applications/RayDesk.app`.
+The app is not notarized yet. If macOS blocks the first launch, open it once, then use System Settings → Privacy & Security → "Open Anyway".
 
 ## Build and run
 
 ```bash
 ./build.sh
-open RayDesk.app
+open /Applications/RayDesk.app
 ```
 
-Grant **Screen Recording** (to show the monitors) and **Accessibility** (to drag screens and move the cursor) when macOS asks. Log: `~/Library/Logs/RayDesk.log`. Tests: `swift test`.
+Grant **Screen Recording** (to show the monitors) and **Accessibility** (to drag screens and move the cursor) when macOS asks. **Camera** access is needed for the optional camera tracking features. Log: `~/Library/Logs/RayDesk.log`. Tests: `swift test`.
+
+Building VITURE support requires the macOS arm64 XR Glasses SDK from the [official developer portal](https://www.viture.com/developer). Put `libglasses.dylib` and `libcarina_vio.dylib` in `Vendor/viture/aarch64`, or set `VITURE_SDK_DIR` to their directory before running `build.sh`. The SDK binaries are not stored in Git. See [VITURE setup](docs/viture.md).
+
+Close SpaceWalker and other applications using the glasses tracker before running Hovera. To build outside Applications: `APP_BUNDLE="$PWD/.build/preview/RayDesk.app" ./build.sh`.
 
 The build is signed with your first "Apple Development" identity if you have one, otherwise ad hoc. An unsigned or ad-hoc build loses the Screen Recording permission after every rebuild.
 
@@ -77,7 +83,19 @@ All shortcuts are ⌃⌥ (Control + Option) + key and work from any app.
 - `Shift+Z` — meditation mode: screens fade out, you float in space with calm generated music (see below).
 - `[` / `]` — field of view; `9` / `0` — less / more motion prediction; `H` — hide the picture; `V` — record a video of the glasses to `~/Movies`; `M` — mark “I am looking at the middle screen”: logs how far the world has drifted without resetting anything; `Q` — quit.
 
-## Gyro scale calibration
+## Stabilization
+
+The **Picture** menu keeps these controls separate:
+
+- **Keep screens fixed when turning** enables rotational world lock for RayNeo and VITURE.
+- **Picture stabilisation → Off / Weak / Medium / Strong** controls the existing stillness-only filter while world lock is enabled. Selecting a strength disables Adaptive VSync, which bypasses this filter. Turning the filter off preserves world lock and scanout compensation. Without world lock, the same levels control the general orientation filter.
+- **Adaptive VSync at rest** changes presentation synchronization according to the stillness detector while preserving predicted micro-rotations. It is an alternative to stillness pose filtering.
+- **Scanout compensation** predicts different orientations for the top and bottom of the display. The experimental default is top-to-bottom over one refresh period: 8.33 ms at 120 Hz. Actual optical scanout timing and direction have not been measured. The additional prediction stays within the tracker horizon; a saturated horizon can disable this correction.
+- **Stillness threshold** changes the detector tolerance, not the filter strength. The optional sphere indicator shows the actual detector state.
+
+Scanout compensation can be compared on/off in the same session. These controls do not guarantee complete elimination of heartbeat shake. [Release notes](docs/releases/0.4.0.md).
+
+## Gyro scale calibration (RayNeo)
 
 Worn on the head, a gyro that under- or over-counts turns by a few percent makes the screens lag behind your head and then slowly swing back into place. Menu → "Calibrate the gyro scale (glasses on the table)": stand the glasses on the table as if worn, press one temple against the edge of the laptop, wait for the status prompt in the menu bar, turn them two full turns and press the temple back against the same edge. The correction is saved. On the author's pair the gyro under-counted by 3.3 %.
 
@@ -89,12 +107,16 @@ The sound is generated on the fly, no audio files: soft chords without a melody 
 
 ## How tracking works
 
+RayNeo:
+
 - Gyroscope integration, tilt corrected by the accelerometer (complementary filter).
 - Worn on the head, the gyro's zero point wanders by up to 0.5°/s and jumps when you adjust the glasses. Only an absolute reference can hold "forward", so the compass gently pulls the heading toward the magnetic field.
 - The compass is off by up to ~14° when you look to the side. Hovera keeps a separate field reference per 15° gaze sector and compares the compass only with what it saw in the same head orientation.
 - Without a compass calibration, the gyro's zero point is learned in moments of stillness.
 
-Tests replay real recorded head motion and check jitter, lag and drift in world axes.
+VITURE Luma Ultra uses callback-delivered poses from the official SDK, with optional extrapolation. Positional 6DoF and gyro fusion are off by default; rotational world lock does not require them. A stale or unstable pose restricts prediction.
+
+Tests replay recorded head motion and check jitter, lag and drift in world axes, alongside CPU/GPU reprojection and menu behavior.
 
 ## Recording sensor data
 
@@ -106,7 +128,8 @@ defaults write local.raydesk recordIMU -bool true
 
 ## Limitations
 
-- Without camera-based head position tracking, placement is rotation-only (3DoF). Camera tracking estimates limited head movement; it is not room-scale 6DoF tracking. Press ⌃⌥R to recenter if the view shifts.
+- Default placement is rotation-only (3DoF). Optional camera-based position estimates and VITURE positional tracking do not establish reliable room-scale tracking. Press ⌃⌥R to recenter if the view shifts.
+- Hand-camera features remain experimental and are not required for monitor tracking.
 - Uses the private `CGVirtualDisplay` API to create displays.
 - Not notarized yet.
 
@@ -123,4 +146,4 @@ Protocol details and ideas came from these open projects:
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) for the project code. The VITURE runtime libraries are third-party software and are not covered by this project's MIT license.

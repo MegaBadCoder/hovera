@@ -1,12 +1,13 @@
 import CoreGraphics
+import RayDeskCore
 import MetalKit
 
 final class ScreenSlot {
     let index: Int
     let virtualScreen: VirtualScreen
-    let capture = DisplayCapture()
-    var seenGeneration = 0
-    var texture: MTLTexture?
+    let contents = CapturedTexture()
+    var capture: DisplayCapture { contents.capture }
+    var texture: MTLTexture? { contents.texture }
     private var cached: CGDirectDisplayID?
     private(set) var showsLiveFrame = true
 
@@ -42,9 +43,9 @@ final class ScreenSlot {
         return fallback
     }
 
-    init(index: Int, pointWidth: Int = 1920, pointHeight: Int = 1080) {
+    init(index: Int, pointWidth: Int = 1920, pointHeight: Int = 1080, family: GlassesDisplayFamily? = nil) {
         self.index = index
-        virtualScreen = VirtualScreen(index: index, pointWidth: pointWidth, pointHeight: pointHeight)
+        virtualScreen = VirtualScreen(index: index, pointWidth: pointWidth, pointHeight: pointHeight, family: family)
     }
 
     func start() async throws {

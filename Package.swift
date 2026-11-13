@@ -18,7 +18,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RayDeskCoreTests",
-            dependencies: ["RayDeskCore", "RayDeskLocalization", "VitureSDK"],
+            dependencies: ["RayDesk", "RayDeskCore", "RayDeskLocalization", "VitureSDK"],
             path: "Tests/RayDeskCoreTests",
             exclude: ["Fixtures"]
         ),

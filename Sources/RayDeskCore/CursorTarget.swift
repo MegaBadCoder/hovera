@@ -28,16 +28,12 @@ public struct CursorHit: Equatable {
 /// - Parameters:
 ///   - head: ориентация головы голова→мир.
 ///   - screens: позы виртуальных панелей, индекс — номер панели.
+///   - origin: положение головы в мировых координатах, метры; то же, что используется при отрисовке.
 ///   - lookDownPitch: порог наклона взгляда вниз, радианы.
-public func cursorHit(head: simd_quatd, screens: [ScreenPose], lookDownPitch: Double = -30 * .pi / 180) -> CursorHit? {
-    let direction = head.act(SIMD3(0, 0, -1))
-    var best: (t: Double, hit: CursorHit)?
-    for (index, pose) in screens.enumerated() {
-        if let hit = pose.intersect(rayDirection: direction), hit.t < best?.t ?? .infinity {
-            best = (hit.t, CursorHit(target: .virtual(index), uv: hit.uv))
-        }
+public func cursorHit(head: simd_quatd, screens: [ScreenPose], origin: SIMD3<Double> = .zero, lookDownPitch: Double = -30 * .pi / 180) -> CursorHit? {
+    if let hit = gazeHit(head: head, screens: screens, origin: origin) {
+        return CursorHit(target: .virtual(hit.screen), uv: hit.uv)
     }
-    if let best { return best.hit }
     if head.yawPitch.pitch < lookDownPitch {
         return CursorHit(target: .mac, uv: SIMD2(0.5, 0.5))
     }

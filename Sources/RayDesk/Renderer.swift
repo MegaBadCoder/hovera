@@ -3,7 +3,13 @@ import CoreVideo
 import simd
 import RayDeskCore
 
+enum ScreenTextMode: String, CaseIterable {
+    case original, soft, softDimmed
+}
+
 final class Renderer: NSObject, MTKViewDelegate {
+    let sceneTimings = FrameTimeline(capacity: 240)
+    let warpTimings = FrameTimeline(capacity: 240)
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
@@ -16,6 +22,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let gridVertexCount: Int
     private let depthState: MTLDepthStencilState
     private let sampler: MTLSamplerState
+    private weak var outputLayer: CAMetalLayer?
+    private var originalDisplaySyncEnabled = true
+    private(set) var displaySyncEnabled = true
+    private let restIndicator: RestStatusIndicator
+    private let rotationalCompositor: RotationalCompositor
+    private(set) var independentReprojection: AsyncReprojection?
+    private var independentPool: ReprojectionFramePool?
+    private var independentEpoch = 0
+    var independentSource: ReprojectionPoseSource? {
+        didSet { invalidateIndependentFrames() }
+    }
+    var suspendsIndependentScene = false {
+        didSet { invalidateIndependentFrames() }
+    }
     private let placeholder: MTLTexture
     private var textureCache: CVMetalTextureCache?
 
@@ -24,12 +44,53 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     static let verticalFOVRange: ClosedRange<Double> = 10...60
     static let defaultVerticalFOV = 23.6
-    var verticalFOV = Renderer.defaultVerticalFOV
+    var verticalFOV = Renderer.defaultVerticalFOV {
+        didSet { if verticalFOV != oldValue { invalidateIndependentFrames() } }
+    }
     var showsGrid = false
+    var worldLockedPresentation = true {
+        didSet { resetWorldLockSmoothing(invalidateResources: true) }
+    }
+    var worldLockSmoothing = true {
+        didSet { resetWorldLockSmoothing() }
+    }
+    var adaptiveVSync = false {
+        didSet { resetWorldLockSmoothing() }
+    }
+    var scanoutEnabled = true
+    var scanoutBottomToTop = false
+    var restSmoothing = false {
+        didSet { resetWorldLockSmoothing() }
+    }
+    var restStrength: RestStabilizationStrength = .light {
+        didSet { resetWorldLockSmoothing() }
+    }
+    var restTolerance = 1.0 {
+        didSet { resetWorldLockSmoothing() }
+    }
+    var showsRestIndicator = false {
+        didSet { independentEpoch += 1 }
+    }
+    private(set) var restPhase: RestStabilizationPhase = .waiting
+    private var worldLockStabilizer = OrientationStabilizer.worldLocked
+    private var worldLockPrediction = WorldLockPrediction()
+    private var restPresentation = RestPresentationController()
+    private var adaptivePresentationClock = AdaptivePresentationClock()
+    private var presentationPacer = PresentationFramePacer(refreshPeriod: 1 / 120)
+    private var presentationRefreshPeriod = 1.0 / 120
+    private(set) var restStabilizing = false
+    private(set) var restCorrection = 0.0
+    private var lastWorldLockSampleTime: Double?
+    private(set) var lastReprojectionAngle = 0.0
+    private(set) var lastReprojectionApplied = false
+    private var reprojectionAllocationFailed = false
     let headPipeline: HeadPipeline
     var calibration: ViewCalibration {
         get { headPipeline.calibration }
-        set { headPipeline.calibration = newValue }
+        set {
+            headPipeline.calibration = newValue
+            resetWorldLockSmoothing(invalidateResources: true)
+        }
     }
     var stabilizer: OrientationStabilizer {
         get { headPipeline.stabilizer }
@@ -42,6 +103,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// такие как перестроение пространств на жест Mission Control.
     private static let stallReportThreshold: TimeInterval = 8
     var showsScreenBorders = true
+    var screenTextMode = ScreenTextMode.original
 
     var slots: [ScreenSlot] = []
     var cursorScreen: Int?
@@ -52,10 +114,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     var nextTargetTime: Double?
     /// Измеренная поправка «заявленное время кадра → показанный кадр».
     let presentation = PresentationClock()
-    /// Внешняя поза от трекера очков (VITURE): ориентация и положение в мировых осях.
-    /// Если задана и вернёт значение, свой фильтр и калибровка сетки не применяются —
-    /// позу считает VIO на очках, к ней добавляется только стабилизация микродвижений.
-    var externalPose: ((Double) -> (orientation: simd_quatd, position: SIMD3<Double>)?)?
+    /// Внешняя поза от трекера очков (VITURE): ориентация, положение в мировых осях
+    /// и рассчитанный для этой позы горизонт предсказания в секундах.
+    /// Если задана и вернёт значение, заменяет свой фильтр ориентации.
+    /// К позе применяется ручная поправка вида; сглаживание — только вне закреплённого режима.
+    var externalPose: ((Double) -> (orientation: simd_quatd, position: SIMD3<Double>, predictionHorizon: Double)?)? {
+        didSet { invalidateIndependentFrames() }
+    }
     /// `true`, если последний кадр нарисован по внешней ориентации, а не по фильтру.
     private(set) var usedExternalOrientation = false
     /// Горизонт предсказания последнего кадра, секунды.
@@ -78,6 +143,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private struct Uniforms {
         var mvp: simd_float4x4
         var border: SIMD4<Float>
+        var textStyle = SIMD4<Float>.zero
     }
 
     private struct SkyUniforms {
@@ -101,6 +167,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         view.sampleCount = 4
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         view.preferredFramesPerSecond = 120
+
+        rotationalCompositor = try RotationalCompositor(device: device, pixelFormat: view.colorPixelFormat,
+                                                        depthFormat: view.depthStencilPixelFormat, sampleCount: view.sampleCount)
+
+        restIndicator = try RestStatusIndicator(device: device, pixelFormat: view.colorPixelFormat)
 
         let library = try device.makeLibrary(source: Renderer.shaderSource, options: nil)
         let descriptor = MTLRenderPipelineDescriptor()
@@ -167,6 +238,68 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
         super.init()
+        outputLayer = view.layer as? CAMetalLayer
+        originalDisplaySyncEnabled = outputLayer?.displaySyncEnabled ?? true
+        outputLayer?.maximumDrawableCount = AsyncReprojection.maximumDrawableCount
+        presentationRefreshPeriod = 1 / Double(max(1, view.preferredFramesPerSecond))
+        presentationPacer = PresentationFramePacer(refreshPeriod: presentationRefreshPeriod)
+    }
+
+    func startIndependentReprojection(view: MTKView, framesPerSecond: Int) throws {
+        stopIndependentReprojection()
+        let displayID = view.window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        let reportedRate = displayID.flatMap { CGDisplayCopyDisplayMode($0.uint32Value)?.refreshRate } ?? 0
+        let actualRate = reportedRate.isFinite && (30...240).contains(reportedRate) ? reportedRate : Double(max(1, framesPerSecond))
+        presentationRefreshPeriod = 1 / actualRate
+        log(String(format: "scanout timing: configured=%dHz displayMode=%.3fHz period=%.3fms",
+                   framesPerSecond, reportedRate, presentationRefreshPeriod * 1000))
+        guard let layer = view.layer as? CAMetalLayer else { throw RendererError.noMetal }
+        let presenter = try AsyncReprojection(device: device, pixelFormat: view.colorPixelFormat)
+        view.delegate = nil
+        view.isPaused = true
+        view.enableSetNeedsDisplay = false
+        independentReprojection = presenter
+        presenter.start(layer: layer, framesPerSecond: Int(actualRate.rounded()), refreshPeriod: presentationRefreshPeriod)
+    }
+
+    func stopIndependentReprojection() {
+        independentReprojection?.stop()
+        independentReprojection = nil
+        setFallbackDisplaySyncEnabled(originalDisplaySyncEnabled)
+        invalidateIndependentFrames()
+    }
+
+    private func invalidateIndependentFrames() {
+        independentEpoch += 1
+        independentPool?.invalidate()
+        independentPool = nil
+        independentReprojection?.use(nil)
+    }
+
+    func prepareIndependentPool(size: CGSize) throws -> ReprojectionFramePool {
+        let displaySize = SIMD2(Int(size.width), Int(size.height))
+        if let independentPool, independentPool.resources[0].displaySize == displaySize { return independentPool }
+        invalidateIndependentFrames()
+        let resources = try (0..<3).map { _ in try rotationalCompositor.makeTarget(displaySize: displaySize) }
+        let pool = ReprojectionFramePool(resources: resources)
+        independentPool = pool
+        independentReprojection?.use(pool)
+        return pool
+    }
+
+    private func observeIndependentPresentation() {
+        guard let state = independentReprojection?.snapshot,
+              state.epoch == independentEpoch, let orientation = state.orientation else { return }
+        currentHead = orientation
+        currentHeadOffset = state.position
+        lastPredictionHorizon = state.horizon
+        lastReprojectionAngle = state.angle
+        lastReprojectionApplied = worldLockedPresentation
+        usedExternalOrientation = state.external
+        displaySyncEnabled = state.displaySyncEnabled
+        restPhase = state.restPhase
+        restStabilizing = state.restStabilizing
+        restCorrection = state.restCorrection
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -217,19 +350,32 @@ final class Renderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView, targetTime: Double) {
         dispatchPrecondition(condition: .onQueue(.main))
         let now = CACurrentMediaTime()
-        let presentTime = presentation.presentTime(target: targetTime)
+        guard !suspendsIndependentScene else { return }
+        let presentTime = independentReprojection == nil ? presentation.presentTime(target: targetTime) : targetTime
+        lastReprojectionApplied = false
+        lastReprojectionAngle = 0
         let external = externalPose?(presentTime)
+        if independentReprojection != nil, externalPose != nil, external == nil { return }
+        if usedExternalOrientation != (external != nil) { resetWorldLockSmoothing() }
         usedExternalOrientation = external != nil
         let head: simd_quatd
         if let external {
-            head = headPipeline.stabilizedExternal(external.orientation, dt: now - lastFrameTime)
+            lastPredictionHorizon = external.predictionHorizon
+            head = worldLockedPresentation ? calibration.apply(to: external.orientation)
+                : headPipeline.stabilizedExternal(external.orientation, dt: now - lastFrameTime)
         } else {
             if adaptivePrediction {
                 evaluatePendingPrediction()
             }
-            lastPredictionHorizon = headPipeline.predictionHorizon(at: presentTime)
-            head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
-            rememberPrediction(for: presentTime)
+            if worldLockedPresentation {
+                let sample = headPipeline.worldLockedSample(at: presentTime)
+                lastPredictionHorizon = sample.horizon
+                head = sample.orientation
+            } else {
+                lastPredictionHorizon = headPipeline.predictionHorizon(at: presentTime)
+                head = headPipeline.renderedOrientation(at: presentTime, frameInterval: now - lastFrameTime)
+            }
+            rememberPrediction(for: presentTime, orientation: head)
         }
         let frameSeconds = min(now - lastFrameTime, 0.1)
         meditation.advance(by: frameSeconds)
@@ -237,30 +383,57 @@ final class Renderer: NSObject, MTKViewDelegate {
         breathingVisibility += max(-frameSeconds, min(frameSeconds, breathingTarget - breathingVisibility))
         lastFrameTime = now
         currentHead = head
+        defer {
+            observeIndependentPresentation()
+            onFrame?(currentHead)
+        }
         scene.tick(head: head)
-        let baseOffset = external?.position ?? headOffset?(head) ?? .zero
+        let baseOffset = external.map { calibration.apply(toPosition: $0.position) } ?? headOffset?(head) ?? .zero
         currentHeadOffset = headFollower.follow(baseOffset, dt: frameSeconds)
-        onFrame?(head)
 
         guard let commandBuffer = queue.makeCommandBuffer() else { return }
-        var retainedFrames: [CVMetalTexture] = []
-        for slot in slots {
-            let frame = uploadLatestFrame(slot: slot, commandBuffer: commandBuffer)
-            if let retained = frame.retained {
-                retainedFrames.append(retained)
+        let size = view.drawableSize
+        guard size.width > 0, size.height > 0 else { return }
+        var writingPool: ReprojectionFramePool?
+        var ticket: ReprojectionFramePool.Ticket?
+        var submitted = false
+        defer {
+            if !submitted, let writingPool, let ticket { writingPool.complete(ticket, metadata: nil) }
+        }
+        let reprojectionTarget: RotationalCompositor.Target?
+        if independentReprojection != nil {
+            do {
+                let pool = try prepareIndependentPool(size: size)
+                guard let reserved = pool.reserve() else { return }
+                writingPool = pool
+                ticket = reserved
+                reprojectionTarget = pool.resources[reserved.index]
+                reprojectionAllocationFailed = false
+            } catch {
+                if !reprojectionAllocationFailed { log("independent scene allocation failed: \(error)") }
+                reprojectionAllocationFailed = true
+                return
             }
+        } else {
+            reprojectionTarget = prepareReprojection(size: size)
+        }
+        var uploads: [(slot: ScreenSlot, upload: CapturedTexture.Upload)] = []
+        for (index, slot) in slots.enumerated() {
+            if meditation.eased < 1, scene.focus.map({ $0.screen == index }) ?? true,
+               let cache = textureCache,
+               let upload = slot.contents.prepare(device: device, cache: cache, command: commandBuffer) {
+                uploads.append((slot, upload))
+            }
+            _ = slot.noteFrameArrived()
             trackStalls(slot: slot, at: now)
         }
-
-        guard let pass = view.currentRenderPassDescriptor,
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass),
-              let drawable = view.currentDrawable
-        else { return }
-
-        let size = view.drawableSize
+        guard let pass = reprojectionTarget?.pass ?? view.currentRenderPassDescriptor,
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        let overscan = reprojectionTarget?.overscan ?? SIMD2<Float>(repeating: 1)
+        let renderFOV = 2 * atan(tan(Float(verticalFOV * .pi / 360)) * overscan.y)
         let projection = simd_float4x4.perspective(
-            fovY: Float(verticalFOV * .pi / 180),
-            aspect: Float(size.width / max(size.height, 1)),
+            fovY: renderFOV,
+            aspect: Float(size.width / size.height) * overscan.x / overscan.y,
             near: 0.05, far: 100
         )
         let rotationOnly = simd_float4x4(simd_quatf(vector: SIMD4<Float>(head.inverse.vector)))
@@ -290,13 +463,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         for (i, (slot, pose)) in zip(slots, scene.screens).enumerated() where screenOpacity > 0 {
             if let focus = scene.focus, focus.screen != i { continue }
             let model = (scene.focus?.pose ?? pose).modelMatrix
-            let texture = slot.texture ?? placeholder
+            let texture = uploads.first(where: { $0.slot === slot })?.upload.texture ?? slot.texture ?? placeholder
             let selectedForSwap = scene.swapSource == i
             let moving = selectedForSwap || scene.grabbed == i || draggingScreen == i || snappedNeighbor == i
             let borderAlpha: Float = moving ? 1.0 : (!showsScreenBorders ? 0 : (cursorScreen == i ? 0.6 : 0.25))
             var uniforms = Uniforms(
                 mvp: projection * viewMatrix * model,
-                border: SIMD4((selectedForSwap ? 10 : 3) / Float(texture.width), (selectedForSwap ? 10 : 3) / Float(texture.height), borderAlpha, screenOpacity)
+                border: SIMD4((selectedForSwap ? 10 : 3) / Float(texture.width), (selectedForSwap ? 10 : 3) / Float(texture.height), borderAlpha, screenOpacity),
+                textStyle: SIMD4(screenTextMode == .original ? 0 : 1, screenTextMode == .softDimmed ? 1 : 0, 0, 0)
             )
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
@@ -315,12 +489,215 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         encoder.endEncoding()
 
+        if let writingPool, let ticket {
+            let source: ReprojectionPoseSource
+            if external != nil {
+                guard let independentSource else { return }
+                source = independentSource
+            } else {
+                source = .rayNeo(filter, bias: headPipeline.predictionBias,
+                                 limit: headPipeline.maxPrediction, fallback: headPipeline.predictionSeconds)
+            }
+            let frame = ReprojectionFrame(orientation: head, position: currentHeadOffset,
+                                          verticalFOV: Float(verticalFOV * .pi / 180), calibration: calibration,
+                                          source: source, worldLocked: worldLockedPresentation,
+                                          smoothing: worldLockSmoothing, adaptiveVSync: adaptiveVSync, restSmoothing: restSmoothing,
+                                          restTolerance: restTolerance, restStrength: restStrength, indicatorYaw: showsRestIndicator ? scene.centerYaw : nil,
+                                          epoch: independentEpoch, created: now,
+                                          scanoutEnabled: scanoutEnabled, scanoutBottomToTop: scanoutBottomToTop)
+            commandBuffer.addCompletedHandler { buffer in
+                writingPool.complete(ticket, metadata: buffer.status == .completed ? frame : nil)
+            }
+            submitted = true
+            commitScene(commandBuffer, uploads: uploads, cpuStart: now)
+            return
+        }
+        if let reprojectionTarget {
+            commitScene(commandBuffer, uploads: uploads, cpuStart: now)
+            presentReprojectedScene(reprojectionTarget, sceneHead: head, externalSource: external != nil,
+                                    view: view, targetTime: targetTime, presentTime: presentTime)
+            return
+        }
+
+        guard let drawable = view.currentDrawable else { return }
+        setFallbackDisplaySyncEnabled(originalDisplaySyncEnabled)
+        restPhase = .disabled
+        restStabilizing = false
+        restCorrection = 0
+        do {
+            try encodeRestIndicator(phase: .disabled, head: head, destination: drawable.texture, commandBuffer: commandBuffer)
+        } catch {
+            log("rest indicator encode failed: \(error)")
+            return
+        }
+
         drawable.addPresentedHandler { [presentation] drawable in
             presentation.observe(target: targetTime, presented: drawable.presentedTime)
         }
         commandBuffer.present(drawable)
-        commandBuffer.addCompletedHandler { _ in _ = retainedFrames }
+        commitScene(commandBuffer, uploads: uploads, cpuStart: now)
+    }
+
+    private func commitScene(_ command: MTLCommandBuffer, uploads: [(slot: ScreenSlot, upload: CapturedTexture.Upload)], cpuStart: Double) {
+        let timingID = sceneTimings.begin(cpuStart: cpuStart, committed: CACurrentMediaTime(), sourceTime: nil, synchronized: nil)
+        for entry in uploads { entry.slot.contents.commit(entry.upload) }
+        command.addCompletedHandler { [sceneTimings] buffer in
+            sceneTimings.completed(timingID, gpuStart: buffer.gpuStartTime, gpuEnd: buffer.gpuEndTime)
+            if buffer.status == .error {
+                DispatchQueue.main.async {
+                    for entry in uploads { entry.slot.contents.invalidate(entry.upload) }
+                }
+            }
+            _ = uploads
+        }
+        command.commit()
+    }
+
+    private func prepareReprojection(size: CGSize) -> RotationalCompositor.Target? {
+        guard worldLockedPresentation else { return nil }
+        do {
+            let target = try rotationalCompositor.prepare(displaySize: SIMD2(Int(size.width), Int(size.height)))
+            reprojectionAllocationFailed = false
+            return target
+        } catch {
+            if !reprojectionAllocationFailed { log("rotational reprojection allocation failed: \(error)") }
+            reprojectionAllocationFailed = true
+            return nil
+        }
+    }
+
+    private func lateOrientation(at time: Double, externalSource: Bool, fallback: simd_quatd)
+        -> (orientation: simd_quatd, motion: simd_quatd, stable: Bool, scanoutBudget: Double) {
+        if externalSource {
+            if let source = independentSource, source.predictsFromOrientation,
+               let pose = source.sample(time) {
+                lastPredictionHorizon = pose.horizon
+                let motion = calibration.apply(to: pose.orientation)
+                let predicted = worldLockPrediction.predict(motion, at: CACurrentMediaTime(),
+                                                           sampleTime: pose.sampleTime, horizon: pose.horizon, smoothing: worldLockSmoothing)
+                return (predicted, motion, pose.isStable, max(0, pose.maximumPredictionHorizon - pose.horizon))
+            }
+            guard let pose = externalPose?(time) else { return (fallback, fallback, false, 0) }
+            lastPredictionHorizon = pose.predictionHorizon
+            let head = calibration.apply(to: pose.orientation)
+            return (head, head, false, 0)
+        }
+        let source = ReprojectionPoseSource.rayNeo(filter, bias: headPipeline.predictionBias,
+                                                 limit: headPipeline.maxPrediction, fallback: headPipeline.predictionSeconds)
+        guard let sample = source.sample(time) else { return (fallback, fallback, false, 0) }
+        lastPredictionHorizon = sample.horizon
+        let motion = calibration.apply(to: sample.orientation)
+        let predicted = worldLockPrediction.predict(motion, at: CACurrentMediaTime(),
+                                                   sampleTime: sample.sampleTime, horizon: sample.horizon, smoothing: worldLockSmoothing)
+        return (predicted, motion, sample.isStable, max(0, sample.maximumPredictionHorizon - sample.horizon))
+    }
+
+    private func presentReprojectedScene(_ target: RotationalCompositor.Target, sceneHead: simd_quatd,
+                                        externalSource: Bool, view: MTKView, targetTime: Double, presentTime: Double) {
+        guard let drawable = view.currentDrawable else { return }
+        let now = CACurrentMediaTime()
+        if adaptiveVSync {
+            let source: ReprojectionPoseSource? = externalSource ? independentSource
+                : .rayNeo(filter, bias: headPipeline.predictionBias,
+                          limit: headPipeline.maxPrediction, fallback: headPipeline.predictionSeconds)
+            let sample = source?.sample(now)
+            let motion = sample.map { calibration.apply(to: $0.orientation) } ?? sceneHead
+            _ = restPresentation.filter(motion, motion: motion, at: now, restSmoothing: restSmoothing,
+                                        adaptiveVSync: true, stable: sample?.isStable == true,
+                                        strength: restStrength, tolerance: restTolerance)
+        }
+        let frameClock = adaptivePresentationClock
+        let latePresentTime = adaptiveVSync
+            ? frameClock.targetTime(now: now, displayTarget: targetTime, synchronized: restPresentation.displaySyncEnabled)
+            : max(presentTime, now)
+        let late = lateOrientation(at: latePresentTime, externalSource: externalSource, fallback: sceneHead)
+        let framePacer = presentationPacer
+        framePacer.updateMotion(late.motion, at: now, stable: adaptiveVSync && late.stable)
+        if framePacer.consumeDrain(at: now) { return }
+        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        let predictedHead = late.orientation
+        let smoothsExternalPose = !adaptiveVSync && externalSource && independentSource?.predictsFromOrientation != true
+        let baseHead = smoothsExternalPose ? smoothWorldLockedOrientation(predictedHead) : predictedHead
+        let lateHead = adaptiveVSync ? baseHead
+            : restPresentation.filter(baseHead, motion: late.motion, at: now,
+                                      restSmoothing: restSmoothing, adaptiveVSync: false,
+                                      stable: late.stable, strength: restStrength, tolerance: restTolerance)
+        restPhase = restPresentation.phase
+        restStabilizing = restPresentation.isSmoothing
+        restCorrection = restPresentation.correctionRadians
+        setFallbackDisplaySyncEnabled(adaptiveVSync ? restPresentation.displaySyncEnabled : originalDisplaySyncEnabled)
+        let scanout = ScanoutPrediction(reference: lateHead, angularVelocity: worldLockPrediction.predictionAngularVelocity,
+                                         duration: presentationRefreshPeriod, maximumAdditionalTime: late.scanoutBudget,
+                                         enabled: scanoutEnabled && late.stable, bottomToTop: scanoutBottomToTop)
+        let warp = RotationalReprojection(scene: sceneHead, displayTop: scanout.top, displayBottom: scanout.bottom, verticalFOV: Float(verticalFOV * .pi / 180),
+                                         aspect: Float(target.displaySize.x) / Float(target.displaySize.y), overscan: target.overscan)
+        do {
+            try rotationalCompositor.encode(warp, source: target.color, destination: drawable.texture, commandBuffer: commandBuffer)
+            try encodeRestIndicator(phase: restPhase, head: lateHead, destination: drawable.texture, commandBuffer: commandBuffer)
+        } catch {
+            log("rotational reprojection encode failed: \(error)")
+            return
+        }
+        currentHead = lateHead
+        lastReprojectionAngle = 2 * acos(min(1, abs(simd_dot(sceneHead.vector, lateHead.vector))))
+        lastReprojectionApplied = true
+        if !externalSource { rememberPrediction(for: latePresentTime, orientation: predictedHead) }
+        let adaptive = adaptiveVSync
+        let submittedDisplaySync = displaySyncEnabled
+        let timingID = warpTimings.begin(cpuStart: now, committed: CACurrentMediaTime(), sourceTime: nil,
+                                         synchronized: submittedDisplaySync)
+        commandBuffer.addCompletedHandler { [warpTimings] buffer in
+            warpTimings.completed(timingID, gpuStart: buffer.gpuStartTime, gpuEnd: buffer.gpuEndTime)
+        }
+        drawable.addPresentedHandler { [presentation, warpTimings] drawable in
+            warpTimings.presented(timingID, at: drawable.presentedTime)
+            if adaptive {
+                frameClock.observe(now: now, displayTarget: targetTime, presented: drawable.presentedTime,
+                                   synchronized: submittedDisplaySync)
+                framePacer.observe(renderStart: now, presented: drawable.presentedTime, now: CACurrentMediaTime())
+            } else {
+                presentation.observe(target: targetTime, presented: drawable.presentedTime)
+            }
+        }
+        commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    private func encodeRestIndicator(phase: RestStabilizationPhase, head: simd_quatd,
+                                     destination: MTLTexture, commandBuffer: MTLCommandBuffer) throws {
+        guard showsRestIndicator else { return }
+        try restIndicator.encode(phase: phase, strength: restStrength, adaptiveSync: adaptiveVSync && worldLockedPresentation ? displaySyncEnabled : nil, head: head, position: currentHeadOffset,
+                                 anchorYaw: scene.centerYaw, verticalFOV: Float(verticalFOV * .pi / 180),
+                                 destination: destination, commandBuffer: commandBuffer)
+    }
+
+    private func setFallbackDisplaySyncEnabled(_ enabled: Bool) {
+        guard independentReprojection == nil else { return }
+        if outputLayer?.displaySyncEnabled != enabled { outputLayer?.displaySyncEnabled = enabled }
+        displaySyncEnabled = outputLayer?.displaySyncEnabled ?? true
+    }
+
+    private func resetWorldLockSmoothing(invalidateResources: Bool = false) {
+        if invalidateResources { invalidateIndependentFrames() }
+        else { independentEpoch += 1 }
+        worldLockStabilizer = .worldLocked
+        worldLockPrediction = WorldLockPrediction()
+        restPresentation = RestPresentationController()
+        adaptivePresentationClock = AdaptivePresentationClock()
+        presentationPacer = PresentationFramePacer(refreshPeriod: presentationRefreshPeriod)
+        restPhase = .waiting
+        restStabilizing = false
+        restCorrection = 0
+        lastWorldLockSampleTime = nil
+    }
+
+    private func smoothWorldLockedOrientation(_ orientation: simd_quatd) -> simd_quatd {
+        guard worldLockSmoothing else { return orientation }
+        let now = CACurrentMediaTime()
+        let dt = lastWorldLockSampleTime.map { now - $0 } ?? 0
+        if dt > 0.1 { resetWorldLockSmoothing() }
+        lastWorldLockSampleTime = now
+        return worldLockStabilizer.filter(orientation, dt: dt)
     }
 
     private func drawLines(_ points: [SIMD4<Float>], color: SIMD4<Float>, viewProjection: simd_float4x4, encoder: MTLRenderCommandEncoder) {
@@ -352,15 +729,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func rememberPrediction(for presentTime: Double) {
+    private func rememberPrediction(for presentTime: Double, orientation: simd_quatd) {
         guard adaptivePrediction else {
             pendingPrediction = nil
-            headPipeline.predictionBias = 0
             return
         }
-        let horizon = headPipeline.predictionHorizon(at: presentTime)
-        let predicted = headPipeline.calibration.apply(to: filter.orientation(predictAhead: horizon))
-        pendingPrediction = (presentTime, predicted, filter.angularVelocity)
+        pendingPrediction = (presentTime, orientation, filter.angularVelocity)
     }
 
     private func evaluatePendingPrediction() {
@@ -370,35 +744,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         let actual = headPipeline.calibration.apply(to: filter.orientation(atUptime: pending.time))
         tuner.observe(predicted: pending.orientation, actual: actual, angularVelocity: pending.angularVelocity)
         headPipeline.predictionBias = tuner.value
-    }
-
-    private func uploadLatestFrame(slot: ScreenSlot, commandBuffer: MTLCommandBuffer) -> (retained: CVMetalTexture?, live: Bool) {
-        guard let cache = textureCache, let pixelBuffer = slot.capture.takeFrame(newerThan: &slot.seenGeneration) else {
-            return (nil, slot.noteFrameArrived())
-        }
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        var cvTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixelBuffer, nil, .bgra8Unorm_srgb, width, height, 0, &cvTexture)
-        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else {
-            return (nil, slot.noteFrameArrived())
-        }
-
-        if slot.texture?.width != width || slot.texture?.height != height {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: true)
-            descriptor.usage = [.shaderRead]
-            descriptor.storageMode = .private
-            slot.texture = device.makeTexture(descriptor: descriptor)
-        }
-        guard let target = slot.texture, let blit = commandBuffer.makeBlitCommandEncoder() else {
-            return (nil, slot.noteFrameArrived())
-        }
-        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                  sourceSize: MTLSize(width: width, height: height, depth: 1),
-                  to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
-        blit.generateMipmaps(for: target)
-        blit.endEncoding()
-        return (cvTexture, slot.noteFrameArrived())
     }
 
     private static func worldGridLines() -> [SIMD4<Float>] {
@@ -428,7 +773,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4x4 mvp; float4 border; };
+    struct Uniforms { float4x4 mvp; float4 border; float4 textStyle; };
     struct VertexOut { float4 position [[position]]; float2 uv; };
 
     constant float sharpenAmount = 0.6;
@@ -497,10 +842,18 @@ final class Renderer: NSObject, MTKViewDelegate {
                                    constant Uniforms &u [[buffer(0)]],
                                    texture2d<float> tex [[texture(0)]],
                                    sampler s [[sampler(0)]]) {
-        float3 color = sampleScreen(tex, s, in.uv);
+        float3 color = u.textStyle.x > 0.5 ? tex.sample(s, in.uv).rgb : sampleScreen(tex, s, in.uv);
         float2 edge = min(in.uv, 1 - in.uv);
         if (edge.x < u.border.x || edge.y < u.border.y) {
             color = mix(color, float3(0.55, 0.75, 1.0), u.border.z);
+        }
+        if (u.textStyle.y > 0.5) {
+            float peak = max(color.r, max(color.g, color.b));
+            if (peak > 0.25) {
+                float highlight = peak - 0.25;
+                float softened = 0.25 + highlight / (1.0 + (7.0 / 6.0) * highlight);
+                color *= softened / peak;
+            }
         }
         return float4(color, u.border.w);
     }

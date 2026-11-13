@@ -39,9 +39,9 @@ public final class PresentationClock: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - target: время, на которое кадр заявлял дисплейный линк, секунды.
-    ///   - presented: время, в которое кадр фактически показан, секунды.
+    ///   - presented: время, в которое кадр фактически показан, секунды; ноль означает отсутствие показа и игнорируется.
     public func observe(target: Double, presented: Double) {
-        guard target.isFinite, presented.isFinite else { return }
+        guard target.isFinite, presented.isFinite, presented > 0 else { return }
         let sample = min(maxOffset, max(0, presented - target))
         lock.lock()
         measured = measured.map { $0 + (sample - $0) * smoothing } ?? sample

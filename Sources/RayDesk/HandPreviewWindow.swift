@@ -3,9 +3,12 @@ import Vision
 import simd
 
 /// Окно превью камеры очков с наложенным скелетом кистей.
-final class HandPreviewWindow: NSWindow {
+final class HandPreviewWindow: NSWindow, NSWindowDelegate {
     private let canvas = HandCanvas()
     private var lastStatus = ""
+
+    /// Что сделать, когда окно закрыли: превью не живёт без камеры.
+    var onClose: (() -> Void)?
 
     /// Заголовок обновляется по данным камеры: частота, число рук.
     func update(frame: HandCamera.Frame, framesPerSecond: Double) {
@@ -20,6 +23,10 @@ final class HandPreviewWindow: NSWindow {
         }
     }
 
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
+    }
+
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 720, height: 405),
                    styleMask: [.titled, .closable, .resizable],
@@ -27,6 +34,7 @@ final class HandPreviewWindow: NSWindow {
         title = "Камера очков"
         contentView = canvas
         isReleasedWhenClosed = false
+        delegate = self
         center()
     }
 }

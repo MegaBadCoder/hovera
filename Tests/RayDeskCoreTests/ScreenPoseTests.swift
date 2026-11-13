@@ -5,6 +5,17 @@ import simd
 
 private let degree = Double.pi / 180
 
+@Test func translatedRayMatchesRenderedCoordinatesOnATiltedPanel() throws {
+    let pose = ScreenPose(yaw: 0.3, pitch: -0.15, distance: 2, width: 1.2, aspect: 1.6,
+                          tilt: 0.2, roll: -0.1, pan: 0.25)
+    let origin = SIMD3<Double>(0.3, 0.1, 0.2)
+    let rendered = pose.modelMatrix * SIMD4<Float>(-0.6, -0.4, 0, 1)
+    let point = SIMD3<Double>(Double(rendered.x), Double(rendered.y), Double(rendered.z))
+    let hit = try #require(pose.intersect(rayDirection: point - origin, rayOrigin: origin))
+    #expect(length(hit.uv - SIMD2(0.2, 0.7)) < 1e-6)
+    #expect(abs(hit.t - 1) < 1e-6)
+}
+
 @Test func heightDerivedFromWidthAndAspect() {
     let pose = ScreenPose(yaw: 0, pitch: 0, distance: 1.5, width: 1.0, aspect: 2.0)
     #expect(abs(pose.height - 0.5) < 1e-9)

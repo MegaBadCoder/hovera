@@ -185,8 +185,11 @@ public final class OrientationFilter: @unchecked Sendable {
 
     /// То же, что `update(gyro:accel:dt:)`, плюс показание магнитометра по осям тела
     /// (сырые единицы) для компаса; `nil` — в этом отсчёте поля нет.
-    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, magnetometer: SIMD3<Double>?, temperature: Double? = nil, dt: Double) {
+    /// `sampleTime` — время получения отсчёта в монотонных секундах; `nil` фиксирует время входа в метод.
+    public func update(gyro: SIMD3<Double>, accel: SIMD3<Double>, magnetometer: SIMD3<Double>?, temperature: Double? = nil, dt: Double,
+                       sampleTime: Double? = nil) {
         guard dt > 0, dt < 0.1 else { return }
+        let receivedAt = sampleTime ?? clock()
         lock.lock()
         defer { lock.unlock() }
         let restoredUpdatesBefore = restorer.restoredUpdates
@@ -243,7 +246,7 @@ public final class OrientationFilter: @unchecked Sendable {
         if let compass, let magnetometer {
             observeCompass(magnetometer, calibration: compass, dt: dt)
         }
-        history[historyNext] = (clock(), q)
+        history[historyNext] = (receivedAt, q)
         historyNext = (historyNext + 1) % Self.historySize
         historyCount = min(historyCount + 1, Self.historySize)
     }
@@ -412,6 +415,26 @@ public final class OrientationFilter: @unchecked Sendable {
         let angle = length(omega) * seconds
         guard angle > 1e-9 else { return q }
         return simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega)))
+    }
+
+    /// Атомарно предсказывает ориентацию по одному снимку IMU.
+    /// - Parameters:
+    ///   - time: время показа в шкале `ProcessInfo.systemUptime`, секунды.
+    ///   - bias: ручная поправка времени, секунды.
+    ///   - limit: максимальный горизонт предсказания, секунды.
+    ///   - fallback: горизонт при отсутствии метки IMU, секунды, без `bias`.
+    ///   - extrapolate: применять прогноз гироскопа; `false` возвращает текущую позу с рассчитанным горизонтом.
+    /// - Returns: ориентация голова→мир, горизонт в секундах, скорость в рад/с, время исходного отсчёта и готовность того же снимка.
+    public func prediction(at time: Double, bias: Double, limit: Double, fallback: Double, extrapolate: Bool = true)
+        -> (orientation: simd_quatd, horizon: Double, angularVelocity: SIMD3<Double>, sampleTime: Double?, isReady: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let sampleTime = historyCount > 0 ? history[(historyNext + Self.historySize - 1) % Self.historySize].time : nil
+        let age = sampleTime.map { time - $0 } ?? fallback
+        let horizon = min(limit, max(0, age + bias))
+        let angle = extrapolate ? length(omega) * horizon : 0
+        let predicted = angle > 1e-9 ? simd_normalize(q * simd_quatd(angle: angle, axis: normalize(omega))) : q
+        return (predicted, horizon, omega, sampleTime, initialized && sampleCount > 200)
     }
 
     /// Обнуляет текущий yaw, сохраняя pitch и roll. Компас принимает новое направление

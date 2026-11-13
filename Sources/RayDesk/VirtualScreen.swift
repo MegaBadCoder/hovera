@@ -1,4 +1,5 @@
 import CoreGraphics
+import RayDeskCore
 import CGVirtualDisplayPrivate
 
 final class VirtualScreen {
@@ -9,10 +10,11 @@ final class VirtualScreen {
     let pixelWidth: Int
     let pixelHeight: Int
     let serialNumber: UInt32
+    private(set) var refreshRate: Double?
 
     var displayID: CGDirectDisplayID { display.displayID }
 
-    init(index: Int, pointWidth: Int, pointHeight: Int, refreshRate: Double = 60) {
+    init(index: Int, pointWidth: Int, pointHeight: Int, family: GlassesDisplayFamily? = nil) {
         pixelWidth = pointWidth
         pixelHeight = pointHeight
         serialNumber = UInt32(index + 1)
@@ -28,9 +30,25 @@ final class VirtualScreen {
         descriptor.serialNum = serialNumber
         display = CGVirtualDisplay(descriptor: descriptor)
 
+        updateRefreshRate(family: family)
+    }
+
+    func updateRefreshRate(family: GlassesDisplayFamily?) {
+        let target = family?.targetRefreshRate ?? 60
+        guard refreshRate != target else { return }
+        let settings = Self.settings(width: pixelWidth, height: pixelHeight, family: family)
+        if display.apply(settings) {
+            refreshRate = target
+            log("virtual display \(serialNumber): \(pixelWidth)×\(pixelHeight) @\(Int(target)) Hz")
+        } else {
+            log("virtual display \(serialNumber): macOS отклонила режим \(Int(target)) Hz")
+        }
+    }
+
+    static func settings(width: Int, height: Int, family: GlassesDisplayFamily?) -> CGVirtualDisplaySettings {
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = 0
-        settings.modes = [CGVirtualDisplayMode(width: UInt32(pixelWidth), height: UInt32(pixelHeight), refreshRate: refreshRate)]
-        display.apply(settings)
+        settings.modes = [CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: family?.targetRefreshRate ?? 60)]
+        return settings
     }
 }

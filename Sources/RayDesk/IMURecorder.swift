@@ -4,7 +4,7 @@ import RayDeskCore
 final class IMURecorder {
     private let queue = DispatchQueue(label: "raydesk.imu-recorder", qos: .utility)
     private let lock = NSLock()
-    private var buffer: [String] = []
+    private var buffer: [(time: Double, sample: IMUSample)] = []
     private var handle: FileHandle?
     private var fileStarted = Date()
     private let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayDesk-imu")
@@ -12,21 +12,26 @@ final class IMURecorder {
     private static let keptHours = 24.0
 
     func record(_ sample: IMUSample) {
-        let degree = 180 / Double.pi
-        let field = sample.magnetometer.map { String(format: "%.2f,%.2f,%.2f", $0.x, $0.y, $0.z) } ?? ",,"
-        let line = String(format: "%.4f,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.2f,", Date().timeIntervalSinceReferenceDate, sample.dt,
-                          sample.accel.x, sample.accel.y, sample.accel.z,
-                          sample.gyro.x * degree, sample.gyro.y * degree, sample.gyro.z * degree, sample.temperature) + field
+        let entry = (Date().timeIntervalSinceReferenceDate, sample)
         lock.lock()
-        buffer.append(line)
+        buffer.append(entry)
         let ready = buffer.count >= 500
-        let lines = ready ? buffer : []
+        let samples = ready ? buffer : []
         if ready { buffer.removeAll(keepingCapacity: true) }
         lock.unlock()
-        if ready { queue.async { self.write(lines) } }
+        if ready { queue.async { self.write(samples) } }
     }
 
-    private func write(_ lines: [String]) {
+    private func format(time: Double, sample: IMUSample) -> String {
+        let degree = 180 / Double.pi
+        let field = sample.magnetometer.map { String(format: "%.2f,%.2f,%.2f", $0.x, $0.y, $0.z) } ?? ",,"
+        return String(format: "%.4f,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.2f,", time, sample.dt,
+                          sample.accel.x, sample.accel.y, sample.accel.z,
+                          sample.gyro.x * degree, sample.gyro.y * degree, sample.gyro.z * degree, sample.temperature) + field
+    }
+
+    private func write(_ samples: [(time: Double, sample: IMUSample)]) {
+        let lines = samples.map { format(time: $0.time, sample: $0.sample) }
         if handle == nil || Date().timeIntervalSince(fileStarted) > IMURecorder.fileSeconds {
             startFile()
         }
